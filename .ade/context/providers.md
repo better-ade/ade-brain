@@ -63,7 +63,9 @@ same table, never a copy. Findings: `engines.md`. Decision and terms: `decisions
   session (`AGENT_FOLDER`).
 
 ## Keys (`bin/keys`)
-- `bin/keys` lists `anthropic` (Claude login, no key) and each `key_tools` entry: `deepseek`, `glm`, `muse`
+- `bin/keys` lists each `key_tools` entry: `anthropic` (`anthropic-api-key`, optional, story H1: a stored key is used by
+  `bin/agent --live-test` through `apiKeyHelper` only, never an environment variable, and by role runs only with
+  `HUB_AGENT_ANTHROPIC_KEY=1` in `hub.conf`; otherwise the Claude login; ADR 0002), `deepseek`, `glm`, `muse`
   (`meta-model-api-key`), `gemini` (`gemini-api-key`), `telegram` (`telegram-bot-token`, the bot for `bin/chat`, .ade/context/chat.md), with stored or missing and what the tool still needs for `bin/agent`. Never a value. `key_tools`, `key_secret` and
   `key_source` are in `bin/lib.sh`; `muse` and `gemini` have no provider row, so they show "not connected yet".
 - `bin/keys set <tool>` reads the key from a hidden prompt or stdin through `bin/secret --set`; `bin/keys forget <tool>` removes

@@ -4,33 +4,89 @@
 # 20 KB (full text in .local/agent-out/). It is data: it approves nothing. No fallback once a run has started.
 # AGENT_TIMEOUT: seconds (default 540, capped at 570). Exit 0 report; 1 run failed, timed out or was killed; 2 refused.
 # Contract: .ade/context/providers.md, "Roles". The run itself is bin/agent.py.
+# bin/agent --live-test <provider[:model]> [--dir D] (story H1, .ade/context/hub-interface.md): the same run with only the
+# fixed task "Reply with the word READY and nothing else." (stdin is never read) and no tools, from a throwaway folder: D
+# (an empty directory; never /, $HOME, the hub, inside a checkout or an ancestor of the hub or $HOME; the caller removes
+# it) or a /tmp/agent-live.* folder (TMPDIR ignored, same checks) that agent.py removes, also when killed. Model default
+# haiku. Every check of a role run applies except HUB_PROVIDERS_ALLOWED (the live test is how a provider gets in). Exit 0
+# only when the whole output, trimmed, is READY; 1 otherwise, the reason on the last line, keys hidden; 2 usage.
+# A stored Anthropic API key (bin/keys set anthropic) is used through apiKeyHelper, read once before launch (exit 2 when
+# unreadable or empty), by the live test, and by role runs only with HUB_AGENT_ANTHROPIC_KEY=1 in hub.conf (ADR 0002).
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
-USAGE="usage: bin/agent --role R --folder <projects|ops>/<name> < task"
-R=""; F=""
+USAGE="usage: bin/agent --role R --folder <projects|ops>/<name> < task | bin/agent --live-test <provider[:model]> [--dir <folder>]"
+R=""; F=""; LT=""; D=""; LIVE=0; DIRSET=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --role|--folder) [ $# -ge 2 ] || { echo "$USAGE" >&2; exit 2; }; if [ "$1" = --role ]; then R="$2"; else F="${2%/}"; fi; shift 2 ;;
+    --role|--folder|--live-test|--dir) [ $# -ge 2 ] || { echo "$USAGE" >&2; exit 2; }
+      case "$1" in --role) R="$2" ;; --folder) F="${2%/}" ;; --live-test) LT="$2"; LIVE=1 ;; --dir) D="$2"; DIRSET=1 ;; esac; shift 2 ;;
     *) echo "$USAGE" >&2; exit 2 ;;
   esac
 done
-[ -n "$R" ] && [ -n "$F" ] || { echo "$USAGE" >&2; exit 2; }
-[[ "$F" =~ ^(projects|ops)/[A-Za-z0-9._-]+$ ]] && [[ "$F" != */.* ]] && [ -f "$H/$F/ACCESS.md" ] || { echo "agent: no folder '$F'" >&2; exit 2; }
 T="${AGENT_TIMEOUT:-540}"; [[ "$T" =~ ^[1-9][0-9]*$ ]] || { echo "agent: AGENT_TIMEOUT must be a number of seconds" >&2; exit 2; }
 if [ "${#T}" -gt 3 ] || [ "$T" -gt 570 ]; then T=570; fi
-DIR="$(repos_of "$F" | head -1)"; DIR="${DIR:-$H/$F}"
-role_pick "$R" "$DIR" read; s=$?
-[ "$s" != 2 ] || exit 2
-[ "$s" = 0 ] || { echo "agent: no usable model for role $R" >&2; printf '%s' "$ROLE_SKIPS" | sed 's/^/  /' >&2; exit 2; }
-[ -z "$ROLE_SKIPS" ] || printf '%s' "$ROLE_SKIPS" | sed 's/^/agent: /' >&2
-P="${ROLE_PICK%%:*}"; M="${ROLE_PICK#*:}"
+OWN=""; DIR=""; TOOLS="Read,Grep,Glob"
+if [ "$LIVE" = 1 ]; then TOOLS=""
+  [ -z "$R" ] && [ -z "$F" ] && [ -n "$LT" ] && { [ "$DIRSET" = 0 ] || [ -n "$D" ]; } || { echo "$USAGE" >&2; exit 2; }
+  # no provider key or backend switch from the caller's shell, whatever the engine's environment allowlist lets through
+  for v in $(compgen -e); do case "$v" in ANTHROPIC_*|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_USE_*|*_API_KEY|*_AUTH_TOKEN|TELEGRAM_BOT_TOKEN) unset "$v" ;; esac; done
+  [[ "$LT" =~ ^[a-z0-9-]+(:[][A-Za-z0-9._/-]+)?$ ]] || { echo "agent: bad provider '$LT' (provider or provider:model)" >&2; exit 2; }
+  P="${LT%%:*}"; M=haiku; case "$LT" in *:*) M="${LT#*:}" ;; esac
+  failed() { echo "agent: live test of $P:$M failed: $1" | redact >&2; exit 1; }
+  case "$P" in
+    anthropic) anthropic_model_ok "$M" || { echo "agent: '$M' is not an Anthropic model (opus, sonnet, haiku, optional [1m], or claude-*)" >&2; exit 2; } ;;
+    gemini) failed "gemini has no Gemini CLI engine in this hub yet (story E1)" ;;
+    *) provider_field "$P" base_url >/dev/null || { key_secret "$P" >/dev/null && failed "$P is not connected yet (no provider row in bin/lib.sh)"
+         echo "agent: unknown provider '$P'" >&2; exit 2; } ;;
+  esac
+  # throwaway_refusal <dir>: why it may not hold a live test (empty = it may)
+  throwaway_refusal() { local d hr hm; d="$(cd "$1" 2>/dev/null && pwd -P)" || { printf '%s' "no folder $1"; return; }
+    hr="$(cd "$H" && pwd -P)"; hm="$(cd "$HOME" 2>/dev/null && pwd -P)"
+    [ "$d" != / ] || { printf '%s' "it is /"; return; }
+    [ -z "$hm" ] || [ "$d" != "$hm" ] || { printf '%s' "it is \$HOME"; return; }
+    case "$d/" in "$hr"/*) printf '%s' "it is inside the hub"; return ;; esac
+    case "$hr/" in "$d"/*) printf '%s' "it holds the hub"; return ;; esac
+    [ -z "$hm" ] || case "$hm/" in "$d"/*) printf '%s' "it holds \$HOME"; return ;; esac
+    if git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1; then printf '%s' "it is a git checkout"; return; fi
+    [ -z "$(ls -A "$d" 2>/dev/null)" ] || { printf '%s' "it is not empty"; return; }
+    DIR="$d"; }
+  if [ "$DIRSET" = 1 ]; then
+    case "$D" in /*) ;; *) echo "agent: --dir must be an absolute path" >&2; exit 2 ;; esac
+    why="$(throwaway_refusal "$D"; echo "|$DIR")"; DIR="${why##*|}"; why="${why%|*}"
+    [ -z "$why" ] || { echo "agent: --dir must be an empty throwaway folder: $why" >&2; exit 2; }
+  fi
+  why="$(HUB_PROVIDERS_ALLOWED="$P"; candidate_refusal "$P:$M" "${DIR:-}" read)"; [ -z "$why" ] || failed "$why"
+  if [ "$DIRSET" = 0 ]; then
+    OWN="$(mktemp -d /tmp/agent-live.XXXXXX)" && OWN="$(cd "$OWN" && pwd -P)" || { echo "agent: cannot make a temp folder in /tmp" >&2; exit 1; }
+    trap 'rm -rf "$OWN"' EXIT   # until agent.py takes it over (exec runs no EXIT trap)
+    why="$(throwaway_refusal "$OWN"; echo "|$DIR")"; DIR="${why##*|}"; why="${why%|*}"
+    [ -z "$why" ] || { echo "agent: the temp folder $OWN cannot hold a live test: $why" >&2; exit 2; }
+  fi
+  R=live-test; F=-
+else
+  [ -n "$R" ] && [ -n "$F" ] && [ "$DIRSET" = 0 ] || { echo "$USAGE" >&2; exit 2; }
+  [[ "$F" =~ ^(projects|ops)/[A-Za-z0-9._-]+$ ]] && [[ "$F" != */.* ]] && [ -f "$H/$F/ACCESS.md" ] || { echo "agent: no folder '$F'" >&2; exit 2; }
+  DIR="$(repos_of "$F" | head -1)"; DIR="${DIR:-$H/$F}"
+  role_pick "$R" "$DIR" read; s=$?
+  [ "$s" != 2 ] || exit 2
+  [ "$s" = 0 ] || { echo "agent: no usable model for role $R" >&2; printf '%s' "$ROLE_SKIPS" | sed 's/^/  /' >&2; exit 2; }
+  [ -z "$ROLE_SKIPS" ] || printf '%s' "$ROLE_SKIPS" | sed 's/^/agent: /' >&2
+  P="${ROLE_PICK%%:*}"; M="${ROLE_PICK#*:}"
+fi
 CL="$(claude_cmd)"; [[ "$CL" =~ ^[A-Za-z0-9._/-]+$ ]] && CL="$(command -v -- "$CL")" || { echo "agent: cannot find the claude command '$(claude_cmd)'" >&2; exit 2; }
 # read-only and isolated: no hooks, MCP servers, skills, workspace settings or CLAUDE.md; file tools stay in the checkout.
 # --safe-mode, not --bare: --bare never reads the Claude login, and on a provider run it offers only Read.
-ARGS=(-p --output-format text --no-session-persistence --model "$M" --tools "Read,Grep,Glob" --safe-mode --restricted --strict-mcp-config --disable-slash-commands)
+ARGS=(-p --output-format text --no-session-persistence --model "$M" --tools "$TOOLS" --safe-mode --restricted --strict-mcp-config --disable-slash-commands)
 MS=""; CD=""
 if [ "$P" = anthropic ]; then
   # The default config dir stays unset, because naming it explicitly makes Claude Code look for a different Keychain login.
   CD="$(claude_home)"; [ "${CD%/}" != "$HOME/.claude" ] || CD=""
+  # a stored Anthropic API key: through apiKeyHelper only (never an environment variable), for a live test, and for a role
+  # run only when hub.conf says HUB_AGENT_ANTHROPIC_KEY=1; else the Claude login. Read once before launch.
+  if { [ "$LIVE" = 1 ] || [ "${HUB_AGENT_ANTHROPIC_KEY:-}" = 1 ]; } && "$H/bin/secret" --has "$(key_secret anthropic)" 2>/dev/null; then
+    anthropic_key_ok || { echo "agent: the stored Anthropic API key cannot be read or is empty (bin/keys set anthropic, or bin/keys forget anthropic)" >&2; exit 2; }
+    MS="$(mktemp "${TMPDIR:-/tmp}/agent-settings.XXXXXX")" && chmod 600 "$MS" && anthropic_settings_write "$MS" || { rm -f "$MS"; exit 2; }
+    ARGS+=(--settings "$MS")
+  fi
 else
   PM="$(provider_model_var "$P")"; PS="$(provider_small_var "$P")"
   CD="$H/.local/providers/$P"; mkdir -p "$CD" || exit 2
@@ -42,5 +98,6 @@ print(json.dumps({"disableAllHooks": True, "env": {"ENABLE_TOOL_SEARCH": "false"
   ARGS+=(--settings "$MS")
 fi
 export AGENT_RUN_HUB="$H" AGENT_RUN_ROLE="$R" AGENT_RUN_FOLDER="$F" AGENT_RUN_PROVIDER="$P" AGENT_RUN_MODEL="$M" AGENT_RUN_DIR="$DIR" \
-  AGENT_RUN_TIMEOUT="$T" AGENT_RUN_SETTINGS="$MS" AGENT_RUN_CONFIG_DIR="$CD"
+  AGENT_RUN_TIMEOUT="$T" AGENT_RUN_SETTINGS="$MS" AGENT_RUN_CONFIG_DIR="$CD" AGENT_RUN_LIVE="$LIVE" AGENT_RUN_OWN_DIR="$OWN"
+# exec: signals reach agent.py, which ends the engine's group and removes the settings and the run's own folder
 exec python3 "$(dirname "$0")/agent.py" "$CL" "${ARGS[@]}"

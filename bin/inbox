@@ -6,6 +6,27 @@
 # Cheap path first, in bash: a call that mentions neither a push nor .ade/context/ starts no python when the log is
 # not newer than the session's cursor or its last delivery is under 60 s old. Reads stdin for at most 1 s (a stdin
 # that never closes counts as empty); always exits 0 (a broken log never blocks a session).
+# bin/inbox --count [main|<folder>|<name>] (story H1, .ade/context/hub-interface.md): the number of unread events for that
+# session (default main): a bin/sessions NAME (its folder), projects/<name>, ops/<name> or a bare folder name. Counted
+# after the folder's last delivery (<state dir>/events-read/), else what its first delivery would show; 0 once read.
+# Reads no stdin and writes nothing. Exit 0 a number, 1 the log is unusable, 2 an unknown name.
+if [ "${1:-}" = --count ]; then
+  set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; [ $# -le 2 ] || { echo "usage: bin/inbox --count [main|folder|session]" >&2; exit 2; }
+  N="${2:-main}"; O=""; SD="$(state_dir)/sessions"
+  folder_ok() { [[ "$1" =~ ^(projects|ops)/[A-Za-z0-9._-]+$ ]] && [ "${1##*/}" != . ] && [ "${1##*/}" != .. ] && [ -d "$H/$1" ]; }
+  case "$N" in
+    main) O=main ;;
+    */*) folder_ok "$N" && O="$N" ;;
+    *) if [[ "$N" =~ ^[A-Za-z0-9._-]+$ ]]; then
+         for e in "$SD/$N".*; do [ -f "$e" ] && [ "$(sed -n 's/^name=//p' "$e" | head -1)" = "$N" ] || continue
+           O="$(sed -n 's/^folder=//p' "$e" | head -1)"; folder_ok "$O" || O=""; break; done
+         if [ -z "$O" ]; then m=""; for t in projects ops; do folder_ok "$t/$N" && m="$m $t/$N"; done; set -- $m; [ $# -ne 1 ] || O="$1"; fi
+       fi ;;
+  esac
+  [ -n "$O" ] || { echo "inbox: no session or folder named '$N'" >&2; exit 2; }
+  R=""; [ "$O" = main ] || R="$(repos_of "$O" 2>/dev/null)"
+  H="$H" ST="$(state_dir)" REPOS="$R" exec python3 -I "$(dirname "$0")/events.py" count "$O"
+fi
 . "$(dirname "$0")/lib.sh" 2>/dev/null || exit 0
 F="${1:-}"; IN=""; IFS= read -r -d '' -t 1 IN
 re='"session_id"[[:space:]]*:[[:space:]]*"([A-Za-z0-9_-]{1,80})"'; SID=""; [[ "$IN" =~ $re ]] && SID="${BASH_REMATCH[1]}"

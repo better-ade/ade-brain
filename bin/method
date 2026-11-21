@@ -1,12 +1,13 @@
 #!/bin/bash
 # bin/method: the hub takes the method from ade-method, its only home (story C1, .ade/context/method.md).
-#   bin/method sync [ref]   copy ade-method's rules.md to .ade/rules.md and bmad/custom/*.toml to _bmad/custom/, at ref
+#   bin/method sync [ref]   copy ade-method's rules.md to .ade/rules.md, bmad/custom/*.toml to _bmad/custom/ and each
+#                           ade.json install_templates file to its target (the PR and commit templates), at ref
 #                           (default HUB_METHOD_REF from hub.conf, else the template's pin), and record it in .ade/method-version
 #   bin/method check        exit 1 naming each file that differs from the recorded ref (or "not synced at <ref>" after
 #                           a failed bin/init sync), 0 when all match (offline)
 # An unknown ref or an unreachable repo exits 1 and changes nothing.
 . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; V="$H/.ade/method-version"
-usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 case "${1:-}" in
   sync)
@@ -22,12 +23,27 @@ case "${1:-}" in
     files=".ade/rules.md"
     for f in "$src"/bmad/custom/*.toml; do [ -f "$f" ] || continue; b="$(basename "$f")"
       cp "$f" "$tmp/out/_bmad/custom/$b"; files="$files _bmad/custom/$b"; done
+    # ade.json install_templates (ade-method v2.1.0): "<source in the method>": "<target in the hub>", e.g. the PR and
+    # commit templates. Both must be plain relative paths (no .., no absolute path, not under .git); else nothing changes.
+    if [ -f "$src/ade.json" ]; then
+      map="$(python3 -I -c 'import json,sys
+d=json.load(open(sys.argv[1])).get("install_templates") or {}
+ok=lambda p: isinstance(p,str) and p and not p.startswith("/") and ".." not in p.split("/") and p.split("/")[0]!=".git" and all(c.isprintable() and c not in " \t" for c in p)
+if not isinstance(d,dict): sys.exit(3)
+for s,t in d.items():
+    if not (ok(s) and ok(t)): sys.exit(3)
+    print(s, t)' "$src/ade.json")" || { echo "method: $repo at $ref has an ade.json install_templates entry that is not a plain relative path" >&2; exit 1; }
+      while read -r s t; do [ -n "$s" ] || continue
+        [ -f "$src/$s" ] && [ ! -L "$src/$s" ] || { echo "method: $repo at $ref has no $s (ade.json install_templates)" >&2; exit 1; }
+        mkdir -p "$(dirname "$tmp/out/$t")" && cp "$src/$s" "$tmp/out/$t" || exit 1; files="$files $t"
+      done <<< "$map"
+    fi
     { echo "# the method this hub runs, from ade-method (bin/method sync); bin/method check compares the files below"
       echo "ref $ref"; echo "commit $commit"
       for f in $files; do echo "file $(sha "$tmp/out/$f") $f"; done; } > "$tmp/out/.ade/method-version"
     old="$(awk '$1=="file"{print $3}' "$V" 2>/dev/null)"
     mkdir -p "$H/.ade" "$H/_bmad/custom"
-    for f in $files .ade/method-version; do cp "$tmp/out/$f" "$H/$f.method-new" && mv "$H/$f.method-new" "$H/$f" ||
+    for f in $files .ade/method-version; do mkdir -p "$(dirname "$H/$f")" && cp "$tmp/out/$f" "$H/$f.method-new" && mv "$H/$f.method-new" "$H/$f" ||
       { echo "method: could not write $f" >&2; exit 1; }; done
     # overrides the previous sync installed that this ref no longer ships (never one the method did not install)
     for f in $old; do case " $files " in *" $f "*) ;; *) case "$f" in _bmad/custom/*.toml) rm -f "$H/$f"; echo "method: removed $f";; esac;; esac; done
