@@ -7,6 +7,10 @@ calling folder's checkouts, one per line, from repos_of), AGENT_EVENTS_ROTATE (t
       exit 0 written, 2 refused (bad text, a secret, bad sender or target), 1 not written (the log is unusable)
   events.py hook-tool FOLDER   PostToolUse: record pushed/contract, then deliver (at most once per 60 s) as JSON
   events.py hook-stop FOLDER   Stop: block once on an unread note addressed to this session (exit 3), else idle event
+  events.py outbox             bin/chat forward (story C7): the agents' idle/ended/note events to main not yet sent to
+                               the chat, one "<inode> <end>\t[<agent>] <kind>: <text>" line each (oldest first)
+  events.py ack INODE END      bin/chat forward: that line was sent; the next outbox starts after it
+  events.py latest             each folder's newest event to main, one "<folder>\t<kind>\t<text>" line (bin/chat agents)
   events.py count OWN          (story H1) the number of unread events for main or a folder; writes nothing
 
 Event text is data: nothing here runs it, and every delivered line says so. Every call shares one deadline
@@ -388,6 +392,87 @@ def hook_stop(own):
     return 3 if blocked else 0
 
 
+# ---- the chat forwarder (story C7, .ade/context/chat.md): its own cursor, <state dir>/chat/forward.cursor, moved only
+# once a line was sent (bin/chat forward acks each), so a failed send is retried and a sent one is never repeated
+FORWARD = os.path.join(ST, "chat", "forward.cursor")
+FORWARDED = ("idle", "ended", "note")
+
+
+def chat_text(e):
+    """one chat line for an agent's event: tagged with its full folder and "claimed" (senders are not authenticated),
+    the text cleaned and JSON-quoted for every kind, so it reads as data"""
+    txt = clean(e.get("text", ""))
+    if secret(txt): txt = "(text withheld: looks like a secret)"
+    return "[%s, claimed] %s: %s" % (e.get("from"), e.get("kind"), json.dumps(txt, ensure_ascii=False))
+
+
+def _window():
+    """(inode, offset, size): where the forwarder reads from. No cursor: the start of the log (the last 24 h of it are
+    sent). A rotated log (new inode) starts at 0; a cursor past the end (a torn or truncated log) is reset to the end."""
+    st = os.stat(LOG) if os.path.lexists(LOG) else None
+    if st is not None and not stat.S_ISREG(st.st_mode): raise OSError("not a file")
+    ino, size = (st.st_ino, st.st_size) if st else (0, 0)
+    c = _pos(FORWARD)
+    if c is None or c[0] != ino: off = 0
+    elif c[1] > size: off = size
+    else: off = c[1]
+    return ino, off, size, c is None
+
+
+def _rest_of_rotated(c):
+    """the cursor names the log that rotated away (events.jsonl.1): its lines after the cursor, as (inode, lines)"""
+    old = LOG + ".1"
+    try: st = os.stat(old)
+    except OSError: return None
+    if not c or st.st_ino != c[0] or not stat.S_ISREG(st.st_mode) or c[1] >= st.st_size: return None
+    with open(old, "rb") as fh:
+        fh.seek(c[1]); data = fh.read(st.st_size - c[1])
+    return st.st_ino, _parse(data, c[1])
+
+
+def _forwardable(e):
+    return e.get("kind") in FORWARDED and e.get("to") in ("main", "all") and FROM_RE.match(str(e.get("from", ""))) \
+        and e.get("from") != "main"
+
+
+def outbox():
+    try: ino, off, size, first = _window()
+    except OSError: return 1
+    c = _pos(FORWARD)
+    if c and c[0] != ino:
+        r = _rest_of_rotated(c)   # rotated since the last run: the old log's rest goes first
+        if r:
+            for pos, e in r[1]:
+                if _forwardable(e): print("%d %d\t%s" % (r[0], pos, chat_text(e)))
+    if size - off > 1 << 20: off = size - (1 << 20)
+    if size <= off:
+        if _pos(FORWARD) != (ino, off): save(FORWARD, (ino, off))
+        return 0
+    with open(LOG, "rb") as fh:
+        fh.seek(off); data = fh.read(size - off)
+    cut = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - BACKLOG))
+    for pos, e in _parse(data, off):
+        if not _forwardable(e): continue
+        if first and str(e.get("time", "")) < cut: continue
+        print("%d %d\t%s" % (ino, pos, chat_text(e)))
+    return 0
+
+
+def latest():
+    """each folder's newest event to main (or all), from the last MB of the log"""
+    if not os.path.isfile(LOG): return 0
+    size = os.path.getsize(LOG); off = max(0, size - (1 << 20))
+    with open(LOG, "rb") as fh:
+        fh.seek(off); data = fh.read()
+    last = {}
+    for _, e in _parse(data, off):
+        f = str(e.get("from", ""))
+        if f != "main" and FROM_RE.match(f) and e.get("to") in ("main", "all"): last[f] = e
+    for f, e in sorted(last.items()):
+        print("%s\t%s\t%s" % (f, e.get("kind"), clean(e.get("text", ""), 120)))
+    return 0
+
+
 def count(own):
     """unread events for main or a folder: after the folder's last delivery, else what its first delivery would show"""
     evs, _ = unread_at(read_path(own), own)
@@ -411,6 +496,10 @@ def main(a):
         except Exception: rc, why = 1, "could not write the event log"
         if why: print("notify: " + why, file=sys.stderr)
         return rc
+    if a[:1] == ["outbox"]: return outbox()
+    if a[:1] == ["ack"] and len(a) == 3 and a[1].isdigit() and a[2].isdigit(): save(FORWARD, (int(a[1]), int(a[2]))); return 0
+    if a[:1] == ["latest"]: return latest()
+    if a[:1] == ["secret"]: return 0 if secret(sys.stdin.read()) else 1   # bin/chat ask: exit 0 = looks like a secret
     own = a[1] if len(a) > 1 else ""
     try:
         if a[:1] == ["hook-tool"]: hook_tool(own); return 0

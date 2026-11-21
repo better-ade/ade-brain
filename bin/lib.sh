@@ -234,6 +234,10 @@ hub_name_claim() { local f me o; f="$(state_dir)/hub-path"; me="$(cd "$(hub_root
   if [ -f "$f" ]; then o="$(cat "$f")"; [ "$o" = "$me" ] && return 0; [ -d "$o" ] && { echo "$o"; return 1; }; fi
   echo "$me" > "$f"; }
 channel_state_env() { case "$1" in telegram) echo "TELEGRAM_STATE_DIR" ;; *) return 1 ;; esac; }
+# channel_buttons <type>: which messages may carry inline buttons (story C7). telegram: "permission" (the plugin shows
+# Allow / Deny buttons on Claude Code's permission prompts itself; its reply tool sends none, so bin/chat ask uses
+# numbered replies). "all" lets bin/chat ask send Approve / Deny buttons.
+channel_buttons() { case "$1" in telegram) echo "permission" ;; *) return 1 ;; esac; }
 # Role routing (.ade/context/providers.md, "Roles"): a role is an ordered list of provider:model candidates. Defaults
 # here; HUB_ROLE_<ROLE> in hub.conf (never the environment) replaces a role's list or adds a role.
 role_default() { case "$1" in
