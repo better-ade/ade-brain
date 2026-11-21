@@ -1,0 +1,48 @@
+#!/bin/bash
+# bin/gemini-run --auth google|key --mode focus|agent [gemini args...]: runs the Gemini CLI, in the current directory (the
+# checkout), for bin/work (a focus session's launcher) and bin/agent (a delegated run), story E1. Contract:
+# .ade/context/engines.md, "Gemini CLI engine". Every gate is checked here again, so a direct call cannot skip them:
+# - refused (exit 2): gemini not in HUB_PROVIDERS_ALLOWED, a client hub without HUB_GEMINI_CLIENT_APPROVED=1, another
+#   hub's HUB, yolo in any spelling, the checkout's own .gemini configuration, a machine whose admin policies would make
+#   the CLI ignore --admin-policy;
+# - the CLI's home is the hub's (GEMINI_CLI_HOME = gemini_home <auth>), with the hub's user settings layer written there
+#   (yolo off, env-var redaction on, project .env ignored, no discovery/call command, no hooks, no MCP servers);
+# - --admin-policy <home>/hub-policy-<mode>.toml goes first (secret files denied; yolo asks; agent: read tools only);
+#   agent also gets --skip-trust (headless needs a trusted folder), only after the checkout check above;
+# - the caller's credential, backend and trust variables are set to empty (no .env file can fill them), the settings
+#   paths removed;
+# - auth key: the stored gemini-api-key is read once (bin/secret) and given to the CLI in its environment only
+#   (GEMINI_API_KEY, the one way the CLI takes a key): never argv or a file. Missing or empty: exit 1 before the CLI starts.
+# AGENT_GEMINI_LOOPBACK_URL=http://127.0.0.1:<port> (tests/test_gemini_real.sh only) points the CLI at a local fake API.
+set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
+USAGE="usage: bin/gemini-run --auth google|key --mode focus|agent [gemini args...]"
+AUTH=""; MODE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --auth|--mode) [ $# -ge 2 ] || { echo "$USAGE" >&2; exit 2; }; if [ "$1" = --auth ]; then AUTH="$2"; else MODE="$2"; fi; shift 2 ;;
+    *) break ;;
+  esac
+done
+case "$AUTH:$MODE" in google:focus|google:agent|key:focus|key:agent) ;; *) echo "$USAGE" >&2; exit 2 ;; esac
+no() { echo "gemini-run: $*" >&2; exit 2; }
+case " ${HUB_PROVIDERS_ALLOWED:-anthropic} " in *" gemini "*) ;; *) no "gemini is not in HUB_PROVIDERS_ALLOWED (hub.conf)" ;; esac
+why="$(provider_hub_refusal gemini)"; [ -z "$why" ] || no "$why"
+why="$(provider_own_hub_refusal)"; [ -z "$why" ] || no "$why"
+why="$(gemini_yolo_refusal ${@+"$@"})"; [ -z "$why" ] || no "$why"
+why="$(gemini_checkout_refusal "$PWD")"; [ -z "$why" ] || no "$why"
+why="$(gemini_system_refusal)"; [ -z "$why" ] || no "$why"
+G="$(gemini_cmd)"; command -v -- "$G" >/dev/null 2>&1 || { echo "gemini-run: the Gemini CLI ($G) is not installed" >&2; exit 1; }
+GHOME="$(gemini_home "$AUTH")"
+if [ "$AUTH" = google ] && [ ! -s "$GHOME/.gemini/oauth_creds.json" ]; then echo "gemini-run: $(gemini_auth_hint)" >&2; exit 1; fi
+gemini_settings_write "$GHOME" "$AUTH" || { echo "gemini-run: could not write $GHOME/.gemini/settings.json" >&2; exit 1; }
+POL="$GHOME/hub-policy-$MODE.toml"; gemini_policy_write "$POL" "$MODE" || { echo "gemini-run: could not write $POL" >&2; exit 1; }
+for v in $(gemini_scrub_vars); do export "$v="; done
+for v in $(gemini_unset_vars); do unset "$v"; done
+export GEMINI_CLI_HOME="$GHOME"
+LB="${AGENT_GEMINI_LOOPBACK_URL:-}"
+if [ -n "$LB" ]; then [[ "$LB" =~ ^http://127\.0\.0\.1:[0-9]+$ ]] || no "AGENT_GEMINI_LOOPBACK_URL must be http://127.0.0.1:<port>"; export GOOGLE_GEMINI_BASE_URL="$LB"; fi
+PRE=(--admin-policy "$POL"); [ "$MODE" != agent ] || PRE+=(--skip-trust)
+if [ "$AUTH" = google ]; then exec "$G" "${PRE[@]}" ${@+"$@"}; fi
+k="$(HUB="$H" AGENT_KEYCHAIN_SERVICE="$(keychain_service)" "$H/bin/secret" gemini-api-key 2>/dev/null)" && [ -n "$k" ] ||
+  { unset k; echo "gemini-run: $(gemini_auth_hint)" >&2; exit 1; }
+GEMINI_API_KEY="$k" exec "$G" "${PRE[@]}" ${@+"$@"}

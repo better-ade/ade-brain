@@ -14,9 +14,10 @@ tool_name() { case " $(key_tools) " in *" $1 "*) key_secret "$1" ;; *) echo "key
 # tool_state <tool>: what stands between this tool and a run, other than its key (empty = nothing)
 tool_state() {
   case "$1" in telegram|anthropic) return 0 ;; esac   # a chat channel's bot token (bin/chat); Anthropic needs no gate
-  provider_field "$1" base_url >/dev/null 2>&1 || { echo "$1 is not connected yet"; return 0; }
-  local why; why="$(candidate_refusal "$1:sonnet")"
-  case "$why" in "no "*" in the Keychain"*) ;; *) printf '%s' "$why" ;; esac
+  local why
+  if [ "$(engine_of "$1")" = gemini ]; then why="$(candidate_refusal "gemini:gemini-2.5-pro")"
+  else provider_field "$1" base_url >/dev/null 2>&1 || { echo "$1 is not connected yet"; return 0; }; why="$(candidate_refusal "$1:sonnet")"; fi
+  case "$why" in "no "*" in the Keychain"*|"no Gemini sign-in"*) ;; *) printf '%s' "$why" ;; esac
 }
 case "${1:-}" in
   "") [ $# -eq 0 ] || bad; keychain

@@ -1,9 +1,10 @@
 #!/bin/bash
 # bin/sessions [--mine | --parent PID]: the focus sessions bin/work started that are still running, one per line:
-# NAME FOLDER CLAUDE_PID PARENT STARTED ROLE STATUS LAST. STATUS is busy (a prompt is being worked) or idle (the turn ended), LAST
+# NAME FOLDER CLAUDE_PID PARENT STARTED ROLE STATUS LAST ENGINE. STATUS is busy (a prompt is being worked) or idle (the turn ended), LAST
 # the UTC time of its last prompt or turn end; both are - until the first prompt (the folder hooks write them). ROLE is the bin/work --role it was started with (- when none). A turn that
 # is interrupted runs no Stop hook, so busy with an old LAST means interrupted or waiting on a permission prompt. PARENT is the Claude session that ran bin/work (- when none); --mine keeps the
-# children of the calling session ($CLAUDE_PID), --parent PID those of another. Entries whose launcher is gone are pruned.
+# children of the calling session ($CLAUDE_PID), --parent PID those of another. ENGINE is claude or gemini (story E1;
+# an entry from before E1 shows claude). CLAUDE_PID is the engine's pid. Entries whose launcher is gone are pruned.
 set -u; . "$(dirname "$0")/lib.sh"
 SD="$(state_dir)/sessions"; want=""
 case "${1:-}" in
@@ -12,7 +13,7 @@ case "${1:-}" in
   --parent) [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "usage: bin/sessions [--mine | --parent PID]" >&2; exit 2; }; want="$2" ;;
   *) echo "usage: bin/sessions [--mine | --parent PID]" >&2; exit 2 ;;
 esac
-printf '%-16s %-26s %-8s %-8s %-21s %-10s %-6s %s\n' NAME FOLDER PID PARENT STARTED ROLE STATUS LAST
+printf '%-16s %-26s %-8s %-8s %-21s %-10s %-6s %-20s %s\n' NAME FOLDER PID PARENT STARTED ROLE STATUS LAST ENGINE
 for e in "$SD"/*; do
   [ -f "$e" ] || continue
   get() { sed -n "s/^$1=//p" "$e" | head -1; }
@@ -21,6 +22,6 @@ for e in "$SD"/*; do
   if ! [[ "$lp" =~ ^[0-9]+$ ]] || ! ps -o command= -p "$lp" 2>/dev/null | grep -q -- '-work\.'; then rm -f "$e"; continue; fi
   [ -z "$want" ] || [ "$(get parent)" = "$want" ] || continue
   cp="$(pgrep -P "$lp" 2>/dev/null | head -1)"
-  st="$(get status)"; la="$(get last)"; ro="$(get role)"
-  printf '%-16s %-26s %-8s %-8s %-21s %-10s %-6s %s\n' "$(get name)" "$(get folder)" "${cp:--}" "$(get parent)" "$(get started)" "${ro:--}" "${st:--}" "${la:--}"
+  st="$(get status)"; la="$(get last)"; ro="$(get role)"; en="$(get engine)"
+  printf '%-16s %-26s %-8s %-8s %-21s %-10s %-6s %-20s %s\n' "$(get name)" "$(get folder)" "${cp:--}" "$(get parent)" "$(get started)" "${ro:--}" "${st:--}" "${la:--}" "${en:-claude}"
 done

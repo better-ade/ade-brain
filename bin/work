@@ -17,6 +17,12 @@
 # --role R (story C2) picks the provider and model with role_pick (bin/lib.sh; .ade/context/providers.md, "Roles"), then
 # takes the --provider/--model path with all its gates; it excludes --model and --provider (exit 2). No usable candidate:
 # exit 1 with each skip reason, nothing opened. The role is recorded for bin/sessions.
+# A gemini pick (--role, or --provider gemini --model gemini-*; story E1, .ade/context/engines.md "Gemini CLI engine") runs
+# the Gemini CLI through bin/gemini-run instead of Claude Code: its own checks (allowlist, owner-only unless
+# HUB_GEMINI_CLIENT_APPROVED=1, the CLI installed, a sign-in or a stored key, the checkout's own .gemini configuration),
+# never yolo (any spelling: exit 2); bin/gemini-run checks them again and gives the CLI the hub's settings and policy,
+# no Claude Code flag (--effort, --agent-*, --claude: exit 2), --mode as the CLI's approval mode (auto and acceptEdits =
+# auto_edit, manual = default, plan = plan), --prompt as its first message (-i), no Remote Control, no --agents.
 # --agent-model / --agent-effort (repeatable) set the folder's specialist agents: a bare value sets all, name=value one (it wins). WORK_DRY=1 only prints the command. AGENT_TERMINAL=iterm uses iTerm.
 # Inside an ADE terminal (ADE_HOOK_BIN executable; ADE_HOOK_PORT, ADE_HOOK_TOKEN, ADE_PTY_ID set) the session opens as a
 # sub-terminal of the caller's tab and NEVER in a Terminal or iTerm window (owner, 2026-11-09; stories W1 and W1b):
@@ -64,6 +70,8 @@ if [ -n "$ROLE" ]; then
   done
   [ -n "$ROLE_PICK" ] || { echo "work: no usable model for role $ROLE" >&2; printf '%s' "$ROLE_SKIPS" | sed 's/^/  /' >&2; exit 1; }
   PROV="${ROLE_PICK%%:*}"; MODEL="${ROLE_PICK#*:}"
+  # an earlier candidate skipped is said, so nothing moves to another engine or vendor unnoticed
+  [ -z "$ROLE_SKIPS" ] || printf '%s' "$ROLE_SKIPS" | sed 's/^/work: /' >&2
 fi
 # an Anthropic model may carry the 1M-context suffix, opus[1m] (role tables allow it); it is quoted for the launcher
 MRE='^[A-Za-z0-9._:/-]+$'; [ "$PROV" != anthropic ] || MRE='^[A-Za-z0-9._:/-]+(\[1m\])?$'
@@ -90,7 +98,19 @@ case "$EFFORT" in ""|low|medium|high|xhigh|max) ;; *) echo "work: effort must be
 # the provider: allowed in hub.conf, permitted for this hub, plain claude, a go for each feature used, no resume, its own models
 [[ "$PROV" =~ ^[a-z0-9-]+$ ]] || { echo "work: bad provider name '$PROV'" >&2; exit 2; }
 case " ${HUB_PROVIDERS_ALLOWED:-anthropic} " in *" $PROV "*) ;; *) echo "work: provider $PROV is not in HUB_PROVIDERS_ALLOWED (hub.conf)" >&2; exit 2 ;; esac
-if [ "$PROV" != anthropic ]; then
+if [ "$PROV" = gemini ]; then
+  why="$(provider_own_hub_refusal)"; [ -z "$why" ] || { echo "work: $why" >&2; exit 2; }
+  why="$(provider_hub_refusal gemini)"; [ -z "$why" ] || { echo "work: $why" >&2; exit 2; }
+  provider_feature_go gemini focus || { echo "work: $(provider_no_go_reason gemini focus)" >&2; exit 2; }
+  why="$(gemini_system_refusal)"; [ -z "$why" ] || { echo "work: $why" >&2; exit 2; }
+  command -v "$(gemini_cmd)" >/dev/null 2>&1 || { echo "work: the Gemini CLI ($(gemini_cmd)) is not installed" >&2; exit 1; }
+  [ -n "$MODEL" ] && gemini_model_ok "$MODEL" || { echo "work: the Gemini CLI needs a Gemini model (--model gemini-*), not '${MODEL:-none}'" >&2; exit 2; }
+  why="$(gemini_yolo_refusal ${POS[@]+"${POS[@]}"})"; [ -z "$why" ] || { echo "work: $why" >&2; exit 2; }
+  [ -z "$EFFORT" ] && [ -z "$ASET" ] && [ "$CL" = "$(claude_cmd)" ] || { echo "work: --effort, --agent-model, --agent-effort and --claude are Claude Code flags; the Gemini CLI takes none of them" >&2; exit 2; }
+  for a in ${POS[@]+"${POS[@]}"}; do case "$a" in -*) echo "work: $a is not passed to the Gemini CLI; bin/work takes only its own flags" >&2; exit 2 ;; esac; done
+  case "$MODE" in manual) GMODE=default ;; plan) GMODE=plan ;; *) GMODE=auto_edit ;; esac
+  REMOTE=0
+elif [ "$PROV" != anthropic ]; then
   why="$(provider_own_hub_refusal)"; [ -z "$why" ] || { echo "work: $why" >&2; exit 2; }
   provider_field "$PROV" base_url >/dev/null || { echo "work: no provider '$PROV' in bin/lib.sh" >&2; exit 2; }
   why="$(provider_hub_refusal "$PROV")"; [ -z "$why" ] || { echo "work: $why" >&2; exit 2; }
@@ -168,7 +188,9 @@ else
 fi
 # the folder's specialist agents (front matter + body) go to the session as --agents JSON
 agents=""
-if ls "$H/$F/.claude/agents/"*.md >/dev/null 2>&1; then
+if [ "$PROV" = gemini ]; then
+  ! ls "$H/$F/.claude/agents/"*.md >/dev/null 2>&1 || echo "work: the Gemini CLI has no --agents; $F's specialist agents are not loaded in this session" >&2
+elif ls "$H/$F/.claude/agents/"*.md >/dev/null 2>&1; then
   # the hub's agent model goes first, so any --agent-model on the command line overrides it
   # (not in a provider session: HUB_AGENT_MODEL may be a full Anthropic id)
   [ "$PROV" = anthropic ] && [ -n "${HUB_AGENT_MODEL:-}" ] && [[ "$HUB_AGENT_MODEL" =~ ^[A-Za-z0-9._:/-]+$ ]] && ASET="model  $HUB_AGENT_MODEL"$'\n'"$ASET"
@@ -209,7 +231,15 @@ fi
 [ "$PROV" = anthropic ] || [ -z "$agents" ] || provider_feature_go "$PROV" agents || { echo "work: $(provider_no_go_reason "$PROV" agents)" >&2; exit 2; }
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }   # single-quoted for the launcher, a ' inside kept
 TRAP='rm -f "$0"'
-if [ "$PROV" = anthropic ]; then
+if [ "$PROV" = gemini ]; then
+  why="$(gemini_checkout_refusal "$dir")"; [ -z "$why" ] || { echo "work: $why" >&2; exit 2; }
+  # fail closed, before anything is written: the CLI's own Google login, else a stored key (read once, never kept)
+  GA="read"; [ "${WORK_DRY:-}" != 1 ] || GA="has"
+  GAUTH="$(gemini_auth "$GA")" || { echo "work: $(gemini_auth_hint)" >&2; exit 1; }
+  echo "work: Gemini CLI signed in with $([ "$GAUTH" = google ] && echo "its Google login" || echo "the stored gemini-api-key")" >&2
+  cmd="cd $(sq "$dir") && AGENT_FOLDER='$F' $(sq "$H/bin/gemini-run") --auth $GAUTH --mode focus -m $(printf %q "$MODEL") --approval-mode $GMODE"
+  [ -z "$PROMPT" ] || cmd="$cmd -i $(printf %q "$PROMPT")"
+elif [ "$PROV" = anthropic ]; then
   # the caller's install: a bare name runs what the caller's PATH finds, since a new window's login shell may find another
   # claude first (an explicit path, or a name not on PATH, is kept as given)
   case "$CL" in */*) ;; *) p="$(command -v -- "$CL" 2>/dev/null)"; [[ "$p" == /* && "$p" =~ ^[A-Za-z0-9._/-]+$ ]] && CL="$p" ;; esac
@@ -231,12 +261,14 @@ else
   cmd="cd $(sq "$dir") && env$(printf ' -u %s' $SCRUB) AGENT_FOLDER='$F' CLAUDE_CONFIG_DIR=$(sq "$CD") $CL --settings $(sq "$MS")"
   TRAP="rm -f \"\$0\" $(sq "$MS")"
 fi
-[ -n "$agents" ] && cmd="$cmd --agents $(printf %q "$agents")"
-cmd="$cmd --permission-mode $MODE"
-[ -n "$MODEL" ] && cmd="$cmd --model $(printf %q "$MODEL")"
-[ -n "$EFFORT" ] && cmd="$cmd --effort $EFFORT"
-[ "$REMOTE" = 1 ] && cmd="$cmd --remote-control $(printf %q "${RNAME:-${F##*/}}")"
-[ -n "$PROMPT" ] && cmd="$cmd -- $(printf %q "$PROMPT")"
+if [ "$PROV" != gemini ]; then   # Claude Code's flags; the gemini command is complete above
+  [ -n "$agents" ] && cmd="$cmd --agents $(printf %q "$agents")"
+  cmd="$cmd --permission-mode $MODE"
+  [ -n "$MODEL" ] && cmd="$cmd --model $(printf %q "$MODEL")"
+  [ -n "$EFFORT" ] && cmd="$cmd --effort $EFFORT"
+  [ "$REMOTE" = 1 ] && cmd="$cmd --remote-control $(printf %q "${RNAME:-${F##*/}}")"
+  [ -n "$PROMPT" ] && cmd="$cmd -- $(printf %q "$PROMPT")"
+fi
 echo "$cmd"
 # a dry run shows the merged settings instead of keeping the file (the EXIT trap removes it)
 if [ "${WORK_DRY:-}" = 1 ]; then
@@ -246,7 +278,7 @@ if [ "${WORK_DRY:-}" = 1 ]; then
   fi
   [ -z "$MS" ] || { cat "$MS"; echo; } 2>/dev/null; exit 0
 fi
-if [ "$PROV" != anthropic ]; then   # the memory links bin/setup makes, inside the provider's config dir
+if [ "$PROV" != anthropic ] && [ "$PROV" != gemini ]; then   # the memory links bin/setup makes, inside the provider's config dir
   plink() { local m="$CD/projects/$(encode_path "$1")/memory"; mkdir -p "$2" "$(dirname "$m")"
     [ -L "$m" ] && [ "$(readlink "$m")" = "$2" ] && return 0
     if [ -d "$m" ] && [ ! -L "$m" ]; then mv "$m" "$m.bak-$(date -u +%Y%m%dT%H%M%SZ)"; fi
@@ -268,8 +300,8 @@ fi
 # the launcher registers the session in $(state_dir)/sessions/<name>.<launcher pid> (name = --name N, else the folder name) while it runs (bin/sessions lists them);
 # parent = the Claude session that ran bin/work ($CLAUDE_PID), so an orchestrator can list its own children
 SD="$(state_dir)/sessions"
-reg=$(printf 'R=%q.$$\nmkdir -p %q && printf '"'"'name=%%s\\nfolder=%%s\\nlauncher=%%s\\nparent=%%s\\nstarted=%%s\\ncwd=%%s\\nrole=%%s\\n'"'"' %q %q "$$" %q "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" %q %q > "$R"' \
-  "$SD/${RNAME:-${F##*/}}" "$SD" "${RNAME:-${F##*/}}" "$F" "${CLAUDE_PID:--}" "$dir" "${ROLE:--}")
+reg=$(printf 'R=%q.$$\nmkdir -p %q && printf '"'"'name=%%s\\nfolder=%%s\\nlauncher=%%s\\nparent=%%s\\nstarted=%%s\\ncwd=%%s\\nrole=%%s\\nengine=%%s\\n'"'"' %q %q "$$" %q "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" %q %q %q > "$R"' \
+  "$SD/${RNAME:-${F##*/}}" "$SD" "${RNAME:-${F##*/}}" "$F" "${CLAUDE_PID:--}" "$dir" "${ROLE:--}" "$(engine_of "$PROV")")
 # an Anthropic session's subagent default ($SUBM, checked above) is exported by the launcher, so a value its own shell has
 # still wins; a provider session never sets it (.ade/context/providers.md)
 sub=""; [ "$PROV" = anthropic ] && sub="export CLAUDE_CODE_SUBAGENT_MODEL=\"\${CLAUDE_CODE_SUBAGENT_MODEL:-$SUBM}\""$'\n'
@@ -278,7 +310,8 @@ sub=""; [ "$PROV" = anthropic ] && sub="export CLAUDE_CODE_SUBAGENT_MODEL=\"\${C
 if [ "$PROV" = anthropic ]; then
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then sub="${sub}export CLAUDE_CONFIG_DIR=$(sq "$CLAUDE_CONFIG_DIR")"$'\n'; else sub="${sub}unset CLAUDE_CONFIG_DIR"$'\n'; fi
 fi
-# the token limits (checked above), for every provider
+# the token limits (checked above), for every provider behind Claude Code
+[ "$PROV" = gemini ] && CWIN=0 BMAX=0
 [ "$CWIN" = 0 ] || sub="${sub}export CLAUDE_CODE_AUTO_COMPACT_WINDOW=\"\${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-$CWIN}\""$'\n'
 [ "$BMAX" = 0 ] || sub="${sub}export BASH_MAX_OUTPUT_LENGTH=\"\${BASH_MAX_OUTPUT_LENGTH:-$BMAX}\""$'\n'
 # a terminal can carry the session variables of a Claude session that has exited (ADE hands them to every sub-terminal):
