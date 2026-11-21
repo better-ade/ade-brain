@@ -113,3 +113,4 @@
   reached: exit 1, retried. After a rotation the cursor's old log (`events.jsonl.1`, same inode) is read from the
   cursor first, then the new log.
 - **Forward lock:** a lock with no pid yet is live for 10 s (its folder's mtime), then taken over.
+- **test and logs (story H1):** `bin/chat test [channel]` and `bin/chat logs [-n N]`; see `.ade/context/hub-interface.md`.
