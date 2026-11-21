@@ -67,7 +67,8 @@ same table, never a copy. Findings: `engines.md`. Decision and terms: `decisions
   `bin/agent --live-test` through `apiKeyHelper` only, never an environment variable, and by role runs only with
   `HUB_AGENT_ANTHROPIC_KEY=1` in `hub.conf`; otherwise the Claude login; ADR 0002), `deepseek`, `glm`, `muse`
   (`meta-model-api-key`), `gemini` (`gemini-api-key`), `telegram` (`telegram-bot-token`, the bot for `bin/chat`, .ade/context/chat.md), with stored or missing and what the tool still needs for `bin/agent`. Never a value. `key_tools`, `key_secret` and
-  `key_source` are in `bin/lib.sh`; `muse` and `gemini` have no provider row, so they show "not connected yet".
+  `key_source` are in `bin/lib.sh`; `muse` has no provider row, so it shows "not connected yet"; `gemini` is the Gemini CLI
+  engine (story E1) and shows what it still needs (a sign-in counts as well as a key).
 - `bin/keys set <tool>` reads the key from a hidden prompt or stdin through `bin/secret --set`; `bin/keys forget <tool>` removes
   it. Exit 2 for an unknown tool or extra argument, so a key on the command line is refused. Storing a key enables nothing.
 - `bin/secret --set` passes the value to `security -i` on stdin, never as an argument, and reads it back to confirm; a failed store exits 1.
@@ -92,3 +93,27 @@ same table, never a copy. Findings: `engines.md`. Decision and terms: `decisions
   `projects/<encode_path hub>/memory -> <hub>/memory`, `projects/<encode_path dir>/memory -> <hub>/<F>/memory`.
 - Agents: front matter `provider:` absent or equal stays in `--agents`; another provider is left out, with
   `work: delegatable (not in --agents): <name> (provider <p>)` on stderr.
+
+## The Gemini CLI engine (story E1)
+- Engine table in `bin/lib.sh`: `engines` (`claude gemini`), `engine_of <provider>` (`gemini` for `gemini`, else
+  `claude`), `gemini_cmd`, `gemini_model_ok` (`gemini-*`), `gemini_home <google|key>` (`<hub>/.local/engines/gemini-<auth>`,
+  the CLI's `GEMINI_CLI_HOME`), `gemini_scrub_vars` (set empty), `gemini_unset_vars`, `gemini_yolo_refusal <args>`,
+  `gemini_checkout_refusal <dir>`, `gemini_admin_policy_dir`, `gemini_system_refusal`, `gemini_auth [has|read]` (`google` |
+  `key`, exit 1 none), `gemini_auth_hint`, `gemini_settings_write <home> <auth>`, `gemini_policy_write <file> <focus|agent>`.
+- `provider_field gemini`: `secret` `gemini-api-key`, `label`, `owner_only` 1 (no `base_url`: not behind Claude Code).
+  `provider_feature_go gemini`: `focus` and `delegation` go; `agents`, `effort`, `remote` no.
+- `hub.conf`: `HUB_GEMINI_CLIENT_APPROVED=1` opens gemini to a client hub (unset before `hub.conf` is sourced, so never
+  from the environment). `HUB_PROVIDERS_ALLOWED` must list `gemini`.
+- Role entries `gemini:<model>`; `candidate_refusal` checks allowlist, `provider_hub_refusal`, own hub, the go, the model,
+  the CLI installed, `gemini_system_refusal`, the checkout's `.gemini/` (with a dir), then a sign-in (`gemini_auth`).
+  `bin/roles` appends `  (engine gemini)`. `bin/work --role` prints each skipped candidate as `work: skipped <c>: <why>`.
+- `bin/gemini-run --auth google|key --mode focus|agent [gemini args]` (run in the checkout): re-checks the allowlist,
+  client approval, own hub, yolo, the checkout and the machine's admin policies (exit 2); writes the user layer and
+  `<home>/hub-policy-<mode>.toml`; sets `gemini_scrub_vars` empty, unsets `gemini_unset_vars`, pins `GEMINI_CLI_HOME`; runs
+  `gemini --admin-policy <policy> [--skip-trust (agent)] <args>`, with `key` reading `gemini-api-key` once into
+  `GEMINI_API_KEY` (exit 1 when missing or empty; the google login missing in its home: exit 1).
+- Focus command: `cd '<dir>' && AGENT_FOLDER='<F>' '<hub>/bin/gemini-run' --auth <a> --mode focus -m <model>
+  --approval-mode <default|auto_edit|plan> [-i <prompt>]`. Session entry `engine=gemini`; `bin/sessions` prints ENGINE
+  as the last column, after LAST (`claude` for older entries).
+- `bin/agent`: `bin/gemini-run --auth <a> --mode agent -p "<instruction>" -m <model> -o text -e none
+  --allowed-mcp-server-names none --approval-mode default`.

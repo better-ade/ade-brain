@@ -19,7 +19,8 @@ The hub side of ade-cli's `.ade/context/hub-interface.md` (`ade setup`, A5; `ade
 - Output: the engine's stdout (first 4 KB, keys hidden). Exit 0 only when the whole output (at most 4 KB, strict
   UTF-8) trimmed of whitespace is exactly `READY`. Exit 1 otherwise, the last line `agent: live test of <p>:<m> failed:
   <why>; details: <err file>`, where `<why>` is a refusal, `the output is not exactly READY; it said: <last line>` or
-  the engine failure plus its last line (keys hidden). `gemini` (no engine until E1) and `muse` (no provider row) exit 1.
+  the engine failure plus its last line (keys hidden). `gemini` (the live test does not run E1's Gemini CLI engine yet;
+  a `gemini:<model>` role entry does) and `muse` (no provider row) exit 1.
   Exit 2: usage, a bad id, model or folder, or a stored Anthropic key that cannot be read or is empty.
 - Hidden (`agent.py --redact`, which `redact` in `bin/lib.sh` runs): escape sequences and control characters (except
   tab and newline) are removed first, then `[0-9]{6,12}:[A-Za-z0-9_-]{30,}` (bot token), `[A-Za-z0-9]{16,}\.[A-Za-z0-9_-]{8,}`

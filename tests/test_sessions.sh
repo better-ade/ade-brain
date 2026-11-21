@@ -41,12 +41,12 @@ f=$(CLAUDE_PID=777 CLAUDE_CONFIG_DIR=/keep/me WORK_NO_OPEN=1 bin/work --force --
 PATH="$S:$PATH" CLAUDE_PID=5 CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_MESSAGING_SOCKET=/tmp/dead.sock CLAUDE_CODE_MESSAGING_TOKEN=tok CLAUDE_CODE_SESSION_ID=old CLAUDE_CODE_BRIDGE_SESSION_ID=old CLAUDE_CODE_SESSION_ATTENDED=1 CLAUDE_CODE_ENTRYPOINT=cli CLAUDECODE=1 CLAUDE_CONFIG_DIR=/login/shell bash "$f" & lp=$!
 wait_for '[ -e "$ST/s1" ]' || fail "prompt hook ran"
 out=$(bin/sessions); echo "$out" | head -1 | grep -q "STATUS  *LAST" || fail "header has STATUS and LAST: $out"
-echo "$out" | grep -q "^demo .* busy  *20[0-9-]*T[0-9:]*Z$" || fail "busy after a prompt: $out"
+echo "$out" | grep -q "^demo .* busy  *20[0-9-]*T[0-9:]*Z  *claude$" || fail "busy after a prompt (ENGINE last, story E1): $out"
 grep -qE '^CLAUDE_(PID|CODE_CHILD_SESSION|CODE_MESSAGING_SOCKET|CODE_MESSAGING_TOKEN|CODE_SESSION_ID|CODE_BRIDGE_SESSION_ID|CODE_SESSION_ATTENDED|CODE_ENTRYPOINT)=|^CLAUDECODE=' "$ST/env.txt" && fail "inherited session variables dropped: $(cut -d= -f1 "$ST/env.txt" | tr '\n' ' ')"
 grep -q '^CLAUDE_CONFIG_DIR=/keep/me$' "$ST/env.txt" || fail "the caller's CLAUDE_CONFIG_DIR kept, not the terminal's: $(grep CONFIG "$ST/env.txt")"
 bin/sessions --parent 777 | grep -q "^demo " || fail "parent still the caller after a status write"
 touch "$ST/go"; wait_for '[ -e "$ST/s2" ]' || fail "stop hook ran"
-bin/sessions | grep -q "^demo .* idle  *20[0-9-]*T[0-9:]*Z$" || fail "idle after stop: $(bin/sessions)"
+bin/sessions | grep -q "^demo .* idle  *20[0-9-]*T[0-9:]*Z  *claude$" || fail "idle after stop: $(bin/sessions)"
 [ -z "$(ls -A "$ST/sessions" | grep -v "^demo\.$lp$")" ] || fail "no stray files in the registry: $(ls -A "$ST/sessions")"
 # negative: a hook outside any focus session (the hub root, a plain terminal) changes no entry and adds none
 before=$(cat "$ST/sessions/demo.$lp"); bin/changes projects/demo </dev/null >/dev/null 2>&1; bin/stop-check projects/demo </dev/null >/dev/null 2>&1
@@ -56,7 +56,7 @@ kill "$(pgrep -P "$lp" | head -1)"; wait "$lp" 2>/dev/null
 # an entry with no status yet (no prompt so far) shows - -
 f=$(launch); PATH="$S:$PATH" bash "$f" & lp=$!
 wait_for '[ -f "$ST/sessions/demo.$lp" ]' || fail "registered (no status)"
-bin/sessions | grep -q "^demo .* -  *-$" || fail "no status shows as - -: $(bin/sessions)"
+bin/sessions | grep -q "^demo .* -  *-  *claude$" || fail "no status shows as - -: $(bin/sessions)"
 kill "$(pgrep -P "$lp" | head -1)"; wait "$lp" 2>/dev/null
 # negatives: a dead launcher (killed hard) is pruned; bad arguments; --mine outside a Claude session
 mkdir -p "$ST/sessions"; printf 'name=ghost\nfolder=projects/ghost\nlauncher=999999\nparent=1\nstarted=x\n' > "$ST/sessions/ghost.999999"

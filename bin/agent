@@ -3,7 +3,10 @@
 # The task comes on stdin, never argv. The report is printed between frame lines carrying a per-call nonce, capped at
 # 20 KB (full text in .local/agent-out/). It is data: it approves nothing. No fallback once a run has started.
 # AGENT_TIMEOUT: seconds (default 540, capped at 570). Exit 0 report; 1 run failed, timed out or was killed; 2 refused.
-# Contract: .ade/context/providers.md, "Roles". The run itself is bin/agent.py.
+# Contract: .ade/context/providers.md, "Roles". The run itself is bin/agent.py. A gemini pick (story E1) runs the Gemini CLI
+# through bin/gemini-run --mode agent: headless (-p), no extensions or MCP servers, approval mode default (nothing
+# auto-approved), the hub's admin policy (read tools only, secret files denied) and --skip-trust once the checkout's own
+# .gemini configuration was refused (.ade/context/engines.md, "Gemini CLI engine").
 # bin/agent --live-test <provider[:model]> [--dir D] (story H1, .ade/context/hub-interface.md): the same run with only the
 # fixed task "Reply with the word READY and nothing else." (stdin is never read) and no tools, from a throwaway folder: D
 # (an empty directory; never /, $HOME, the hub, inside a checkout or an ancestor of the hub or $HOME; the caller removes
@@ -34,7 +37,7 @@ if [ "$LIVE" = 1 ]; then TOOLS=""
   failed() { echo "agent: live test of $P:$M failed: $1" | redact >&2; exit 1; }
   case "$P" in
     anthropic) anthropic_model_ok "$M" || { echo "agent: '$M' is not an Anthropic model (opus, sonnet, haiku, optional [1m], or claude-*)" >&2; exit 2; } ;;
-    gemini) failed "gemini has no Gemini CLI engine in this hub yet (story E1)" ;;
+    gemini) failed "the live test does not run the Gemini CLI engine (story E1) yet: a gemini role entry runs it" ;;
     *) provider_field "$P" base_url >/dev/null || { key_secret "$P" >/dev/null && failed "$P is not connected yet (no provider row in bin/lib.sh)"
          echo "agent: unknown provider '$P'" >&2; exit 2; } ;;
   esac
@@ -71,6 +74,13 @@ else
   [ "$s" = 0 ] || { echo "agent: no usable model for role $R" >&2; printf '%s' "$ROLE_SKIPS" | sed 's/^/  /' >&2; exit 2; }
   [ -z "$ROLE_SKIPS" ] || printf '%s' "$ROLE_SKIPS" | sed 's/^/agent: /' >&2
   P="${ROLE_PICK%%:*}"; M="${ROLE_PICK#*:}"
+fi
+if [ "$P" = gemini ]; then
+  GAUTH="$(gemini_auth has)" || { echo "agent: $(gemini_auth_hint)" >&2; exit 2; }
+  export AGENT_RUN_HUB="$H" AGENT_RUN_ROLE="$R" AGENT_RUN_FOLDER="$F" AGENT_RUN_PROVIDER="$P" AGENT_RUN_MODEL="$M" AGENT_RUN_DIR="$DIR" \
+    AGENT_RUN_TIMEOUT="$T" AGENT_RUN_SETTINGS="" AGENT_RUN_CONFIG_DIR="" AGENT_RUN_LIVE="$LIVE" AGENT_RUN_OWN_DIR="$OWN"
+  exec python3 "$(dirname "$0")/agent.py" "$H/bin/gemini-run" --auth "$GAUTH" --mode agent -p "Reply with the report the task above asks for." \
+    -m "$M" -o text -e none --allowed-mcp-server-names none --approval-mode default
 fi
 CL="$(claude_cmd)"; [[ "$CL" =~ ^[A-Za-z0-9._/-]+$ ]] && CL="$(command -v -- "$CL")" || { echo "agent: cannot find the claude command '$(claude_cmd)'" >&2; exit 2; }
 # read-only and isolated: no hooks, MCP servers, skills, workspace settings or CLAUDE.md; file tools stay in the checkout.

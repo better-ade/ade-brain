@@ -86,6 +86,25 @@ Owner-approved plan, 2026-11-18 (role-based model routing):
 - Consequence: an owner who signs in with a key and wants delegated runs billed to it opts in once in `hub.conf`; the
   live test can pass on the key while role runs still use the login. Contract: `.ade/context/hub-interface.md`.
 
-## Engines (S2a)
+## Engines (E1, 2026-11-21)
 
-Not written yet; S2a appends it here.
+Owner's decisions, 2026-11-21: builders and focus agents may use DeepSeek, GLM and Muse through Claude Code, and
+**Gemini through the Gemini CLI**; the orchestrator stays on Claude Code; GPT/Codex stays paused.
+
+- **Decision.** An engine is the CLI a role entry runs in: `claude` (Claude Code, every provider with a base URL) or
+  `gemini` (the Gemini CLI). `gemini:<model>` entries run through `bin/gemini-run`, which re-checks every gate and gives
+  the CLI a hub-owned home (`GEMINI_CLI_HOME`) with the hub's user settings (yolo disabled, environment redaction on,
+  project `.env` files ignored, no discovery commands, hooks or MCP servers, the rules read from
+  `AGENTS.md`/`CLAUDE.md`/`GEMINI.md`) and an `--admin-policy` (secret files denied; a delegated run gets the read tools
+  only). The checkout's own `.gemini/` configuration is refused. Not the system-settings slot: the CLI ignores a file
+  there unless root owns it. Yolo is refused in any spelling, as `--dangerously-skip-permissions` is. Verified with the
+  real CLI 0.67.0 offline (`tests/test_gemini_real.sh`).
+- **Sign-in.** The CLI's own Google login, else a key stored with `bin/keys set gemini`. The CLI takes a key only from its
+  environment, so the key is given to that one process (never argv or a file); its tools' children rely on the CLI's
+  best-effort redaction (residual risk, `engines.md`).
+- **Data sharing.** Google's unpaid API terms (and the free login's) allow using prompts to improve its products, so
+  Gemini is owner-only by default, like DeepSeek; a client hub uses it only with `HUB_GEMINI_CLIENT_APPROVED=1` in
+  `hub.conf`, set when that client approved it, and only when `HUB_PROVIDERS_ALLOWED` lists `gemini`.
+- **Consequences.** A Gemini session has no Claude Code hooks (no C6 events), plugins, BMAD skills, `--agents`, Telegram
+  channel or Remote Control. The reviewer stays on Claude Code and the verification command still decides Done. Details:
+  `.ade/context/engines.md`, "Gemini CLI engine".
