@@ -489,7 +489,7 @@ bot_send_token_on_stdin_only() {
   # the stand-in never outlives the check: it ends itself after 60 s (SIGALRM), holds none of the test's output and is
   # killed when the check exits, passed or failed (CI has no terminal: a server left running held run.sh for hours)
   cat > "$SRV/api.py" <<'PYS'
-import faulthandler, http.server, json, os, signal, sys
+import faulthandler, http.server, json, os, signal, socketserver, sys
 signal.alarm(int(os.environ.get("FAKE_API_TTL") or 60)); faulthandler.dump_traceback_later(8)   # a slow start shows where
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -497,7 +497,9 @@ class H(http.server.BaseHTTPRequestHandler):
         open(sys.argv[2], "a").write(self.path + " " + b.decode() + "\n")
         self.send_response(200); self.end_headers(); self.wfile.write(b'{"ok":true}')
     def log_message(self, *a): pass
-s = http.server.HTTPServer(("127.0.0.1", 0), H); open(sys.argv[1], "w").write(str(s.server_address[1])); s.serve_forever()
+# a plain TCPServer: HTTPServer's bind looks up the host's FQDN (socket.getfqdn), which stalled for over 10 s on the
+# macOS CI runner (CI run 44954682648)
+s = socketserver.TCPServer(("127.0.0.1", 0), H); open(sys.argv[1], "w").write(str(s.server_address[1])); s.serve_forever()
 PYS
   python3 "$SRV/api.py" "$SRV/port" "$SRV/req" </dev/null >/dev/null 2>"$SRV/err" & srv=$!; trap 'kill "$srv" 2>/dev/null' EXIT
   wait_for "[ -s '$SRV/port' ]" || fail "the stand-in API did not start [$(tail -n 5 "$SRV/err")]"; [ -z "${FAKE_API_HOLD:-}" ] || sleep "$FAKE_API_HOLD" >/dev/null 2>&1
