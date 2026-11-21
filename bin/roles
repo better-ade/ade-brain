@@ -7,7 +7,8 @@ rc=0
 for r in $(roles); do
   role_pick "$r"; s=$?
   case "$s" in 0) c="$ROLE_PICK" ;; 1) c="(none usable)" ;; *) c="(bad table entry)"; rc=2 ;; esac
-  printf '%-10s %s\n' "$r" "$c"
+  e=""; [ "$s" != 0 ] || [ "$(engine_of "${c%%:*}")" = claude ] || e="  (engine $(engine_of "${c%%:*}"))"
+  printf '%-10s %s%s\n' "$r" "$c" "$e"
   [ -z "$ROLE_SKIPS" ] || printf '%s' "$ROLE_SKIPS" | sed 's/^/  /'
 done
 exit "$rc"
