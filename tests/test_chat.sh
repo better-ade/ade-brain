@@ -489,8 +489,8 @@ bot_send_token_on_stdin_only() {
   # the stand-in never outlives the check: it ends itself after 60 s (SIGALRM), holds none of the test's output and is
   # killed when the check exits, passed or failed (CI has no terminal: a server left running held run.sh for hours)
   cat > "$SRV/api.py" <<'PYS'
-import http.server, json, os, signal, sys
-signal.alarm(int(os.environ.get("FAKE_API_TTL") or 60))
+import faulthandler, http.server, json, os, signal, sys
+signal.alarm(int(os.environ.get("FAKE_API_TTL") or 60)); faulthandler.dump_traceback_later(8)   # a slow start shows where
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0)); b = self.rfile.read(n)
@@ -499,8 +499,8 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 s = http.server.HTTPServer(("127.0.0.1", 0), H); open(sys.argv[1], "w").write(str(s.server_address[1])); s.serve_forever()
 PYS
-  python3 "$SRV/api.py" "$SRV/port" "$SRV/req" </dev/null >/dev/null 2>&1 & srv=$!; trap 'kill "$srv" 2>/dev/null' EXIT
-  wait_for "[ -s '$SRV/port' ]" || fail "the stand-in API did not start"; [ -z "${FAKE_API_HOLD:-}" ] || sleep "$FAKE_API_HOLD" >/dev/null 2>&1
+  python3 "$SRV/api.py" "$SRV/port" "$SRV/req" </dev/null >/dev/null 2>"$SRV/err" & srv=$!; trap 'kill "$srv" 2>/dev/null' EXIT
+  wait_for "[ -s '$SRV/port' ]" || fail "the stand-in API did not start [$(tail -n 5 "$SRV/err")]"; [ -z "${FAKE_API_HOLD:-}" ] || sleep "$FAKE_API_HOLD" >/dev/null 2>&1
   ev --auto --from projects/api --to main --kind idle --text "via the bot"
   AGENT_TELEGRAM_API="http://127.0.0.1:$(cat "$SRV/port")" bin/chat forward >"$FAKE/out" 2>&1 || fail "forward through the bot [$(cat "$FAKE/out")]"
   kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null; trap - EXIT
