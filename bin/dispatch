@@ -16,19 +16,37 @@
 # other character turned into -. Each run that gets as far as the ticket list writes one journal line (bin/journal) with what
 # started and what waits, unless nothing started and the line equals the folder's last dispatch line today.
 # Exit: 0 done (also when nothing was ready), 1 refused or a bin/work start failed, 2 usage.
+# bin/dispatch --list [folder] (story H1, .ade/context/hub-interface.md): read-only. One `<ready|waiting|running><TAB><ref>
+# <TAB><folder>` line per ticket of the folder, or of every folder with one BMAD checkout (others are skipped): ready =
+# would start when a slot is free, waiting = needs the owner (--approve), running = its session or a recent start marker
+# runs (a ready_to_start or in_progress ticket). No lock, no start, no marker removed, no journal line. Exit 0 listed;
+# 1 a named folder has no BMAD checkout, or tickets next or bin/sessions failed; 2 usage. (--list-one is internal.)
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; B="$(cd "$(dirname "$0")" && pwd)"
-USAGE="usage: bin/dispatch [--approve <ref>] <folder>"
-APPROVE=""
+USAGE="usage: bin/dispatch [--approve <ref>] <folder> | bin/dispatch --list [folder]"
+APPROVE=""; LIST=0
+case "${1:-}" in
+  --list) [ $# -le 2 ] || { echo "$USAGE" >&2; exit 2; }
+    if [ $# -eq 2 ]; then folders | grep -qxF -- "${2%/}" || { echo "dispatch: no folder '$2' (projects/<name> or ops/<name>)" >&2; exit 2; }
+      "$B/dispatch" --list-one "${2%/}"; s=$?; [ "$s" != 3 ] || s=1; exit "$s"; fi
+    # every folder: one without a BMAD checkout (exit 3) is skipped quietly; any other failure is shown and exits 1
+    rc=0; E="$(mktemp)"; trap 'rm -f "$E"' EXIT
+    for f in $(folders); do "$B/dispatch" --list-one "$f" 2>"$E"; s=$?; case "$s" in 0|3) ;; *) cat "$E" >&2; rc=1 ;; esac; done
+    exit "$rc" ;;
+  --list-one) [ $# -eq 2 ] || { echo "$USAGE" >&2; exit 2; }; LIST=1; shift ;;
+esac
+# a folder that cannot be dispatched: refused (1), or skipped by a listing (3)
+XS=1; [ "$LIST" = 0 ] || XS=3
 if [ "${1:-}" = --approve ]; then [ $# -ge 2 ] && [ -n "$2" ] || { echo "$USAGE" >&2; exit 2; }; APPROVE="$2"; shift 2; fi
 [ $# -eq 1 ] || { echo "$USAGE" >&2; exit 2; }
 F="${1%/}"
 folders | grep -qxF -- "$F" || { echo "dispatch: no folder '$F' (projects/<name> or ops/<name>)" >&2; exit 2; }
 MAX="${HUB_DISPATCH_MAX:-1}"
-[[ "$MAX" =~ ^[0-9]+$ ]] || { echo "dispatch: HUB_DISPATCH_MAX must be a whole number (got '$MAX')" >&2; exit 2; }
-[ "$MAX" -le 2 ] || MAX=2
+[ "$LIST" = 1 ] || [[ "$MAX" =~ ^[0-9]+$ ]] || { echo "dispatch: HUB_DISPATCH_MAX must be a whole number (got '$MAX')" >&2; exit 2; }
+[[ "$MAX" =~ ^[0-9]+$ ]] && [ "$MAX" -le 2 ] || MAX=2
 SD="$(state_dir)"; LK="$SD/dispatch.lock"; MK="$SD/dispatch"; MINE=0
-mkdir -p "$MK" || { echo "dispatch: cannot write $MK; nothing started" >&2; exit 1; }
 T="$(mktemp)"; trap 'rm -f "$T"; [ "$MINE" = 0 ] || rm -rf "$LK"' EXIT
+if [ "$LIST" = 0 ]; then
+mkdir -p "$MK" || { echo "dispatch: cannot write $MK; nothing started" >&2; exit 1; }
 # one run at a time; a lock whose pid no longer runs is taken over, any other (or one without a pid yet) refuses
 if ! mkdir "$LK" 2>/dev/null; then
   p="$(cat "$LK/pid" 2>/dev/null)"
@@ -36,6 +54,7 @@ if ! mkdir "$LK" 2>/dev/null; then
     { echo "dispatch: another dispatch run holds $LK (pid ${p:-unknown}); nothing started (remove it if no dispatch runs)" >&2; exit 1; }
 fi
 MINE=1; echo $$ > "$LK/pid"
+fi
 
 # the checkout: exactly one Code repo (the one bin/work opens by default) with an existing checkout
 A="$H/$F/ACCESS.md"
@@ -43,9 +62,9 @@ nrows=$(awk -F'|' '/^## /{c=($0=="## Code")} /^\|/{n=$2; k=$3; gsub(/^[ \t]+|[ \
   if((c || k ~ /^[\/~]/) && n!="" && n!="Repo" && n !~ /^-+$/ && n !~ /^\(/) print n}' "$A" 2>/dev/null | grep -c .)
 CK="$(repos_of "$F")"
 [ "$nrows" -eq 1 ] && [ -n "$CK" ] && [ "$(printf '%s\n' "$CK" | grep -c .)" -eq 1 ] ||
-  { echo "dispatch: $F needs exactly one Code repo with an existing checkout in ACCESS.md (repos: $nrows); nothing started" >&2; exit 1; }
+  { echo "dispatch: $F needs exactly one Code repo with an existing checkout in ACCESS.md (repos: $nrows); nothing started" >&2; exit "$XS"; }
 RT="$CK/_bmad/ade-runtime.mjs"
-[ -f "$RT" ] || { echo "dispatch: no BMAD in $CK ($RT missing); nothing started" >&2; exit 1; }
+[ -f "$RT" ] || { echo "dispatch: no BMAD in $CK ($RT missing); nothing started" >&2; exit "$XS"; }
 command -v node >/dev/null 2>&1 || { echo "dispatch: node not found; nothing started" >&2; exit 1; }
 
 if ! J=$(node "$RT" tickets --project-root "$CK" next 2>"$T"); then
@@ -83,7 +102,7 @@ LISTED=$(printf '%s\n' "$SESS" | awk 'NR>1 && $1!="" {print $1, $2}')
 now=$(date +%s); RECENT=""
 for m in "$MK"/*; do
   [ -f "$m" ] || continue; read -r at mf < "$m" || true
-  if [[ "${at:-}" =~ ^[0-9]+$ ]] && [ $((now - at)) -lt 120 ] && [ -n "${mf:-}" ]; then RECENT="$RECENT${m##*/} $mf"$'\n'; else rm -f "$m"; fi
+  if [[ "${at:-}" =~ ^[0-9]+$ ]] && [ $((now - at)) -lt 120 ] && [ -n "${mf:-}" ]; then RECENT="$RECENT${m##*/} $mf"$'\n'; elif [ "$LIST" = 0 ]; then rm -f "$m"; fi
 done
 runs() { printf '%s\n%s\n' "$LISTED" "$RECENT" | grep -qxF -- "$1 $F"; }
 used=$(printf '%s\n' "$SESS" | awk 'NR>1 && $6=="builder"' | grep -c .)
@@ -133,6 +152,21 @@ last_line() {
 }
 join() { local IFS=,; [ $# -gt 0 ] && echo "$*" | sed 's/,/, /g' || echo none; }
 
+if [ "$LIST" = 1 ]; then   # read-only: a line per ticket, nothing started or written
+  while IFS="$(printf '\t')" read -r k ref risk hitl id hasfile; do
+    case "$k" in
+      R) if runs "$(name_of "$ref")"; then st=running
+         else st=ready; [ "$hitl" != 1 ] || st=waiting
+           if [ "$st" = ready ] && [ "${hasfile:-0}" = 1 ] && { [ "$risk" = low ] || [ "$risk" = medium ]; }; then risk="$(risk_of "$ref" "$risk" "${id:--}")"; fi
+           case "$risk" in low|medium) ;; *) st=waiting ;; esac
+         fi ;;
+      O) [ "$risk" = in_progress ] && runs "$(name_of "$ref")" || continue; st=running ;;   # an O row's third field is its group
+      *) continue ;;
+    esac
+    printf '%s\t%s\t%s\n' "$st" "$ref" "$F"
+  done <<< "$rows"
+  exit 0
+fi
 if [ -n "$APPROVE" ]; then
   line=$(printf '%s\n' "$rows" | awk -F'\t' -v r="$APPROVE" '$2==r {print; exit}')
   case "$line" in

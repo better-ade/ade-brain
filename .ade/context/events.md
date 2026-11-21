@@ -48,3 +48,5 @@ How focus sessions and the main session notify each other. Code: `bin/events.py`
   `.claude/settings.json` (PostToolUse `bin/inbox`, Stop `bin/stop-check`). `bin/doctor` warns `settings <folder>`
   for each hook event the template has and a folder's settings lack; `bin/new --settings <folder>` re-renders only
   that file, keeping the old one as `settings.json.bak`.
+- **Count (story H1):** `bin/inbox --count [main|folder|name]` reads `$(state_dir)/events-read/<main|folder>` (written
+  by every delivery) and writes nothing; details in `.ade/context/hub-interface.md`.

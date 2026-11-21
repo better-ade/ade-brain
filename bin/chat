@@ -9,13 +9,20 @@
 #   status  running or stopped, since when, whether the channel connected, and each channel's policy and group count
 #           (never ids or the token)
 #   setup   the one-time steps: bot, token, plugin, pairing, allowlist, a test message
+#   test    (story H1) one test message to the paired owner (access.json allowFrom, exactly one id) through the Bot API, then
+#           wait for the owner's reply up to AGENT_CHAT_TEST_TIMEOUT s (default 120, at most 600): exit 0 replied, 1 not.
+#           Refused while the orchestrator runs, its launchd job is loaded or another bin/chat holds the chat lock (held
+#           for the test). A peek (getUpdates, no offset, confirms nothing) comes first: pending messages for the bot, or a
+#           failed peek, exit 1 and nothing is sent or consumed. The token goes to `curl -q` in a config on stdin, never an
+#           argument or the environment; SSLKEYLOGFILE is cleared.
+#   logs    (story H1) the last N (-n, default 50) lines of <state dir>/logs/chat.log, key-shaped strings and tokens hidden
 # Never skips permissions: dangerously/bypassPermissions in an argument, a HUB setting or the claude wrapper exits 2.
 # Each channel's token goes from the Keychain (bin/secret) into a 0600 .env in that channel's own state folder, which a
 # watcher deletes once the plugin has read it (it writes bot.pid), or after 60 s. Never the environment, argv or log.
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; S="$(state_dir)"; PIDF="$S/chat/chat.pid"; LOCK="$S/chat/lock"
 LA="${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}"; LABEL="ai.agent-hub.$(hub_name).chat"
 NAME="${HUB_ORCHESTRATOR:-$(hub_name)}"
-usage() { echo "usage: bin/chat start | stop | status | setup [channel] (channels: $(channel_types))" >&2; exit 2; }
+usage() { echo "usage: bin/chat start | stop | status | setup [channel] | test [channel] | logs [-n N] (channels: $(channel_types))" >&2; exit 2; }
 CHANNELS="${HUB_CHANNELS-telegram}"
 check_channels() {
   [ -n "${CHANNELS// /}" ] || { echo "chat: HUB_CHANNELS is empty (known channel types: $(channel_types))" >&2; exit 2; }
@@ -129,5 +136,66 @@ Telegram for this hub's orchestrator ($(hub_name)); token: $st. Do these once, i
 This orchestrator's channel state stays in $(channel_dir "$c"), never in the shared ~/.claude/channels/$c.
 EOF
     ;;
+  logs) shift; n=50
+    if [ $# -gt 0 ]; then [ "$1" = -n ] && [ $# -eq 2 ] || usage; n="$2"; fi
+    [[ "$n" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$n" -le 10000 ] || { echo "chat: -n takes a number from 1 to 10000" >&2; exit 2; }
+    L="$S/logs/chat.log"; [ -f "$L" ] || exit 0
+    tail -n "$n" "$L" | redact ;;
+  test) [ $# -le 2 ] || usage; c="${2:-telegram}"
+    case " $(channel_types) " in *" $c "*) ;; *) echo "chat: unknown channel type (known channel types: $(channel_types))" >&2; exit 2 ;; esac
+    TO="${AGENT_CHAT_TEST_TIMEOUT:-120}"; [[ "$TO" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$TO" -le 600 ] || { echo "chat: AGENT_CHAT_TEST_TIMEOUT must be 1 to 600 seconds" >&2; exit 2; }
+    if p="$(running_pid)"; then echo "chat: the orchestrator runs (pid $p) and reads the bot's messages: bin/chat stop, then bin/chat test $c" >&2; exit 1; fi
+    # the launchd job would start the orchestrator (and its plugin would read the bot's updates) at any moment
+    if command -v launchctl >/dev/null 2>&1 && launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+      echo "chat: the chat job $LABEL is loaded: bin/chat stop, then bin/chat test $c" >&2; exit 1; fi
+    take_lock || { echo "chat: another bin/chat holds the lock $LOCK (pid $(cat "$LOCK/pid" 2>/dev/null)); try again when it is done" >&2; exit 1; }
+    trap '[ "$(cat "$LOCK/pid" 2>/dev/null)" != $$ ] || rm -rf "$LOCK"' EXIT
+    "$H/bin/secret" --has "$(channel_secret "$c")" 2>/dev/null || { echo "chat: no $c bot token in the Keychain: run bin/keys set $c" >&2; exit 1; }
+    OWNER_ID="$(python3 -I -c 'import json,re,sys
+a = json.load(open(sys.argv[1])).get("allowFrom")
+assert isinstance(a, list) and len(a) == 1 and re.fullmatch(r"-?[0-9]{1,20}", str(a[0]))
+print(a[0])' "$(channel_dir "$c")/access.json" 2>/dev/null)" || { echo "chat: $c is not paired with exactly one owner yet (bin/chat setup $c)" >&2; exit 1; }
+    command -v curl >/dev/null 2>&1 || { echo "chat: curl not found" >&2; exit 1; }
+    unset SSLKEYLOGFILE   # never a TLS key log of the token's requests
+    t="$("$H/bin/secret" "$(channel_secret "$c")" 2>/dev/null)"
+    [[ "$t" =~ ^[0-9]{6,12}:[A-Za-z0-9_-]{30,}$ ]] || { unset t; echo "chat: the stored $c bot token is not a bot token: run bin/keys set $c" >&2; exit 1; }
+    # api <method> <seconds> <config line>...: one Bot API call; the token is only in curl's config, on its stdin (printf
+    # is a builtin: no argument of any process carries it); -q first: no .curlrc
+    api() { local m="$1" s="$2" l; shift 2
+      { printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$t" "$m"; for l in "$@"; do printf '%s\n' "$l"; done; } | curl -q -s --max-time "$s" -K - 2>/dev/null; }
+    # updates <offset>: the API answer on stdin -> "<next offset> <1 when the owner wrote> <updates>", nothing when unreadable
+    updates() { python3 -I -c 'import json,sys
+d = json.loads(sys.stdin.read()); off = int(sys.argv[1]); found = 0
+assert d.get("ok") is True and isinstance(d.get("result"), list)
+for u in d["result"]:
+    i = u.get("update_id")
+    if isinstance(i, int) and not isinstance(i, bool): off = max(off, i + 1)
+    m = u.get("message") or {}
+    if isinstance(m, dict) and str((m.get("chat") or {}).get("id")) == sys.argv[2]: found = 1
+print(off, found, len(d["result"]))' "$1" "$OWNER_ID" 2>/dev/null; }
+    st=$(date +%s)
+    # peek: no offset confirms nothing, so the owner's queued messages stay for the orchestrator
+    r="$(api getUpdates 15 'data = "timeout=0"' | updates 0)"
+    [ -n "$r" ] || { unset t; echo "chat: could not read the bot's pending messages; nothing sent" >&2; exit 1; }
+    n="${r##* }"; [ "$n" = 0 ] || { unset t; echo "chat: the bot has $n unread message$([ "$n" = 1 ] || echo s); start the orchestrator first (bin/chat start) so it reads them, then bin/chat stop and bin/chat test $c" >&2; exit 1; }
+    off=0
+    msg="Test from the $(hub_name | tr -d '"\\') hub: reply to this message with anything within $TO seconds."
+    r="$(api sendMessage 15 "data = \"chat_id=$OWNER_ID\"" "data-urlencode = \"text=$msg\"")"
+    if ! printf '%s' "$r" | python3 -I -c 'import json,sys; sys.exit(0 if json.loads(sys.stdin.read()).get("ok") is True else 1)' 2>/dev/null; then
+      unset t; why="$(printf '%s' "$r" | python3 -I -c 'import json,sys; print(str(json.loads(sys.stdin.read()).get("description", ""))[:200])' 2>/dev/null)"
+      echo "chat: the test message was not sent: ${why:-no answer from the Bot API}" | redact >&2; exit 1
+    fi
+    echo "chat: sent a test message to the paired owner; waiting up to $TO s for a reply"
+    # the queue was empty at the peek, so everything from here on came after it; an offset is sent only once one is known
+    while :; do left=$(( st + TO - $(date +%s) )); [ "$left" -gt 0 ] || break
+      poll=$left; [ "$poll" -le 20 ] || poll=20
+      if [ "$off" -gt 0 ]; then r="$(api getUpdates $((poll + 10)) "data = \"offset=$off\"" "data = \"timeout=$poll\"" | updates "$off")"
+      else r="$(api getUpdates $((poll + 10)) "data = \"timeout=$poll\"" | updates 0)"; fi
+      # the reply: confirm what was read (the test reply is not left for the orchestrator), then done
+      case "$r" in *" 1 "*) api getUpdates 15 "data = \"offset=${r%% *}\"" 'data = "timeout=0"' >/dev/null; unset t
+          echo "chat: reply received from the paired owner"; exit 0 ;;
+        *" 0 "*) off="${r%% *}" ;; *) sleep 1 ;; esac
+    done
+    unset t; echo "chat: no reply within $TO s" >&2; exit 1 ;;
   *) usage ;;
 esac

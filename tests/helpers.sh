@@ -12,7 +12,7 @@ make_hub() {
   # nor a tester's ADE terminal or terminal choice: bin/work would open a real ADE sub-terminal (story W1)
   unset ADE_HOOK_BIN ADE_HOOK_PORT ADE_HOOK_TOKEN ADE_PTY_ID AGENT_TERMINAL
   HUB="$(mktemp -d)/hub"; mkdir -p "$HUB"
-  (cd "$REPO" && tar cf - --exclude ./repos --exclude ./.git --exclude ./hub.conf --exclude ./.local --exclude ./.superpowers .) | (cd "$HUB" && tar xf -)
+  (cd "$REPO" && tar cf - --exclude ./repos --exclude ./.git --exclude ./hub.conf --exclude ./.local --exclude ./.superpowers --exclude ./.claude/worktrees --exclude ./_bmad/render --exclude ./_bmad-output .) | (cd "$HUB" && tar xf -)
   rm -f "$HUB"/journal/[0-9]*.md   # test hubs start with an empty journal; the real journal/ is never touched
   git -C "$HUB" init -q && git -C "$HUB" config user.name t && git -C "$HUB" config user.email t@t
   CLAUDE_HOME="$(mktemp -d)"; export HUB CLAUDE_HOME

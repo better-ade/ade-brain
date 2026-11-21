@@ -7,6 +7,7 @@ calling folder's checkouts, one per line, from repos_of), AGENT_EVENTS_ROTATE (t
       exit 0 written, 2 refused (bad text, a secret, bad sender or target), 1 not written (the log is unusable)
   events.py hook-tool FOLDER   PostToolUse: record pushed/contract, then deliver (at most once per 60 s) as JSON
   events.py hook-stop FOLDER   Stop: block once on an unread note addressed to this session (exit 3), else idle event
+  events.py count OWN          (story H1) the number of unread events for main or a folder; writes nothing
 
 Event text is data: nothing here runs it, and every delivered line says so. Every call shares one deadline
 (start + 1.5 s) for reading stdin, each git call and waiting for the log's lock."""
@@ -17,6 +18,7 @@ ST = os.environ.get("ST", "")
 H = os.environ.get("H", "")
 LOG = os.path.join(ST, "events.jsonl")
 SEEN = os.path.join(ST, "events-seen")
+READ = os.path.join(ST, "events-read")   # <main|folder>: the read position of the folder's last delivery (story H1)
 MAXTEXT = 500
 INTERVAL = 60          # bin/inbox delivers at most once per this many seconds per session
 MAXLINES = 20          # delivered lines per call; the rest are counted
@@ -194,10 +196,17 @@ def _parse(data, base):
 def unread(sid, own):
     """([(position, event)] after this session's cursor, the new cursor). The first call (no cursor) returns the
     notes addressed to this session's folder (main: to main) from the last 24 h after its folder's last `ended`."""
+    return unread_at(cursor_path(sid), own)
+
+
+def read_path(own): return os.path.join(READ, own_name(own))
+
+
+def unread_at(cursor, own):
     st = os.stat(LOG) if os.path.lexists(LOG) else None
     if st is not None and not stat.S_ISREG(st.st_mode): raise OSError("not a file")
     ino, size = (st.st_ino, st.st_size) if st else (0, 0)
-    c = _pos(cursor_path(sid))
+    c = _pos(cursor)
     first = c is None
     off = 0 if first or c[0] != ino or c[1] > size else c[1]
     if size - off > 1 << 20: off = size - (1 << 20)   # a long backlog: only its last MB
@@ -217,7 +226,7 @@ def unread(sid, own):
 
 
 def save(p, cur):
-    os.makedirs(SEEN, mode=0o700, exist_ok=True)
+    os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
     tmp = p + ".new"
     with open(tmp, "w") as fh: fh.write("%d %d\n" % cur)
     os.replace(tmp, p)
@@ -264,6 +273,9 @@ def deliver(sid, own, rate_limited):
     evs, cur = unread(sid, own)
     mine = [e for _, e in evs if for_me(e, own, repos())]
     save_cursor(sid, cur)
+    try:   # what bin/inbox --count reads; a failure here never loses the delivery
+        if FROM_RE.match(own_name(own)): save(read_path(own), cur)
+    except Exception: pass
     if mine and rate_limited:
         with open(at, "w"): pass
     return lines(mine)
@@ -376,8 +388,17 @@ def hook_stop(own):
     return 3 if blocked else 0
 
 
+def count(own):
+    """unread events for main or a folder: after the folder's last delivery, else what its first delivery would show"""
+    evs, _ = unread_at(read_path(own), own)
+    return len([e for _, e in evs if for_me(e, own, repos())])
+
+
 def main(a):
     if not ST: return 1
+    if a[:1] == ["count"] and len(a) == 2 and FROM_RE.match(a[1]):
+        try: print(count("" if a[1] == "main" else a[1])); return 0
+        except Exception: print("inbox: the event log is unusable", file=sys.stderr); return 1
     if a[:1] == ["write"]:
         o = {"auto": False}; i = 1
         while i < len(a):

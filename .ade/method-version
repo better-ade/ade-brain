@@ -1,6 +1,8 @@
 # the method this hub runs, from ade-method (bin/method sync); bin/method check compares the files below
-ref v2.0.0
-commit 2590a793bae821845938f1b915a91c36de9824a1
-file e2793095ba7d19fcf8bc43c9687096bb3f8e30a4d44664a0963e0ef95dbfe213 .ade/rules.md
+ref v2.1.0
+commit 1dbf83a6ec79a89e1151396819cbb7456c751e90
+file 0501babf6771122b2b1675ca5545a56c62ac9fb4eb41e534866dc96f43afa389 .ade/rules.md
 file 6f527e0a3818fc93bbdfea258a6903e797b8912ef77c8eddd885b037edb2a770 _bmad/custom/bmad-build.toml
 file 277be3f45facb80285646f99a642bd7a5a9af4038c7f81d0608683b1f9543f2d _bmad/custom/bmad-code-review.toml
+file d14c52699a4099644fbb733d421c186f77da1e9649e67c1e3adcf910bb636e66 .github/pull_request_template.md
+file 23605dc00987f2ce6666c6ca1bc20d8cc854339afdd5347f4ee3f5b89cd98c0a .ade/commit-template.txt

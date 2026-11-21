@@ -1,4 +1,4 @@
 #!/bin/bash
 cd "$(dirname "$0")"; rc=0
-for t in test_*.sh; do if out=$(bash "$t" 2>&1) && [ "$(echo "$out" | tail -1)" = ok ]; then echo "ok    $t"; else echo "FAIL  $t"; echo "$out" | tail -5; rc=1; fi; done
+for t in test_*.sh; do T=$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX"); if out=$(TMPDIR="$T" bash "$t" 2>&1) && [ "$(echo "$out" | tail -1)" = ok ]; then echo "ok    $t"; else echo "FAIL  $t"; echo "$out" | tail -5; rc=1; fi; rm -rf "$T"; done
 exit $rc
