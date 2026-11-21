@@ -11,6 +11,7 @@ calling folder's checkouts, one per line, from repos_of), AGENT_EVENTS_ROTATE (t
                                the chat, one "<inode> <end>\t[<agent>] <kind>: <text>" line each (oldest first)
   events.py ack INODE END      bin/chat forward: that line was sent; the next outbox starts after it
   events.py latest             each folder's newest event to main, one "<folder>\t<kind>\t<text>" line (bin/chat agents)
+  events.py redact             stdin to stdout with every secret-pattern match replaced by [redacted] (bin/monitor)
   events.py repair [--check]   bin/recover (story R1): drop a torn last line (under the log's lock) and reset every
                                cursor past the log's end to its end; one line per repair (--check: changes nothing)
   events.py count OWN          (story H1) the number of unread events for main or a folder; writes nothing
@@ -536,6 +537,10 @@ def main(a):
     if a[:1] == ["outbox"]: return outbox()
     if a[:1] == ["ack"] and len(a) == 3 and a[1].isdigit() and a[2].isdigit(): save(FORWARD, (int(a[1]), int(a[2]))); return 0
     if a[:1] == ["latest"]: return latest()
+    if a[:1] == ["redact"]:
+        t = sys.stdin.read()
+        for p in SECRETS: t = p.sub("[redacted]", t)
+        sys.stdout.write(t); return 0
     if a[:1] == ["repair"]: return repair(a[1:] == ["--check"])
     if a[:1] == ["secret"]: return 0 if secret(sys.stdin.read()) else 1   # bin/chat ask: exit 0 = looks like a secret
     own = a[1] if len(a) > 1 else ""

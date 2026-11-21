@@ -263,7 +263,8 @@ A focus session can run Claude Code against DeepSeek instead of Anthropic. The C
 - **Tracking focus sessions**: `bin/sessions` lists the sessions `bin/work` started that are still running: name, folder, pid, the session that started each (`--mine` keeps your own), when it started, whether it is `busy` or `idle`, and when that last changed. The folder hooks write the status (a prompt marks busy, the end of a turn marks idle), so it needs no model and no messaging. The launcher also drops Claude session variables left in the terminal by an earlier session, so each focus session starts as its own session and the one that started it can list and message it.
 - **Dispatching ready tickets**: `bin/dispatch <folder>` starts a focus builder (`bin/work --role builder`) for each low- or medium-risk `ready_to_start` ticket in the checkout's BMAD `tickets next`, up to `HUB_DISPATCH_MAX` (1 by default, at most 2) running builders hub-wide; high-risk and `hitl` tickets wait for the owner, who starts one with `bin/dispatch --approve <ref> <folder>` at an interactive terminal (typing the ref back) (`.ade/context/dispatch.md`).
 - **Scheduled jobs** (`bin/schedule install`, launchd): the weekday morning briefing (`bin/briefing`, Haiku, read-only);
-  `bin/monitor` every 30 minutes; and `bin/sync --auto` every 30 minutes; with `HUB_CHAT=telegram`, the chat job.
+  `bin/monitor` every 30 minutes (with `HUB_MONITOR_TRIAGE=1`, a new ALERT gets one read-only triage by the monitor
+  role, its report under `reports/monitor/`); and `bin/sync --auto` every 30 minutes; with `HUB_CHAT=telegram`, the chat job.
 - **Chat (Telegram)**: `bin/chat setup` lists the one-time steps (a bot from @BotFather, `bin/keys set telegram`, the
   `telegram@claude-plugins-official` plugin, pairing, `/telegram:access policy allowlist`). `bin/chat start|stop|status`
   runs the hub's main session with the channel attached, in `manual` mode (`HUB_CHAT_MODE`), never skipping permissions;
