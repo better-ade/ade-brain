@@ -486,8 +486,11 @@ infra  ops/infra     ops      -       ⚠ blocked'
 bot_send_token_on_stdin_only() {
   # the real sender against a local stand-in for the Bot API (never the network): the token only in the request path
   c7_setup; unset AGENT_CHAT_SEND; SRV="$(mktemp -d)"
+  # the stand-in never outlives the check: it ends itself after 60 s (SIGALRM), holds none of the test's output and is
+  # killed when the check exits, passed or failed (CI has no terminal: a server left running held run.sh for hours)
   cat > "$SRV/api.py" <<'PYS'
-import http.server, json, sys
+import http.server, json, os, signal, sys
+signal.alarm(int(os.environ.get("FAKE_API_TTL") or 60))
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0)); b = self.rfile.read(n)
@@ -496,10 +499,11 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 s = http.server.HTTPServer(("127.0.0.1", 0), H); open(sys.argv[1], "w").write(str(s.server_address[1])); s.serve_forever()
 PYS
-  python3 "$SRV/api.py" "$SRV/port" "$SRV/req" & srv=$!; wait_for "[ -s '$SRV/port' ]" || fail "the stand-in API did not start"
+  python3 "$SRV/api.py" "$SRV/port" "$SRV/req" </dev/null >/dev/null 2>&1 & srv=$!; trap 'kill "$srv" 2>/dev/null' EXIT
+  wait_for "[ -s '$SRV/port' ]" || fail "the stand-in API did not start"; [ -z "${FAKE_API_HOLD:-}" ] || sleep "$FAKE_API_HOLD" >/dev/null 2>&1
   ev --auto --from projects/api --to main --kind idle --text "via the bot"
   AGENT_TELEGRAM_API="http://127.0.0.1:$(cat "$SRV/port")" bin/chat forward >"$FAKE/out" 2>&1 || fail "forward through the bot [$(cat "$FAKE/out")]"
-  kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null
+  kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null; trap - EXIT
   assert_contains "$SRV/req" "/bot$K/sendMessage" "the token is used in the Bot API path"
   assert_contains "$SRV/req" '"text": "[projects/api, claimed] idle: \"via the bot\""' "the text is sent"
   grep -qF "$K" "$FAKE/out" && fail "the token was printed"
@@ -507,13 +511,49 @@ PYS
   c7_done
 }
 
+no_terminal_stand_in_api() {
+  # CI has no terminal. The bot check runs twice at once, each in its own session (no controlling terminal), stdin
+  # /dev/null, its output a pipe (as run.sh reads it), held (FAKE_API_HOLD) while its stand-in API runs, then ended as
+  # a failed check ends (TERM) and as a cancelled one (KILL: no trap runs; FAKE_API_TTL=3 is the stand-in's deadline).
+  # Each output pipe must close and each stand-in must be gone: one left holding the output kept CI waiting for hours.
+  python3 - "$REPO/tests/test_chat.sh" <<'PY' || fail "the bot check, ended with no terminal, left something running"
+import os, signal, subprocess, sys, time
+def run():
+    r, w = os.pipe()
+    p = subprocess.Popen(["bash", sys.argv[1], "bot_send_token_on_stdin_only"], stdin=subprocess.DEVNULL, stdout=w,
+                         stderr=w, start_new_session=True, env=dict(os.environ, FAKE_API_HOLD="60", FAKE_API_TTL="3"))
+    os.close(w); os.set_blocking(r, False); return p, r
+def servers(p):   # the run's stand-ins: api.py in its process group (its own session)
+    ps = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,command="], capture_output=True, text=True).stdout.splitlines()
+    return [int(c[0]) for c in (l.split(None, 2) for l in ps) if len(c) == 3 and c[1] == str(p.pid) and "/api.py " in c[2]]
+def closed(r):
+    try: return os.read(r, 65536) == b""
+    except BlockingIOError: return False
+runs = {signal.SIGTERM: run(), signal.SIGKILL: run()}; why = []; end = time.time() + 120
+while time.time() < end and not all(servers(p) or p.poll() is not None for p, _ in runs.values()): time.sleep(0.1)
+for sig, (p, r) in runs.items():
+    if p.poll() is not None or not servers(p): why.append("%s: the stand-in API never ran (rc %s)" % (sig.name, p.poll()))
+    else: os.kill(p.pid, sig)
+for p, _ in runs.values(): p.wait()
+end = time.time() + 10
+while time.time() < end and not all(closed(r) and not servers(p) for p, r in runs.values()): time.sleep(0.1)
+for sig, (p, r) in runs.items():
+    if not closed(r): why.append("%s: the output was still held 10 s after the check ended" % sig.name)
+    if servers(p): why.append("%s: the stand-in API outlived the check by 10 s" % sig.name)
+    for s in servers(p): os.kill(s, signal.SIGKILL)
+    try: os.killpg(p.pid, signal.SIGKILL)
+    except OSError: pass
+if why: sys.exit("; ".join(why))
+PY
+}
+
 # bash tests/test_chat.sh <check>: run the checks up to and including one (to see each fail on its own)
 if [ $# -gt 0 ]; then for c in start_launches_channel_session token_short_lived_file missing_token_refuses skip_permissions_refused \
   single_instance stop_and_status start_lock_and_access same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator \
-  telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only; do
+  telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api; do
   [ "$c" = "$1" ] && { "$c"; echo ok; exit 0; }; ( "$c" ) >/dev/null 2>&1; done; fi
 start_launches_channel_session; token_short_lived_file; missing_token_refuses; skip_permissions_refused
 single_instance; stop_and_status; start_lock_and_access; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
 state_per_orchestrator
-telegram_style_rule; answer_needs_owner_permission; status_card_golden; to_agent_notifies; forward_agent_events_once; forward_partial_failure; forward_cap_per_run; forward_after_rotation; forward_lock; start_runs_forwarder; approvals_buttons_or_numbered; agents_list; bot_send_token_on_stdin_only
+telegram_style_rule; answer_needs_owner_permission; status_card_golden; to_agent_notifies; forward_agent_events_once; forward_partial_failure; forward_cap_per_run; forward_after_rotation; forward_lock; start_runs_forwarder; approvals_buttons_or_numbered; agents_list; bot_send_token_on_stdin_only; no_terminal_stand_in_api
 echo ok

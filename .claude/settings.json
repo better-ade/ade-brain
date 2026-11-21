@@ -5,6 +5,7 @@
     "ask": [
       "Bash(*bin/dispatch --approve*)",
       "Bash(*ade dispatch --approve*)",
+      "Bash(*bin/agent --live-test*)",
       "Bash(script *)",
       "Bash(*bin/chat answer*)",
       "Bash(*ade chat answer*)",

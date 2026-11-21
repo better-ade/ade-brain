@@ -75,6 +75,17 @@ Owner-approved plan, 2026-11-18 (role-based model routing):
 - Consequence: a provider-backed role sends the files it reads in the checkout to that provider, so it stays limited to
   the owner's own hubs, and deny rules keep common secret files out of its tools. Contract: `.ade/context/providers.md`, "Roles".
 
+### The Anthropic API key (story H1, 2026-11-22)
+
+- `bin/keys set anthropic` stores an Anthropic API key (`anthropic-api-key`) for `ade setup`. It is read only through
+  Claude Code's `apiKeyHelper` (`bin/secret`), never an environment variable, and read once before launch (exit 2 when
+  it cannot be read or is empty).
+- **A stored key never switches role runs silently.** By default only `bin/agent --live-test anthropic` uses it; role
+  runs (`bin/agent --role`) use it only when `hub.conf` sets `HUB_AGENT_ANTHROPIC_KEY=1` (never the environment), and keep
+  the Claude login otherwise. `bin/work`, `bin/chat start` and `ade claude` keep the Claude login.
+- Consequence: an owner who signs in with a key and wants delegated runs billed to it opts in once in `hub.conf`; the
+  live test can pass on the key while role runs still use the login. Contract: `.ade/context/hub-interface.md`.
+
 ## Engines (S2a)
 
 Not written yet; S2a appends it here.
