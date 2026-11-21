@@ -23,5 +23,7 @@ for m in "$H"/projects/*/monitors.d/*.sh "$H"/ops/*/monitors.d/*.sh; do
   fi
 done
 # refresh the brain index (incremental: only changed files are re-read and re-embedded), quietly; it never fails the run
+# focus agents that died since the last run (story R1): journaled, tickets blocked, main notified; never fails the run
+[ -x "$H/bin/recover" ] && "$H/bin/recover" --agents >/dev/null 2>&1
 [ -x "$H/bin/brain" ] && timeout 120 "$H/bin/brain" index >/dev/null 2>&1
 exit 0

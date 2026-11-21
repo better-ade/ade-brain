@@ -268,6 +268,10 @@ A focus session can run Claude Code against DeepSeek instead of Anthropic. The C
   `telegram@claude-plugins-official` plugin, pairing, `/telegram:access policy allowlist`). `bin/chat start|stop|status`
   runs the hub's main session with the channel attached, in `manual` mode (`HUB_CHAT_MODE`), never skipping permissions;
   only your paired account gets in (`.ade/context/chat.md`).
+- **Crash recovery**: `bin/recover` runs at login (launchd), before each `bin/chat start`, and by hand. It removes locks
+  whose owner is gone, journals agents that died (their ticket marked blocked, never Done; uncommitted work kept and
+  listed), drops a torn event-log line, alerts once on a full disk, and tells the chat "restarted, N agents running, M
+  waiting" after the orchestrator died. `bin/doctor` shows the same checks read-only (`.ade/context/recover.md`).
 - **Auto sync**: `bin/sync --auto` commits and pushes the hub's files unattended: one run at a time, skipped while git
   is busy, refused without gitleaks or without the git hooks (`bin/setup`), every commit to push scanned first, one
   rebase retry, never a force push. One line per run in `~/.agent-hub/<name>/logs/sync.log`. Off: `HUB_AUTO_SYNC=0`

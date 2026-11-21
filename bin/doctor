@@ -40,6 +40,8 @@ for f in $(folders); do s="$H/$f/.claude/settings.json"; [ -f "$s" ] || continue
   [ -z "$miss" ] || line WARN "settings $f" "no${miss} hook from the template (bin/new --settings $f)"
 done
 w="$(orchestrator_endpoint_warning)"; [ -z "$w" ] || line WARN "orchestrator" "$w"
+# crash recovery (story R1): what bin/recover would repair, one row per check, read-only
+"$H/bin/recover" --check 2>/dev/null
 [ "${DOCTOR_OFFLINE:-}" = 1 ] && exit 0
 command -v gh >/dev/null && { gh auth status >/dev/null 2>&1 && line OK "github login" "$(gh api user --jq .login 2>/dev/null)" || line MISSING "github login" "gh auth login"; }
 for r in ${HUB_REPOS:-}; do gh api "repos/$r" >/dev/null 2>&1 && line OK "repo $r" "readable" || line MISSING "repo $r" "ask for access"; done

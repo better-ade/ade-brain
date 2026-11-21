@@ -2,13 +2,18 @@
 # bin/schedule install|uninstall|status: the hub's launchd jobs: the morning briefing (weekdays at
 # HUB_BRIEFING_HOUR:HUB_BRIEFING_MINUTE local time), monitor (bin/monitor every 30 minutes) and sync (bin/sync --auto
 # every 30 minutes; not installed, and removed on install, when hub.conf has HUB_AUTO_SYNC=0) and chat (bin/chat start,
-# kept alive; installed only when hub.conf has HUB_CHAT=telegram, removed on install otherwise).
+# kept alive; installed only when hub.conf has HUB_CHAT=telegram, removed on install otherwise) and recover (bin/recover
+# once at login, story R1).
 # Re-run install after pulling new jobs into the hub.
 . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; LA="${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}"; U="gui/$(id -u)"
-ALL="briefing monitor sync chat"; LOGS="$(state_dir)/logs"
+ALL="briefing monitor sync chat recover"; LOGS="$(state_dir)/logs"
 JOBS="briefing monitor"; OFF=""
 if [ "${HUB_AUTO_SYNC:-1}" = 0 ]; then OFF="sync"; else JOBS="$JOBS sync"; fi
-CLASH=""; [ "${1:-}" = install ] && [ "${HUB_CHAT:-}" = telegram ] && { CLASH="$(hub_name_claim)" || true; }
+# the state folder, Keychain service and labels belong to the first hub with this name: a clashing hub gets no chat and
+# no recover job (bin/recover would act on the other hub's state)
+CLASH=""; [ "${1:-}" = install ] && { CLASH="$(hub_name_claim)" || true; }
+if [ -z "$CLASH" ]; then JOBS="$JOBS recover"; else OFF="$OFF recover"
+  [ "${1:-}" != install ] || echo "schedule: no recover job: the hub name $(hub_name) is already used by the hub at $CLASH; set HUB_NAME in hub.conf" >&2; fi
 if [ "${HUB_CHAT:-}" = telegram ] && [ -z "$CLASH" ]; then JOBS="$JOBS chat"; else OFF="$OFF chat"
   [ -z "$CLASH" ] || echo "schedule: no chat job: the hub name $(hub_name) is already used by the hub at $CLASH; set HUB_NAME in hub.conf" >&2
   [ -z "${HUB_CHAT:-}" ] || [ "${HUB_CHAT:-}" = telegram ] || echo "schedule: HUB_CHAT must be telegram (or empty); no chat job" >&2; fi
@@ -16,6 +21,8 @@ label() { echo "ai.agent-hub.$(hub_name).$1"; }
 remove() { [ "${SCHEDULE_DRY:-}" = 1 ] || launchctl bootout "$U/$(label "$1")" 2>/dev/null; rm -f "$LA/$(label "$1").plist"; echo "removed $(label "$1")"; }
 case "${1:-status}" in
   install) mkdir -p "$LOGS" "$LA" && chmod 700 "$LOGS"
+           # enabling chat again ends an earlier crash-loop stop (bin/chat start, story R1)
+           case " $JOBS " in *" chat "*) rm -f "$(state_dir)/chat/service-starts" "$(state_dir)/chat/service-quick" "$(state_dir)/chat/gave-up" ;; esac
            for j in $JOBS; do p="$LA/$(label "$j").plist"
              sed -e "s#{{HUB}}#$H#g" -e "s#{{HOME}}#$HOME#g" -e "s#{{LOGS}}#$LOGS#g" -e "s#{{LABEL}}#$(label "$j")#g" -e "s#{{HOUR}}#${HUB_BRIEFING_HOUR:-8}#g" -e "s#{{MINUTE}}#${HUB_BRIEFING_MINUTE:-0}#g" "$H/launchd/$j.plist.template" > "$p"
              [ "${SCHEDULE_DRY:-}" = 1 ] && { echo "wrote $p"; continue; }

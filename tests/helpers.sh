@@ -17,6 +17,7 @@ make_hub() {
   git -C "$HUB" init -q && git -C "$HUB" config user.name t && git -C "$HUB" config user.email t@t
   CLAUDE_HOME="$(mktemp -d)"; export HUB CLAUDE_HOME
   export AGENT_OLLAMA_URL=http://127.0.0.1:9   # tests never reach a real Ollama (test_brain runs a fake one)
+  export AGENT_TELEGRAM_API=http://127.0.0.1:9   # nor the Telegram Bot API (bin/chat say/forward; test_chat runs a stand-in)
   # tests never fetch ade-method: bin/method and bin/init sync from a local fixture of the template's own method files
   if [ -z "${METHOD_FIXTURE:-}" ]; then METHOD_FIXTURE="$(mktemp -d)/ade-method"; method_repo_from_template "$METHOD_FIXTURE"; fi
   export AGENT_METHOD_REPO="$METHOD_FIXTURE"

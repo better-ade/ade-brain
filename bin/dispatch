@@ -119,7 +119,7 @@ done <<< "$rows"
 free=$((MAX - used)); [ "$free" -ge 0 ] || free=0
 
 start() {  # start <ref>: one bin/work builder for the ticket, then its start marker
-  "$B/work" --role builder --name "$(name_of "$1")" --prompt "bmad-build $1" "$F" </dev/null || return 1
+  "$B/work" --role builder --name "$(name_of "$1")" --ticket "$1" --prompt "bmad-build $1" "$F" </dev/null || return 1
   echo "$(date +%s) $F" > "$MK/$(name_of "$1")"
 }
 # risk_of <ref> <file risk> <id>: the higher of the leaf file's risk and its tickets.toml entry's, "unverifiable" when

@@ -65,6 +65,22 @@ bin/sessions | grep -q "^ghost" && fail "dead launcher not listed"
 # a reused pid (a live process that is not a launcher) is pruned too
 sleep 30 & other=$!; printf 'name=reused\nfolder=projects/x\nlauncher=%s\nparent=1\nstarted=x\n' "$other" > "$ST/sessions/reused.$other"
 bin/sessions | grep -q "^reused" && fail "reused pid not listed"; [ ! -e "$ST/sessions/reused.$other" ] || fail "reused entry pruned"; kill "$other"
+# story R1 review: the entry records what a restart needs (ticket, provider, model, config dir, the launcher's start
+# time) and, from the first prompt hook, the Claude session id
+printf '#!/bin/bash\nprintf %s "{\\"session_id\\":\\"sess-abc_1\\"}" | "$HUB/bin/changes" projects/demo >/dev/null 2>&1; touch "$AGENT_STATE/s3"\nexec sleep 20\n' '%s' > "$S/claude-sid"; chmod +x "$S/claude-sid"
+f=$(CLAUDE_CONFIG_DIR=/keep/me WORK_NO_OPEN=1 bin/work --force --name t-2.1 --ticket "demo/02 a.md" --model opus --claude claude-sid projects/demo 2>/dev/null | sed -n 's/^launcher: //p'); [ -x "$f" ] || fail "launcher written (sid stub)"
+PATH="$S:$PATH" bash "$f" & lp=$!
+wait_for '[ -e "$ST/s3" ]' || fail "the sid prompt hook ran"; e="$ST/sessions/t-2.1.$lp"
+get() { sed -n "s/^$1=//p" "$e" | head -1; }
+assert_eq "$(get ticket)" "demo/02 a.md" "the real ticket ref is recorded"
+assert_eq "$(get provider) $(get model) $(get config_dir)" "anthropic opus /keep/me" "provider, model and config dir recorded"
+assert_eq "$(get session_id)" "sess-abc_1" "the prompt hook records the session id"
+assert_eq "$(get start)" "$(. bin/lib.sh; proc_start "$lp")" "the launcher's start time is recorded"
+# the same pid with another start time (the launcher died, its pid was reused by another launcher) counts as dead
+sed -i '' 's/^start=.*/start=Mon Jan  1 00:00:00 2001/' "$e"
+bin/sessions | grep -q "^t-2.1 " && fail "a start-time mismatch is still listed"
+[ -e "$e" ] && fail "a start-time mismatch is not pruned"; ls "$ST/sessions-dead/" | grep -q "^t-2.1\.$lp$" || fail "kept in sessions-dead for bin/recover"
+kill "$(pgrep -P "$lp" | head -1)" 2>/dev/null; wait "$lp" 2>/dev/null; rm -rf "$ST/sessions-dead"
 bin/sessions --parent x >/dev/null 2>&1; assert_eq "$?" "2" "bad --parent"
 bin/sessions --nope >/dev/null 2>&1; assert_eq "$?" "2" "unknown option"
 env -u CLAUDE_PID bin/sessions --mine >/dev/null 2>&1; assert_eq "$?" "2" "--mine needs CLAUDE_PID"
