@@ -8,37 +8,104 @@
 #            [--brain-path <dir>]... [--embed-model M] [--ollama-url URL] [--auto-sync on|off]
 #            [--root-model M] [--compact-window N] [--bash-max-chars N]   (token limits; 0 or "" = Claude's default)
 #   bin/init --list   the personas
-# --dest copies the template to a new directory first (it must not exist); without it, initializes in place.
+# --dest copies the template to a new directory first (it must not exist, or hold .init-pending); else in place.
 # Never overwrites an initialized hub (one with hub.conf). Writes no secrets: only names and locations.
+#   On a terminal it asks for a missing persona, client or owner; without one it names what is missing and exits 2.
+#   A copy where a run stopped part way holds .init-pending: bin/init there (or the same command) finishes it.
 set -u; T="$(cd "$(dirname "$0")/.." && pwd)"; . "$T/bin/lib.sh"
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 fm() { awk -v k="$2" -F': ' '/^---$/{n++; next} n==1 && $1==k {sub(/^[^:]*: /,""); print; exit}' "$1"; }
 if [ "${1:-}" = --list ]; then for p in "$T"/personas/*.md; do printf '%-28s %s\n' "$(basename "$p" .md)" "$(fm "$p" title)"; done; exit 0; fi
-PERSONA=""; CLIENT=""; OWNER=""; NAME=""; DEST=""; FOLDERS=""; REPOS=(); CODE_OWNER=""; REMOTE=""; RKEY=""; RDIR=""
-STAGING=""; SECRETS=(); BRIEF="08:00"; CLAUDE_CMD="claude"; CFG=""; MODEL=""; EFFORT=""; AMODEL="sonnet"; SMODEL="sonnet"; BMODEL="haiku"; BPATHS=(); EMODEL="nomic-embed-text"; OURL="http://localhost:11434"; ASYNC="on"; RMODEL="sonnet"; CWIN=200000; BMAX=8000
-while [ $# -gt 0 ]; do
-  [ $# -ge 2 ] || usage
-  case "$1" in
-    --persona) PERSONA="$2";; --client) CLIENT="$2";; --owner) OWNER="$2";; --name) NAME="$2";; --dest) DEST="$2";;
-    --folders) FOLDERS="$2";; --repo) REPOS+=("$2");; --code-owner) CODE_OWNER="$2";; --remote) REMOTE="$2";;
-    --remote-key) RKEY="$2";; --remote-dir) RDIR="$2";; --staging-url) STAGING="$2";; --secret) SECRETS+=("$2");;
-    --briefing) BRIEF="$2";; --claude) CLAUDE_CMD="$2";; --claude-config-dir) CFG="$2";; --model) MODEL="$2";;
-    --effort) EFFORT="$2";; --agent-model) AMODEL="$2";; --subagent-model) SMODEL="$2";; --briefing-model) BMODEL="$2";; --brain-path) BPATHS+=("$2");; --root-model) RMODEL="$2";; --compact-window) CWIN="$2";; --bash-max-chars) BMAX="$2";;
-    --embed-model) EMODEL="$2";; --ollama-url) OURL="$2";; --auto-sync) ASYNC="$2";; *) usage;;
-  esac; shift 2
-done
-[ -n "$PERSONA" ] && [ -n "$CLIENT" ] && [ -n "$OWNER" ] || usage
-P="$T/personas/$PERSONA.md"; [ -f "$P" ] || { echo "init: no persona '$PERSONA' (bin/init --list)" >&2; exit 2; }
+PENDING=.init-pending   # written before the first write into a copy, removed after the last (.ade/context/init.md)
+defaults() {
+  PERSONA=""; CLIENT=""; OWNER=""; NAME=""; DEST=""; FOLDERS=""; REPOS=(); CODE_OWNER=""; REMOTE=""; RKEY=""; RDIR=""
+  STAGING=""; SECRETS=(); BRIEF="08:00"; CLAUDE_CMD="claude"; CFG=""; MODEL=""; EFFORT=""; AMODEL="sonnet"; SMODEL="sonnet"; BMODEL="haiku"; BPATHS=(); EMODEL="nomic-embed-text"; OURL="http://localhost:11434"; ASYNC="on"; RMODEL="sonnet"; CWIN=200000; BMAX=8000
+  REST=()   # every option but --persona, --client, --owner and --dest, as given: the resume line and .init-pending
+}
+parse() {
+  while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || usage
+    case "$1" in --persona|--client|--owner|--dest) ;; *) REST+=("$1" "$2");; esac
+    case "$1" in
+      --persona) PERSONA="$2";; --client) CLIENT="$2";; --owner) OWNER="$2";; --name) NAME="$2";; --dest) DEST="$2";;
+      --folders) FOLDERS="$2";; --repo) REPOS+=("$2");; --code-owner) CODE_OWNER="$2";; --remote) REMOTE="$2";;
+      --remote-key) RKEY="$2";; --remote-dir) RDIR="$2";; --staging-url) STAGING="$2";; --secret) SECRETS+=("$2");;
+      --briefing) BRIEF="$2";; --claude) CLAUDE_CMD="$2";; --claude-config-dir) CFG="$2";; --model) MODEL="$2";;
+      --effort) EFFORT="$2";; --agent-model) AMODEL="$2";; --subagent-model) SMODEL="$2";; --briefing-model) BMODEL="$2";; --brain-path) BPATHS+=("$2");; --root-model) RMODEL="$2";; --compact-window) CWIN="$2";; --bash-max-chars) BMAX="$2";;
+      --embed-model) EMODEL="$2";; --ollama-url) OURL="$2";; --auto-sync) ASYNC="$2";; *) usage;;
+    esac; shift 2
+  done
+}
+# sh_quote <value>: one shell word (bare when safe, else single quotes; $'...' when it holds a control character)
+sh_quote() {
+  if [[ "$1" =~ ^[A-Za-z0-9_./:=@%+,-]+$ ]]; then printf '%s' "$1"
+  elif [[ "$1" =~ [[:cntrl:]] ]]; then printf '%q' "$1"
+  else printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; fi
+}
+# persona matching: the answer and each slug and title lower-cased, with spaces, -, _ and / removed; the list number,
+# an exact slug or title, or a prefix only one persona has. Nothing fuzzier.
+norm() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' _/-'; }
+SLUGS=(); TITLES=(); for p in "$T"/personas/*.md; do SLUGS+=("$(basename "$p" .md)"); TITLES+=("$(fm "$p" title)"); done
+NP=${#SLUGS[@]}
+# match_persona <answer>: MATCH=<slug> (0); else MATCH="" and CANDS=the personas a shared prefix fits, if any (1)
+match_persona() {
+  local a n i ns nt; a="$1"; n="$(norm "$a")"; MATCH=""; CANDS=""
+  if [[ "$n" =~ ^[0-9]+$ ]]; then
+    i=$((10#$n)); [ "$i" -ge 1 ] && [ "$i" -le "$NP" ] && { MATCH="${SLUGS[$((i - 1))]}"; return 0; }; return 1
+  fi
+  [ -n "$n" ] || return 1
+  for ((i = 0; i < NP; i++)); do
+    ns="$(norm "${SLUGS[$i]}")"; nt="$(norm "${TITLES[$i]}")"
+    if [ "$n" = "$ns" ] || [ "$n" = "$nt" ]; then MATCH="${SLUGS[$i]}"; return 0; fi
+    case "$ns" in "$n"*) CANDS="$CANDS ${SLUGS[$i]}"; continue;; esac
+    case "$nt" in "$n"*) CANDS="$CANDS ${SLUGS[$i]}";; esac
+  done
+  CANDS="${CANDS# }"; if [ -n "$CANDS" ] && [ "${CANDS% *}" = "$CANDS" ]; then MATCH="$CANDS"; CANDS=""; return 0; fi
+  return 1
+}
+# closest <answer>: up to three personas sharing a prefix (3 letters or more) with it or holding one of its words
+closest() {
+  local n i ns nt w l k score words; n="$(norm "$1")"
+  words="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' ' ')"
+  for ((i = 0; i < NP; i++)); do
+    ns="$(norm "${SLUGS[$i]}")"; nt="$(norm "${TITLES[$i]}")"; score=0
+    for w in "$ns" "$nt"; do l=0; while [ "$l" -lt "${#n}" ] && [ "${n:$l:1}" = "${w:$l:1}" ]; do l=$((l + 1)); done
+      [ "$l" -ge 3 ] && [ "$l" -gt "$score" ] && score=$l; done
+    for k in $words; do [ "${#k}" -ge 3 ] || continue
+      case "${SLUGS[$i]} $(printf '%s' "${TITLES[$i]}" | tr '[:upper:]' '[:lower:]')" in *"$k"*) score=$((score + 10));; esac; done
+    [ "$score" -gt 0 ] && printf '%s %s %s\n' "$score" "$i" "${SLUGS[$i]} (${TITLES[$i]})"
+  done | sort -k1,1nr -k2,2n | head -3 | cut -d' ' -f3- | paste -sd, - | sed 's/,/, /g'
+}
+defaults; parse "$@"; ARG_DEST="$DEST"; GIVEN_REST=(${REST[@]+"${REST[@]}"})
+if [ -n "$PERSONA" ]; then
+  match_persona "$PERSONA" || {
+    if [ -n "$CANDS" ]; then echo "init: no persona '$PERSONA': more than one starts so ($CANDS)" >&2
+    else c="$(closest "$PERSONA")"; echo "init: no persona '$PERSONA'${c:+; closest: $c} (bin/init --list)" >&2; fi; exit 2; }
+  PERSONA="$MATCH"
+fi
+# where this run writes, and what an earlier run already did there (decided from the files)
+H="$T"; [ -z "$DEST" ] || H="$DEST"; RESUME=0
+if [ -f "$H/$PENDING" ]; then RESUME=1
+elif [ -n "$DEST" ] && [ -e "$DEST" ]; then echo "init: $DEST already exists" >&2; exit 2
+elif [ -f "$H/hub.conf" ]; then echo "init: $H is already initialized (hub.conf exists)" >&2; exit 2; fi
+if [ "$RESUME" = 1 ]; then
+  # an earlier run started this copy: finish it with its values; a value given now must be the same one
+  INIT_PERSONA=""; INIT_CLIENT=""; INIT_OWNER=""; INIT_REST=(); . "$H/$PENDING" || { echo "init: cannot read $H/$PENDING" >&2; exit 2; }
+  was="$(for a in ${INIT_REST[@]+"${INIT_REST[@]}"} --persona "$INIT_PERSONA" --client "$INIT_CLIENT" --owner "$INIT_OWNER"; do printf '%s ' "$(sh_quote "$a")"; done)"
+  same() { [ -z "$1" ] || [ "$1" = "$2" ]; }
+  { same "$PERSONA" "$INIT_PERSONA" && same "$CLIENT" "$INIT_CLIENT" && same "$OWNER" "$INIT_OWNER" &&
+    { [ ${#GIVEN_REST[@]} = 0 ] || [ "$(printf '%q ' "${GIVEN_REST[@]}")" = "$(printf '%q ' ${INIT_REST[@]+"${INIT_REST[@]}"})" ]; }; } ||
+    { echo "init: an earlier run started $H with: ${was% }; run bin/init there with no options (or those) to finish it" >&2; exit 2; }
+  defaults; parse ${INIT_REST[@]+"${INIT_REST[@]}"} --persona "$INIT_PERSONA" --client "$INIT_CLIENT" --owner "$INIT_OWNER"; DEST="$ARG_DEST"
+fi
 slugify() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'; }
-[ -n "$NAME" ] || NAME="$(slugify "$CLIENT")-$PERSONA"
-[[ "$NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "init: --name must be a-z 0-9 -" >&2; exit 2; }
+[ -z "$NAME" ] || [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "init: --name must be a-z 0-9 -" >&2; exit 2; }
 [[ "$BRIEF" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || { echo "init: --briefing must be HH:MM" >&2; exit 2; }
 [[ "$CLAUDE_CMD" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "init: bad --claude command" >&2; exit 2; }
 for s in ${SECRETS[@]+"${SECRETS[@]}"}; do [[ "$s" =~ ^[a-z0-9-]+$ ]] || { echo "init: secret names are a-z 0-9 - (names only, never values)" >&2; exit 2; }; done
-TITLE="$(fm "$P" title)"; [ -n "$MODEL" ] || MODEL="$(fm "$P" model)"; [ -n "$FOLDERS" ] || FOLDERS="$(fm "$P" folders)"; FOCUS="$(fm "$P" briefing_focus)"
-[ -n "$SMODEL" ] || SMODEL="sonnet"
 for m in "$MODEL" "$AMODEL" "$BMODEL" "$EMODEL"; do [ -z "$m" ] || [[ "$m" =~ ^[A-Za-z0-9._:/-]+$ ]] || { echo "init: bad model name '$m'" >&2; exit 2; }; done
 # the subagent model may carry a context suffix such as sonnet[1m] (the same check as bin/work's SUBRE)
+[ -n "$SMODEL" ] || SMODEL="sonnet"
 SUBRE='^[][A-Za-z0-9._:/-]+$'; [[ "$SMODEL" =~ $SUBRE ]] || { echo "init: bad model name '$SMODEL'" >&2; exit 2; }
 [ -z "$RMODEL" ] || [[ "$RMODEL" =~ $SUBRE ]] || { echo "init: bad model name '$RMODEL'" >&2; exit 2; }
 # token limits (.ade/context/model-defaults.md): 0 leaves Claude's default; Claude Code takes 100000-1000000 for the window
@@ -48,16 +115,75 @@ SUBRE='^[][A-Za-z0-9._:/-]+$'; [[ "$SMODEL" =~ $SUBRE ]] || { echo "init: bad mo
   { echo "init: --bash-max-chars must be 0 or 1000-150000 characters" >&2; exit 2; }
 case "$ASYNC" in on|off) ;; *) echo "init: --auto-sync must be on or off" >&2; exit 2 ;; esac
 case "$EFFORT" in ""|low|medium|high|xhigh|max) ;; *) echo "init: --effort must be low|medium|high|xhigh|max" >&2; exit 2 ;; esac
+for f in $FOLDERS; do [[ "$f" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || { echo "init: bad folder '$f'" >&2; exit 2; }; done
+RHOST=""; RUSER=""; RPORT=22
+if [ -n "$REMOTE" ]; then
+  [[ "$REMOTE" =~ ^(([A-Za-z0-9._-]+)@)?([A-Za-z0-9.-]+)(:([0-9]+))?$ ]] || { echo "init: --remote must be user@host[:port]" >&2; exit 2; }
+  RUSER="${BASH_REMATCH[2]}"; RHOST="${BASH_REMATCH[3]}"; RPORT="${BASH_REMATCH[5]:-22}"
+fi
+for r in ${REPOS[@]+"${REPOS[@]}"}; do
+  [[ "${r%%=*}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "init: --repo must be owner/name[=checkout]" >&2; exit 2; }; done
+# the three values: asked for on a terminal, else named in one line (exit 2). Nothing is written before they are known.
+if [ -z "$PERSONA" ] || [ -z "$CLIENT" ] || [ -z "$OWNER" ]; then
+  if [ ! -t 0 ]; then
+    m=""; [ -n "$PERSONA" ] || m="$m --persona"; [ -n "$CLIENT" ] || m="$m --client"; [ -n "$OWNER" ] || m="$m --owner"
+    echo "init: missing${m// /, }; give them as options (no terminal to ask; bin/init --list names the personas)" | sed 's/missing, /missing /' >&2; exit 2
+  fi
+  # end of input at a question: stop (exit 1) with the command that continues, the answers given so far filled in
+  stop() {
+    local a cmd="cd $(sh_quote "$PWD") && $(sh_quote "$T/bin/init")"
+    for a in ${GIVEN_REST[@]+"${GIVEN_REST[@]}"}; do cmd="$cmd $(sh_quote "$a")"; done
+    [ -z "$ARG_DEST" ] || cmd="$cmd --dest $(sh_quote "$ARG_DEST")"
+    [ -z "$PERSONA" ] || cmd="$cmd --persona $(sh_quote "$PERSONA")"; [ -z "$CLIENT" ] || cmd="$cmd --client $(sh_quote "$CLIENT")"
+    [ -z "$OWNER" ] || cmd="$cmd --owner $(sh_quote "$OWNER")"
+    echo >&2; echo "init: stopped at the $1 question (end of input), nothing written; to continue: $cmd" >&2; exit 1
+  }
+  if [ -z "$PERSONA" ]; then
+    echo "Personas:" >&2; for ((i = 0; i < NP; i++)); do printf '%3d) %-28s %s\n' $((i + 1)) "${SLUGS[$i]}" "${TITLES[$i]}" >&2; done
+    while :; do
+      printf 'Persona (its number, slug or title): ' >&2; IFS= read -r a || stop persona
+      match_persona "$a" && { PERSONA="$MATCH"; break; }
+      echo "init: '$a' is not one persona; give its number (1-$NP), slug or title (case, spaces, -, _ and / do not matter) or a start only one has${CANDS:+ (it starts: $CANDS)}" >&2
+    done
+  fi
+  # ask_name <what> <var> <prompt>: a trimmed answer, never empty, no control characters (an arrow key, a tab)
+  ask_name() {
+    local a
+    while :; do
+      printf '%s' "$3" >&2; IFS= read -r a || stop "$1"
+      a="${a#"${a%%[![:space:]]*}"}"; a="${a%"${a##*[![:space:]]}"}"
+      [ -n "$a" ] && ! [[ "$a" =~ [[:cntrl:]] ]] && { eval "$2=\$a"; return; }
+      echo "init: the $1: not empty, no control characters (arrow keys, tabs); type the name and press Return" >&2
+    done
+  }
+  [ -n "$CLIENT" ] || ask_name client CLIENT "Client (the organisation this hub works for; it names the hub and fills its rules): "
+  [ -n "$OWNER" ] || ask_name owner OWNER "Owner (the person this hub works for; its rules and approvals name them): "
+fi
+P="$T/personas/$PERSONA.md"
+[ -n "$NAME" ] || NAME="$(slugify "$CLIENT")-$PERSONA"
+[[ "$NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "init: --name must be a-z 0-9 -" >&2; exit 2; }
+TITLE="$(fm "$P" title)"; [ -n "$MODEL" ] || MODEL="$(fm "$P" model)"; [ -n "$FOLDERS" ] || FOLDERS="$(fm "$P" folders)"; FOCUS="$(fm "$P" briefing_focus)"
+[ -z "$MODEL" ] || [[ "$MODEL" =~ ^[A-Za-z0-9._:/-]+$ ]] || { echo "init: bad model name '$MODEL'" >&2; exit 2; }   # the persona's
+for f in $FOLDERS; do [[ "$f" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || { echo "init: bad folder '$f'" >&2; exit 2; }; done
 # the install's config dir: --claude-config-dir, else the CLAUDE_CONFIG_DIR its wrapper exports, else ~/.claude
 if [ -z "$CFG" ]; then CFG="$(wrapper_config_dir "$CLAUDE_CMD")"; [ -n "$CFG" ] || CFG="$HOME/.claude"; fi
-for f in $FOLDERS; do [[ "$f" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || { echo "init: bad folder '$f'" >&2; exit 2; }; done
-H="$T"
+# from here on the copy is written: .init-pending first (the values, so a run again finishes with them), removed last
+pending() {
+  { echo "# bin/init started this hub and has not finished: run bin/init here (or the same command) to finish it"
+    printf 'INIT_PERSONA=%q\nINIT_CLIENT=%q\nINIT_OWNER=%q\n' "$PERSONA" "$CLIENT" "$OWNER"
+    printf 'INIT_REST=('; for a in ${REST[@]+"${REST[@]}"}; do printf ' %q' "$a"; done; printf ' )\n'; } > "$1/$PENDING"
+}
+trap 'rc=$?; [ "$rc" = 0 ] || [ ! -f "$H/$PENDING" ] || echo "init: $H is not finished; run bin/init there (or the same command) to finish it" >&2' EXIT
 if [ -n "$DEST" ]; then
-  [ -e "$DEST" ] && { echo "init: $DEST already exists" >&2; exit 2; }
-  mkdir -p "$DEST" && H="$(cd "$DEST" && pwd)"
-  (cd "$T" && tar cf - --exclude ./.git --exclude ./hub.conf --exclude ./repos --exclude ./_bmad-output .) | (cd "$H" && tar xf -)
+  mkdir -p "$DEST" && H="$(cd "$DEST" && pwd)" || { echo "init: cannot make $DEST" >&2; exit 2; }
+  [ "$RESUME" = 1 ] || pending "$H"
+  # a copy that stopped part way is completed, never overwritten (GNU tar: --skip-old-files; BSD tar: -k)
+  keep=""; [ "$RESUME" = 0 ] || { if tar --version 2>/dev/null | grep -q GNU; then keep=--skip-old-files; else keep=-k; fi; }
+  (cd "$T" && tar cf - --exclude ./.git --exclude ./hub.conf --exclude "./$PENDING" --exclude ./repos --exclude ./_bmad-output .) |
+    (cd "$H" && tar xf - $keep) || { echo "init: could not copy the template to $H" >&2; exit 1; }
+else
+  [ "$RESUME" = 1 ] || pending "$H"
 fi
-[ -f "$H/hub.conf" ] && { echo "init: $H is already initialized (hub.conf exists)" >&2; exit 2; }
 # the persona text, with client and owner filled in
 # (python, not sed: a name with & or # would be read as sed syntax)
 PERSONA_TEXT="$(awk '/^---$/{n++; next} n>=2' "$P" | CLIENT="$CLIENT" OWNER="$OWNER" python3 -c 'import os, sys
@@ -74,17 +200,11 @@ for k, e in [("NAME","NAME"),("TITLE","TITLE"),("CLIENT","CLIENT"),("OWNER","OWN
 open(sys.argv[2], "w").write(s)
 PY
 }
-RHOST=""; RUSER=""; RPORT=22
-if [ -n "$REMOTE" ]; then
-  [[ "$REMOTE" =~ ^(([A-Za-z0-9._-]+)@)?([A-Za-z0-9.-]+)(:([0-9]+))?$ ]] || { echo "init: --remote must be user@host[:port]" >&2; exit 2; }
-  RUSER="${BASH_REMATCH[2]}"; RHOST="${BASH_REMATCH[3]}"; RPORT="${BASH_REMATCH[5]:-22}"
-fi
 REMOTE_TXT="none configured"; [ -n "$RHOST" ] && REMOTE_TXT="${RUSER:+$RUSER@}$RHOST port $RPORT${RKEY:+, key \`$RKEY\`}${RDIR:+, dir \`$RDIR\`}"
 SECRETS_TXT="${SECRETS[*]+${SECRETS[*]}}"; [ -n "$SECRETS_TXT" ] || SECRETS_TXT="none yet"
 REPO_ROWS=""; REPO_NAMES=""; FIRST_REPO_ROW=""
 for r in ${REPOS[@]+"${REPOS[@]}"}; do
   slug="${r%%=*}"; co=""; [ "$slug" != "$r" ] && co="${r#*=}"
-  [[ "$slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "init: --repo must be owner/name[=checkout]" >&2; exit 2; }
   row="| $slug | $co | main | $OWNER | (fill in) |"; REPO_ROWS="$REPO_ROWS$row"$'\n'; REPO_NAMES="$REPO_NAMES $slug"
   [ -n "$FIRST_REPO_ROW" ] || FIRST_REPO_ROW="$row"
 done
@@ -138,7 +258,7 @@ render "$T/templates/hub/README.md" "$H/README.md"
 # the method at the pinned ref, so a new hub starts in step
 # a failed sync (offline, a missing pin, a ref with no rules.md) is recorded, so bin/method check and bin/doctor say so
 HUB="$H" AGENT_METHOD_REPO="$(method_repo)" "$H/bin/method" sync "$(method_pin)" >/dev/null ||
-  { echo "synced no $(method_pin)" >> "$H/.ade/method-version"
+  { grep -qx "synced no $(method_pin)" "$H/.ade/method-version" 2>/dev/null || echo "synced no $(method_pin)" >> "$H/.ade/method-version"
     echo "init: could not sync the method at $(method_pin) from $(method_repo); kept the template's copy (run bin/method sync)" >&2; }
 mkdir -p "$H/.claude/agents" "$H/journal" "$H/memory" "$H/projects" "$H/ops"
 render "$T/templates/hub/persona-agent.md" "$H/.claude/agents/$PERSONA.md"
@@ -170,12 +290,17 @@ PY
 [ -f "$H/memory/MEMORY.md" ] || printf '# Memory index (hub root: cross-folder facts)\n\n' > "$H/memory/MEMORY.md"
 if [ ! -d "$H/.git" ]; then git -C "$H" init -q && git -C "$H" branch -M main 2>/dev/null; fi
 git -C "$H" config core.hooksPath .githooks
-for f in $FOLDERS; do HUB="$H" "$H/bin/new" "$f" >/dev/null || exit 1; done
-# the first folder checks out the repos: deep work (bin/work <folder> [repo]) goes there; rows go inside its Code table
-if [ -n "$REPO_ROWS" ]; then
-  f1="${FOLDERS%% *}"; A="$H/$f1/ACCESS.md"
-  ROWS="$REPO_ROWS" awk '{print} /^## Code/{c=1} c && /^\|---/{printf "%s", ENVIRON["ROWS"]; c=0}' "$A" > "$A.tmp" && mv "$A.tmp" "$A"
-fi
-HUB="$H" "$H/bin/journal" hub "Hub initialized from ade-brain: $TITLE for $CLIENT (owner $OWNER); folders: $FOLDERS" 
+# the first folder checks out the repos: deep work (bin/work <folder> [repo]) goes there; rows go inside its Code table,
+# each once (a run again after a stop adds only the rows not there yet); bin/new keeps every file it finds
+f1="${FOLDERS%% *}"
+for f in $FOLDERS; do HUB="$H" "$H/bin/new" "$f" >/dev/null || exit 1
+  [ "$f" = "$f1" ] && [ -n "$REPO_ROWS" ] || continue
+  A="$H/$f1/ACCESS.md"; ROWS=""
+  while IFS= read -r row; do [ -z "$row" ] || grep -qF -- "$row" "$A" || ROWS="$ROWS$row"$'\n'; done <<< "$REPO_ROWS"
+  [ -z "$ROWS" ] || { ROWS="$ROWS" awk '{print} /^## Code/{c=1} c && /^\|---/{printf "%s", ENVIRON["ROWS"]; c=0}' "$A" > "$A.tmp" && mv "$A.tmp" "$A"; }
+done
+{ [ "$RESUME" = 1 ] && cat "$H"/journal/*.md 2>/dev/null | grep -qF "Hub initialized from ade-brain:"; } ||
+  HUB="$H" "$H/bin/journal" hub "Hub initialized from ade-brain: $TITLE for $CLIENT (owner $OWNER); folders: $FOLDERS"
+rm -f "$H/$PENDING"
 echo "initialized $NAME ($TITLE for $CLIENT) at $H"
 echo "next: cd $H && bin/setup && bin/brain index && bin/doctor, then start $CLAUDE_CMD there"

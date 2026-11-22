@@ -60,4 +60,134 @@ assert_contains hub.conf "HUB_NAME=beta-inc-staff-software-engineer" "derived na
 assert_contains hub.conf "HUB_AUTO_SYNC=1" "auto sync on by default"
 for f in projects/app projects/proposals projects/client ops/environments; do [ -f "$f/STATE.md" ] || fail "default folder $f"
   grep -qF "/bin/changes $f\"" "$f/.claude/settings.json" || fail "$f hears hub changes (UserPromptSubmit)"; done
+
+# --- story H3: bin/init asks forgivingly and can be run again ---
+# questions go through a pseudo-terminal (tests/pty_run.py: each -i is a typed line, then end of input)
+W="$(mktemp -d)"; export HOME="$W/home"; mkdir -p "$HOME"; trap 'rm -rf "$W"' EXIT
+pty() { python3 "$REPO/tests/pty_run.py" "$@"; }
+make_hub; T1="$HUB"; cd "$T1"
+NSTAFF=$(ls personas/*.md | grep -n '/staff-software-engineer.md$' | cut -d: -f1); NP=$(ls personas/*.md | wc -l | tr -d ' ')
+resume_of() { printf '%s\n' "$1" | sed -n 's/.*to continue: //p'; }
+
+init_persona_forgives() {
+  local out rc form
+  # the number, the slug or the title in any case with spaces, -, _ or / anywhere, and a prefix only one persona has
+  for form in "$NSTAFF" "staff software engineer" "STAFF-SOFTWARE-ENGINEER" "Staff_Software/Engineer" "staffsoftware" "staff"; do
+    out=$(pty -i "$form" -- bin/init --dest "$W/none"); rc=$?
+    assert_eq "$rc" "1" "persona '$form' then end of input at the client question"
+    resume_of "$out" | grep -q -- "--persona staff-software-engineer" || fail "persona '$form' not taken as staff-software-engineer: $out"
+  done
+  printf '%s\n' "$out" | grep -qE "^ *$NSTAFF\) staff-software-engineer +Staff Software Engineer" || fail "the persona question numbers the personas: $out"
+  # anything else is asked again, with one line saying what is accepted, until an answer fits
+  out=$(pty -i "" -i "tech" -i "staff eng" -i "0" -i "$((NP + 1))" -i "devops site" -- bin/init --dest "$W/none"); rc=$?
+  assert_eq "$rc" "1" "asked again, then end of input at the client question"
+  assert_eq "$(printf '%s\n' "$out" | grep -c "init: .*give its number (1-$NP), slug or title")" "5" "one line saying what is accepted, per refused answer"
+  resume_of "$out" | grep -q -- "--persona devops-sre" || fail "a title prefix only one persona has: $out"
+  [ -e "$W/none" ] && fail "a run that stopped at a question wrote the copy"
+  # the answer the owner's first test gave, through to a hub
+  out=$(pty -i "staff software engineer" -i "Acme Corp" -i "Sam Lee" -- bin/init --dest "$W/pf") || fail "init with the persona's title: $out"
+  assert_contains "$W/pf/hub.conf" "HUB_PERSONA=staff-software-engineer" "the title becomes the slug"
+}
+
+init_persona_flag() {
+  local out rc form
+  for form in "$NSTAFF" "Staff Software Engineer" "staff_software_engineer" "STAFF/SOFTWARE" "staff"; do
+    out=$(bin/init --persona "$form" --client X 2>&1); rc=$?
+    assert_eq "$rc" "2" "--persona '$form' without --owner"
+    case "$out" in *"missing --owner"*) ;; *) fail "--persona '$form' not accepted: $out";; esac
+  done
+  bin/init --persona "ML / AI Engineer" --client "Acme Corp" --owner "Sam Lee" --dest "$W/pg" >/dev/null 2>&1 || fail "--persona with the title"
+  assert_contains "$W/pg/hub.conf" "HUB_PERSONA=ml-ai-engineer" "--persona title becomes the slug"
+  out=$(bin/init --persona "staff engineer" --client X --owner Y --dest "$W/pn" 2>&1); rc=$?
+  assert_eq "$rc" "2" "an unknown --persona exits 2"
+  case "$out" in *"no persona 'staff engineer'"*"staff-software-engineer"*) ;; *) fail "the closest persona is named: $out";; esac
+  out=$(bin/init --persona tech --client X --owner Y --dest "$W/pn" 2>&1); rc=$?
+  assert_eq "$rc" "2" "a prefix two personas share exits 2"
+  case "$out" in *tech-lead*technical-product-manager*) ;; *) fail "both personas with the prefix are named: $out";; esac
+  bin/init --persona zzz --client X --owner Y --dest "$W/pn" >/dev/null 2>&1; assert_eq "$?" "2" "nothing close exits 2"
+  [ -e "$W/pn" ] && fail "an unknown --persona wrote the copy"
+}
+
+init_asks_again() {
+  local out
+  out=$(pty -i "" -i $'Acme\e[D' -i "  Acme Corp  " -i "   " -i $'Sam\tLee' -i "Sam Lee" -- bin/init --persona tech-lead --dest "$W/aa") ||
+    fail "init after answers asked again: $out"
+  . "$W/aa/hub.conf"; assert_eq "$HUB_CLIENT|$HUB_OWNER" "Acme Corp|Sam Lee" "client and owner as answered (trimmed)"
+  assert_eq "$(printf '%s\n' "$out" | grep -c "init: the client: not empty, no control characters")" "2" "the client question asked again twice"
+  assert_eq "$(printf '%s\n' "$out" | grep -c "init: the owner: not empty, no control characters")" "2" "the owner question asked again twice"
+  printf '%s\n' "$out" | grep -q "Client (the organisation this hub works for" || fail "the client question says what it is for: $out"
+  printf '%s\n' "$out" | grep -q "Owner (the person this hub works for" || fail "the owner question says what it is for: $out"
+}
+
+init_resume_line() {
+  local out rc line cmd
+  # end of input at the first question: the command with nothing filled in, still runnable
+  out=$(pty -- bin/init --dest "$W/r0"); rc=$?
+  assert_eq "$rc" "1" "end of input at the persona question"
+  assert_eq "$(printf '%s\n' "$out" | grep -c "^init: stopped")" "1" "one line"
+  resume_of "$out" | grep -qE "bin/init --dest [^ ]+/r0$" || fail "the resume line repeats the options: $out"
+  # end of input later: the answers given are in it, quoted for a shell, and running it asks only what is left
+  out=$(pty -i "staff software engineer" -- bin/init --client "O'Brien & Co \$1 \`x\`" --briefing 07:30 --dest "$W/r hub"); rc=$?
+  assert_eq "$rc" "1" "end of input at the owner question"
+  line=$(printf '%s\n' "$out" | grep "^init: stopped"); cmd=$(resume_of "$line")
+  [ -n "$cmd" ] || fail "no command to continue: $out"
+  case "$cmd" in *"<"*|*"{{"*|*"..."*) fail "a placeholder in the resume line: $cmd";; esac
+  case "$cmd" in *"--persona staff-software-engineer"*) ;; *) fail "the persona answer is in the resume line: $cmd";; esac
+  [ -e "$W/r hub" ] && fail "a run that stopped at a question wrote the copy"
+  out=$(cd / && pty -i "Sam Lee" -- bash -c "$cmd") || fail "the resume line did not finish the hub: $out"
+  printf '%s\n' "$out" | grep -q "Persona (" && fail "the resume line asked the persona again"
+  . "$W/r hub/hub.conf"
+  assert_eq "$HUB_PERSONA|$HUB_CLIENT|$HUB_OWNER|$HUB_BRIEFING_HOUR" "staff-software-engineer|O'Brien & Co \$1 \`x\`|Sam Lee|7" "values through the resume line"
+}
+
+init_runs_again() {
+  local out rc C D
+  # a copy in place where bin/init stopped part way (a folder it could not make) and the person fixed the cause
+  make_hub; C="$HUB"; mkdir -p "$C/ops"; echo blocker > "$C/ops/ci-cd"
+  out=$(cd "$C" && bin/init --persona devops-sre --client "Acme Corp" --owner "Sam Lee" --repo acme/infra=/x --folders "ops/environments ops/ci-cd" 2>&1); rc=$?
+  assert_eq "$rc" "1" "the first run stops at the folder it cannot make"
+  [ -f "$C/.init-pending" ] || fail "a stopped run is recognisable"
+  case "$out" in *"not finished"*) ;; *) fail "the stop says the copy is not finished: $out";; esac
+  rm "$C/ops/ci-cd"; echo "a person's note" >> "$C/ops/environments/STATE.md"
+  # run again with no options and no terminal: the earlier run's values, nothing asked, nothing damaged
+  out=$(cd "$C" && bin/init 2>&1 </dev/null) || fail "running again did not finish the copy: $out"
+  [ -e "$C/.init-pending" ] && fail "the finished hub still says pending"
+  . "$C/hub.conf"; assert_eq "$HUB_PERSONA|$HUB_CLIENT|$HUB_OWNER|$HUB_REPOS" "devops-sre|Acme Corp|Sam Lee|acme/infra" "the earlier run's values"
+  [ -f "$C/ops/ci-cd/STATE.md" ] || fail "the folder left over is made"
+  assert_contains "$C/ops/environments/STATE.md" "a person's note" "an edited file is kept"
+  assert_eq "$(grep -c '| acme/infra |' "$C/ops/environments/ACCESS.md")" "1" "the repo row once"
+  assert_eq "$(cat "$C"/journal/*.md | grep -c 'Hub initialized from ade-brain')" "1" "one journal entry"
+  assert_eq "$(grep -c 'You are the \*\*DevOps' "$C/CLAUDE.md")" "1" "the persona rendered once"
+  grep -q "{{" "$C/CLAUDE.md" "$C/ACCESS.md" "$C/README.md" "$C"/.claude/agents/*.md && fail "an unfilled placeholder after running again"
+  (cd "$C" && bin/init >/dev/null 2>&1); assert_eq "$?" "2" "a finished hub is still never re-initialized"
+  # a --dest copy that stopped after a question was answered: the same command again asks nothing given before
+  make_hub; T2="$HUB"; D="$W/rd"; echo '{' > "$T2/.claude/settings.json"
+  out=$(pty -i "Sam Lee" -- "$T2/bin/init" --persona tech-lead --client "Acme Corp" --dest "$D"); rc=$?
+  assert_eq "$rc" "1" "the first --dest run stops at a broken settings file"
+  cp "$REPO/.claude/settings.json" "$D/.claude/settings.json"; cp "$REPO/.claude/settings.json" "$T2/.claude/settings.json"
+  rm "$D/bin/doctor"   # as if the copy itself had stopped part way
+  out=$("$T2/bin/init" --persona tech-lead --client "Other" --dest "$D" 2>&1 </dev/null); rc=$?
+  assert_eq "$rc" "2" "different values for a copy started with others are refused"
+  case "$out" in *"Acme Corp"*) ;; *) fail "the refusal names the earlier run's values: $out";; esac
+  out=$(pty -- "$T2/bin/init" --persona tech-lead --client "Acme Corp" --dest "$D") || fail "the same command did not finish the copy: $out"
+  printf '%s\n' "$out" | grep -q "Owner (" && fail "the owner answered before was asked again"
+  . "$D/hub.conf"; assert_eq "$HUB_PERSONA|$HUB_CLIENT|$HUB_OWNER" "tech-lead|Acme Corp|Sam Lee" "the answer recorded by the first run"
+  [ -x "$D/bin/doctor" ] || fail "the copy is completed"
+  [ -e "$D/.init-pending" ] && fail "the finished --dest hub still says pending"
+}
+
+init_no_terminal() {
+  local out rc
+  out=$(bin/init --client X --dest "$W/nt" 2>&1 </dev/null); rc=$?
+  assert_eq "$rc" "2" "missing values without a terminal"
+  assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "one line: $out"
+  case "$out" in *--persona*--owner*) ;; *) fail "the line names what is missing: $out";; esac
+  case "$out" in *--client*) fail "the line names only what is missing: $out";; esac
+  out=$(bin/init 2>&1 </dev/null); rc=$?
+  assert_eq "$rc" "2" "nothing given, no terminal"
+  case "$out" in *--persona*--client*--owner*) ;; *) fail "all three named: $out";; esac
+  [ -e "$W/nt" ] && fail "a refused run wrote the copy"
+}
+
+init_persona_forgives; init_persona_flag; init_asks_again; init_resume_line; init_runs_again; init_no_terminal
 echo ok
