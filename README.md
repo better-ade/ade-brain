@@ -80,6 +80,10 @@ no secret names to check. `push -u` also sets the upstream auto sync needs. Comm
 
 Or locally, without GitHub: `bin/init ... --dest ~/Project/acme-sre` copies the template to a new folder first.
 
+On a terminal, `bin/init` asks for a missing persona (its number, slug or title; case, spaces, `-`, `_` and `/` do not
+matter), client or owner; at an end of input it prints the command that continues. A run that stopped part way leaves
+`.init-pending` in the copy: `bin/init` there (or the same command) finishes it without asking again.
+
 | `bin/init` option | Sets |
 |---|---|
 | `--persona <slug>` | the role (see `personas/`); `--list` shows them |

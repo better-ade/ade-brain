@@ -20,3 +20,6 @@ __pycache__/
 # Claude Code's worktrees (whole copies of the hub) and rendered BMAD workflows: local, never synced
 .claude/worktrees/
 _bmad/render/
+
+# bin/init: present only while a run has not finished (.ade/context/init.md)
+.init-pending

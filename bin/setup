@@ -26,4 +26,7 @@ for d in "$H"/.claude/skills/bmad-*/; do
   elif [ -e "$t" ] || [ -L "$t" ]; then echo "skip skill $n (exists, not ours)"
   else ln -s "${d%/}" "$t"; echo "linked skill $n"; fi
 done
-git -C "$H" config core.hooksPath .githooks
+# only where the git config is this hub's own: a linked worktree shares its main repo's config (story H3)
+if git_config_own "$H"; then git -C "$H" config core.hooksPath .githooks
+elif git -C "$H" rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "hooks path left as is: $H shares its git config (a worktree or a folder of a repo)"
+else git -C "$H" config core.hooksPath .githooks; fi
