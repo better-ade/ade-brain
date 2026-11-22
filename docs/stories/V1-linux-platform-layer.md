@@ -1,6 +1,7 @@
 # V1: the hub runs on Linux (platform layer)
 
-Status: Ready for development (2026-11-21). Risk: high (secrets and services).
+Status: **Merged (2026-11-22, PR #55)**: `bash tests/run.sh` green in CI on the merge. Earlier: ready for development
+(2026-11-21). Risk: high (secrets and services).
 Owner's intent (2026-11-21): the orchestrator runs as a long-running process on an Ubuntu VPS, with code checkouts on
 the server too. Verification command: `bash tests/run.sh`, on macOS and in CI on ubuntu-latest.
 

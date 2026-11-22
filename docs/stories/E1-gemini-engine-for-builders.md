@@ -1,6 +1,7 @@
 # E1: Gemini CLI as an engine for builders and focus agents
 
-Status: Ready for development (2026-11-21). Risk: high (a second CLI with its own keys, sandbox and data terms).
+Status: **Merged (2026-11-21, PR #54)**: `bash tests/run.sh` green in CI on the merge. Earlier: ready for development
+(2026-11-21). Risk: high (a second CLI with its own keys, sandbox and data terms).
 Owner's decisions (2026-11-21): builders and focus agents can use DeepSeek, GLM, Muse (through Claude Code, as today)
 and **Gemini**; the orchestrator stays on Claude Code; GPT/Codex stays paused. Earlier record: ADR 0002 (providers and
 engines), `.ade/context/engines.md`, deferred-work "Gemini through Gemini CLI" (2026-11-19).

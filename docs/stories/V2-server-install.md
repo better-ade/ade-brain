@@ -1,6 +1,7 @@
 # V2: `ade server install` sets up an Ubuntu VPS
 
-Status: Ready for development (2026-11-21). Risk: high (a server reachable from the internet). Depends on V1, A1 (ade-cli).
+Status: **Merged (2026-11-22, PR #58)**: `bash tests/run.sh` green in CI on the merge. Earlier: ready for development
+(2026-11-21). Risk: high (a server reachable from the internet). Depends on V1, A1 (ade-cli).
 
 ## Goal
 `ade server install` (run on the VPS over SSH, as a normal user with sudo) makes it a hub host: installs git, python3,
