@@ -1,0 +1,216 @@
+#!/bin/bash
+# bin/server install [--dry-run] [--accept-risk <row>]... | bin/server status: this Ubuntu machine as a hub host (story V2;
+# `ade server install` and `ade server status` run it). Contract: .ade/context/server.md.
+# install (as a normal user with sudo, never root; over SSH):
+#   1. the host's safety, one row each, read-only: ssh-password (password and keyboard-interactive login off), ssh-root
+#      (root login off), both for root and this user and with no Match block in the SSH config; firewall (ufw active,
+#      denying incoming by default, with only the SSH port(s) of sshd -T open); upgrades (APT's unattended upgrades on and
+#      apt-daily-upgrade.timer enabled); listeners (nothing but sshd listens beyond loopback). A failing row stops the
+#      install before anything changes, unless it is accepted with --accept-risk <row> (repeatable);
+#   2. the missing packages of a fixed list (apt; the distribution's versions): ade's tool set (git python3 tmux gh) and
+#      the hub's needs (nodejs and npm only when node and npm are not already on PATH), plus the file viewer's extras
+#      (bat glow poppler-utils chafa yazi) where the archive has them (each one it lacks is skipped with a note), then the
+#      missing tools at pinned versions (server_pin), each from its release file over https only and checked against
+#      the sha256 pinned here (server_sha): gitleaks (~/.local/bin), bun (~/.bun/bin, linked into ~/.local/bin), Claude
+#      Code (its own `claude install`); each must be there afterwards. What is already there is left alone, so a rerun
+#      changes nothing;
+#   3. the code folder (AGENT_CODE_DIR, default ~/Project; bin/work clones each checkout there on first use) and the
+#      hub's scheduled jobs (bin/schedule install, when any job it installs is absent);
+#   4. the one manual step: sign Claude Code in over SSH (the Pro or Max login), then bin/keys set telegram.
+#   Nothing listens on a public port: Telegram, Remote Control and git all connect out.
+#   --dry-run prints every command that would change the machine (lines starting "+ ") and changes nothing; it runs the
+#   read-only checks and exits as the install would (1 when a safety row fails or a tool has no build for this machine).
+# status: services, last sync, last monitor run, disk space; never a secret.
+# Exit: 0 done, 1 unsafe or a step failed, 2 usage, root, no sudo or not Linux.
+set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
+ROWS="ssh-password ssh-root firewall upgrades listeners"
+USAGE="usage: bin/server install [--dry-run] [--accept-risk ${ROWS// /|}]... | bin/server status"
+# the fixed package list (apt) and the pinned tool versions
+# required (ade's tool set first: git python3 tmux gh), then the extras for ade's file viewer, installed where this
+# system's archive has them (apt-cache) and skipped with a note otherwise
+server_packages() { echo "git python3 tmux gh curl ca-certificates nodejs npm ufw unattended-upgrades"; }
+server_extras() { echo "bat glow poppler-utils chafa yazi"; }
+server_pin() { case "$1" in gitleaks) echo 8.30.1 ;; bun) echo 1.3.9 ;; claude) echo 2.1.330 ;; *) return 1 ;; esac; }
+# server_arch: x64 or arm64, the builds the pins cover; exit 1 on any other machine
+server_arch() { case "$(uname -m)" in x86_64|amd64) echo x64 ;; aarch64|arm64) echo arm64 ;; *) return 1 ;; esac; }
+# server_url <tool> <arch>: the pinned version's release file (bun: the baseline x64 build, which runs on every x64 CPU)
+server_url() { local v; v="$(server_pin "$1")"; case "$1" in
+    gitleaks) echo "https://github.com/gitleaks/gitleaks/releases/download/v$v/gitleaks_${v}_linux_$2.tar.gz" ;;
+    bun) echo "https://github.com/oven-sh/bun/releases/download/bun-v$v/$(bun_build "$2").zip" ;;
+    claude) echo "https://downloads.claude.ai/claude-code-releases/$v/linux-$2/claude" ;; esac; }
+bun_build() { if [ "$1" = x64 ]; then echo bun-linux-x64-baseline; else echo bun-linux-aarch64; fi; }
+# server_sha <tool> <arch>: the sha256 of that release file, copied from the project's published checksums for the pinned
+# version (gitleaks_8.30.1_checksums.txt, bun-v1.3.9 SHASUMS256.txt, Claude Code 2.1.330 manifest.json); a pin bump
+# changes both. A hermetic test (AGENT_PLATFORM_TEST=1 only) may give its own from AGENT_SERVER_SHA_FILE.
+server_sha() {
+  if [ "${AGENT_PLATFORM_TEST:-}" = 1 ] && [ -n "${AGENT_SERVER_SHA_FILE:-}" ]; then
+    awk -v k="$1-$2" '$1 == k {print $2; f = 1} END {exit !f}' "$AGENT_SERVER_SHA_FILE"; return; fi
+  case "$1-$2" in
+    gitleaks-x64) echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
+    gitleaks-arm64) echo e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 ;;
+    bun-x64) echo 104d4d037f4b35e10215c0507e1779691f39c57bd91ddeefe11cad781e3fc4b9 ;;
+    bun-arm64) echo a2c2862bcc1fd1c0b3a8dcdc8c7efb5e2acd871eb20ed2f17617884ede81c844 ;;
+    claude-x64) echo f390eaa0814e6a1bff74cbb47acb74cb9c89d30ced809fe0af5af00c7bfe8ebb ;;
+    claude-arm64) echo 6016f90cac783e367fb1aa97c768a2efb94a0128a5b46b70fb3d8fcbbd9dd444 ;;
+    *) return 1 ;;
+  esac
+}
+DRY=0; ACCEPT=" "
+run() { if [ "$DRY" = 1 ]; then printf '+'; printf ' %q' "$@"; echo; else "$@"; fi; }
+row() { printf '%-9s %-13s %s\n' "$1" "$2" "$3"; }
+need_linux() { [ "$(platform)" = linux ] || { echo "server: this sets up an Ubuntu server; this machine is $(platform)" >&2; exit 2; }; }
+
+# ssh_check <setting>...: why the SSH rows fail (empty when they pass): a setting missing from sshd -T, globally or for
+# root or this user (-C: what a Match block makes of their login), or any Match block in the config (sshd -T cannot vouch
+# for an address or group it was not asked about)
+ssh_check() { local k w o
+  for k; do for w in global root "$ME"; do
+      case "$w" in global) o="$SG" ;; root) o="$SR" ;; *) o="$SU" ;; esac
+      printf '%s\n' "$o" | grep -qix "$k" && continue
+      if [ "$w" = global ]; then echo "sshd -T has no '$k'"; else echo "a Match block undoes '$k' for $w"; fi; return
+  done; done
+  [ -z "$MATCH" ] || echo "the SSH config has a Match block ($MATCH); move its settings out of it"
+}
+# ufw_open: the To of each ALLOW or LIMIT rule that lets traffic in (any direction but OUT), v6 and app names dropped
+ufw_open() { awk '/^--/ {t = 1; next} t && NF {
+    for (i = 1; i <= NF; i++) if ($i ~ /^(ALLOW|LIMIT|DENY|REJECT)$/) break
+    if (i > NF || $i !~ /^(ALLOW|LIMIT)$/ || $(i + 1) == "OUT") next
+    s = $1; for (j = 2; j < i; j++) s = s " " $j
+    gsub(/ ?\(v6\)/, "", s); sub(/ \([^()]*\)$/, "", s); print s }'; }
+ssh_port() { local p; for p in $PORTS; do case "$1" in "$p"|"$p/tcp") return 0 ;; esac; done
+  [ "$1" = OpenSSH ] && case " $PORTS " in *" 22 "*) return 0 ;; esac; return 1; }
+# public_listeners: each TCP or UDP listener beyond loopback that is not sshd on its port (nor a DHCP client, UDP 68/546)
+public_listeners() { awk -v ports=" $PORTS " 'NF >= 5 { p = $1; a = $5; port = a; sub(/.*:/, "", port); h = a; sub(/:[^:]*$/, "", h)
+    gsub(/[][]/, "", h); i = ""; if (h ~ /%/) { i = h; sub(/.*%/, "", i); sub(/%.*/, "", h) }
+    if (h ~ /^127\./ || h == "::1" || h ~ /^::ffff:127\./ || i == "lo") next
+    if (p == "tcp" && index(ports, " " port " ")) next
+    if (p == "udp" && (port == "68" || port == "546")) next
+    print p " " a }' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
+
+safety() {   # prints the rows; returns 1 when a row fails and is not accepted
+  local bad=0 r st why ufws d allow x lst cf=/etc/ssh
+  [ "${AGENT_PLATFORM_TEST:-}" != 1 ] || cf="${AGENT_SSHD_ETC:-$cf}"
+  ME="$(id -un)"
+  SG="$(sudo -n sshd -T 2>/dev/null)" || SG=""
+  SR="$(sudo -n sshd -T -C "user=root,host=x,addr=203.0.113.1" 2>/dev/null)" || SR=""
+  SU="$(sudo -n sshd -T -C "user=$ME,host=x,addr=203.0.113.1" 2>/dev/null)" || SU=""
+  MATCH="$(sudo -n grep -Eil '^[[:space:]]*match[[:space:]]' "$cf/sshd_config" "$cf"/sshd_config.d/*.conf 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+  PORTS="$(printf '%s\n' "$SG" | awk 'tolower($1) == "port" && $2 ~ /^[0-9]+$/ {print $2}' | sort -un | tr '\n' ' ' | sed 's/ $//')"
+  ufws="$(sudo -n ufw status verbose 2>/dev/null)" || ufws=""
+  allow=""; for d in $PORTS; do allow="$allow && sudo ufw allow $d/tcp"; done; [ -n "$allow" ] || allow=" && sudo ufw allow <your SSH port>/tcp"
+  for r in $ROWS; do
+    st=OK; why=""
+    case "$r" in
+      ssh-password) why="$(ssh_check 'passwordauthentication no' 'kbdinteractiveauthentication no')"
+        [ -z "$why" ] || { st=FAIL; why="SSH may allow password login: $why (PasswordAuthentication no, KbdInteractiveAuthentication no in /etc/ssh/sshd_config)"; } ;;
+      ssh-root) why="$(ssh_check 'permitrootlogin no')"
+        [ -z "$why" ] || { st=FAIL; why="SSH may allow root login: $why (PermitRootLogin no in /etc/ssh/sshd_config)"; } ;;
+      firewall) if ! printf '%s\n' "$ufws" | grep -qi '^status: active'; then st=FAIL; why="ufw is not active (sudo ufw default deny incoming$allow && sudo ufw enable)"
+        elif [ -z "$PORTS" ]; then st=FAIL; why="the SSH port is unknown (sudo sshd -T gave none), so the rules cannot be judged"
+        elif ! printf '%s\n' "$ufws" | grep -Eqi '^default:.*(deny|reject) \(incoming\)'; then st=FAIL; why="ufw lets in what no rule names (sudo ufw default deny incoming)"
+        else why="$(printf '%s\n' "$ufws" | ufw_open | while IFS= read -r x; do ssh_port "$x" || printf '%s; ' "$x"; done | sort -u)"
+          [ -z "$why" ] || { st=FAIL; why="ufw lets in more than SSH (port ${PORTS// /, }): ${why%; }"; }; fi ;;
+      upgrades) { apt-config dump APT::Periodic::Unattended-Upgrade 2>/dev/null | grep -Eq '^APT::Periodic::Unattended-Upgrade "([1-9][0-9]*|always)";' &&
+          [ "$(systemctl is-enabled apt-daily-upgrade.timer 2>/dev/null)" = enabled ]; } ||
+          { st=FAIL; why="unattended security upgrades are off (sudo dpkg-reconfigure -plow unattended-upgrades; sudo systemctl enable --now apt-daily-upgrade.timer)"; } ;;
+      listeners) if ! lst="$(sudo -n ss -Hltnu 2>/dev/null)"; then st=FAIL; why="the listening ports could not be read (sudo ss -Hltnu)"
+        else why="$(printf '%s\n' "$lst" | public_listeners)"; [ -z "$why" ] || { st=FAIL; why="listening beyond loopback, not sshd: $why (stop it or bind it to 127.0.0.1)"; }; fi ;;
+    esac
+    [ "$st" = OK ] && why="${why:-on}"
+    if [ "$st" = FAIL ]; then case "$ACCEPT" in *" $r "*) st=ACCEPTED ;; *) bad=1 ;; esac; fi
+    row "$st" "$r" "$why"
+  done
+  return "$bad"
+}
+installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed'; }
+# apt_missing: the missing packages; nodejs and npm are left alone when node and npm are already on PATH (a node from
+# elsewhere, whose npm the distribution's would clash with)
+apt_missing() { local p m=""; for p in $(server_packages); do
+    case "$p" in nodejs) command -v node >/dev/null 2>&1 && continue ;;
+      npm) command -v npm >/dev/null 2>&1 && continue
+        if command -v node >/dev/null 2>&1 && ! installed nodejs; then echo "npm: this node is not the distribution's; install npm the way node was installed" >&2; continue; fi ;; esac
+    installed "$p" || m="$m $p"; done; echo "${m# }"; }
+# extras_missing: the extras not installed that the archive has; a note on stderr for each it lacks
+extras_missing() { local p m=""; for p in $(server_extras); do installed "$p" && continue
+    if apt-cache show "$p" >/dev/null 2>&1; then m="$m $p"; else echo "$p: not packaged for this system; skipped" >&2; fi; done; echo "${m# }"; }
+have() { command -v "$1" >/dev/null 2>&1 || [ -x "$HOME/.local/bin/$1" ] || [ -x "$HOME/.bun/bin/$1" ]; }
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+tmpd() { if [ "$DRY" = 1 ]; then echo "<tmp>"; else mktemp -d; fi; }
+# fetch <tool> <file>: the pinned release file into <file>, over https only (redirects too), then checked against its
+# pinned sha256; never run or unpacked unless both hold
+fetch() { local u w; u="$(server_url "$1" "$ARCH")"; w="$(server_sha "$1" "$ARCH")" || { echo "server: no pinned sha256 for $1 on $ARCH" >&2; return 1; }
+  run curl --proto '=https' --tlsv1.2 -fsSL -o "$2" "$u" || { echo "server: could not download $u" >&2; return 1; }
+  if [ "$DRY" = 1 ]; then echo "  (then its sha256 must be $w)"; return 0; fi
+  [ "$(sha256 "$2" | awk '{print $1}')" = "$w" ] || { echo "server: $u does not match its pinned sha256 $w; not installed" >&2; return 1; }; }
+install_gitleaks() { local t="$1"
+  fetch gitleaks "$t/gitleaks.tar.gz" && run tar -xzf "$t/gitleaks.tar.gz" -C "$t" gitleaks && run mkdir -p "$HOME/.local/bin" &&
+    run cp "$t/gitleaks" "$HOME/.local/bin/gitleaks" && run chmod 755 "$HOME/.local/bin/gitleaks"; }
+install_bun() { local t="$1" b; b="$(bun_build "$ARCH")"
+  fetch bun "$t/bun.zip" && run python3 -m zipfile -e "$t/bun.zip" "$t" && run mkdir -p "$HOME/.bun/bin" "$HOME/.local/bin" &&
+    run cp "$t/$b/bun" "$HOME/.bun/bin/bun" && run chmod 755 "$HOME/.bun/bin/bun" && run ln -sf "$HOME/.bun/bin/bun" "$HOME/.local/bin/bun"; }
+install_claude() { local t="$1"   # the verified binary installs itself (launcher in ~/.local/bin), as Anthropic's installer does
+  fetch claude "$t/claude" && run chmod 755 "$t/claude" && run "$t/claude" install "$(server_pin claude)"; }
+# install_tool <tool>: download, verify, install; done only when the tool is there afterwards
+install_tool() { local t rc; t="$(tmpd)" || return 1
+  "install_$1" "$t"; rc=$?; [ "$DRY" = 1 ] || rm -rf "$t"
+  [ "$rc" = 0 ] && { [ "$DRY" = 1 ] || have "$1"; } || { echo "server: $1 $(server_pin "$1") was not installed" >&2; return 1; }; }
+
+case "${1:-}" in
+  install) shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --dry-run) DRY=1; shift ;;
+        --accept-risk) [ $# -ge 2 ] && case " $ROWS " in *" $2 "*) true ;; *) false ;; esac || { echo "server: --accept-risk takes one of: $ROWS" >&2; exit 2; }
+          ACCEPT="$ACCEPT$2 "; shift 2 ;;
+        *) echo "$USAGE" >&2; exit 2 ;;
+      esac
+    done
+    need_linux
+    [ "$(id -u)" != 0 ] || { echo "server: never as root; run it as the normal user the hub runs as (with sudo)" >&2; exit 2; }
+    command -v sudo >/dev/null 2>&1 && sudo -v 2>/dev/null || { echo "server: needs a user with sudo (sudo -v failed)" >&2; exit 2; }
+    git -C "$H" rev-parse --git-dir >/dev/null 2>&1 || { echo "server: $H is not a git checkout of the hub (ade server install clones it)" >&2; exit 2; }
+    echo "== safety"
+    SAFE=0; safety || SAFE=1
+    if [ "$SAFE" = 1 ]; then
+      echo "server: the host is not safe to run the hub; fix each FAIL row, or accept it with --accept-risk <row>" >&2
+      [ "$DRY" = 1 ] || exit 1
+      echo "(dry run: the install would stop here; the rest is what it would do once safe)"
+    fi
+    # the tools' pinned builds cover x64 and arm64 only: refused here, before anything changes
+    FAILED=0; NEED=""; for t in gitleaks bun claude; do have "$t" || NEED="$NEED $t"; done
+    ARCH="$(server_arch)" || ARCH=""
+    if [ -n "$NEED" ] && [ -z "$ARCH" ]; then echo "server: no pinned build of${NEED} for $(uname -m) (x86_64 and aarch64 only)" >&2
+      [ "$DRY" = 1 ] || exit 1; FAILED=1; fi
+    echo "== packages"
+    m="$(apt_missing)"; x="$(extras_missing 2>&1 >/dev/null)"; [ -z "$x" ] || echo "$x"; m="$m $(extras_missing 2>/dev/null)"; m="$(echo $m)"
+    if [ -n "$m" ]; then run sudo apt-get update -q && run sudo apt-get install -y -q --no-install-recommends $m || { echo "server: apt-get install failed" >&2; exit 1; }
+    else echo "all present: $(server_packages) (and every packaged extra: $(server_extras))"; fi
+    echo "== tools"
+    for t in gitleaks bun claude; do
+      if have "$t"; then echo "$t: present"; elif [ -z "$ARCH" ]; then echo "$t: no build for $(uname -m); not installed"
+      else install_tool "$t" || exit 1; fi
+    done
+    echo "== hub"
+    CD="${AGENT_CODE_DIR:-$HOME/Project}"
+    if [ -d "$CD" ]; then echo "code folder: $CD"; else run mkdir -p "$CD" || exit 1; fi
+    # the jobs: installed when any it installs is absent (bin/schedule status lists only those; bin/schedule install
+    # refreshes them after a hub update); read-only, so the dry run checks it too. Read to its end, then matched: a
+    # reader that stops early (grep -q) fails bin/schedule's next write, which then garbles its next systemctl call
+    st="$("$H/bin/schedule" status 2>/dev/null)"
+    if ! case $'\n'"$st" in *$'\n'absent*) true ;; *) false ;; esac; then echo "scheduled jobs: installed (bin/schedule install refreshes them)"
+    else run "$H/bin/schedule" install || { echo "server: bin/schedule install failed" >&2; exit 1; }; fi
+    echo "== one manual step, over SSH on this machine"
+    echo "  1. claude            sign in with your Pro or Max login (Claude Code prints a link to open on your own computer)"
+    echo "  2. $H/bin/keys set telegram"
+    echo "Nothing here listens on a public port: Telegram, Remote Control and git all connect out."
+    exit "$([ "$DRY" = 1 ] && [ "$SAFE$FAILED" != 00 ] && echo 1 || echo 0)" ;;
+  status) [ $# -eq 1 ] || { echo "$USAGE" >&2; exit 2; }
+    L="$(state_dir)/logs"
+    when() { local t; [ -f "$1" ] && t="$(file_mtime "$1")" && [ -n "$t" ] && python3 -c 'import sys, time; print(time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(sys.argv[1]))))' "$t" || echo never; }
+    echo "== services"; "$H/bin/schedule" status 2>/dev/null | sed 's/^/  /'
+    row "" "last sync" "$(when "$L/sync.log")"
+    row "" "last monitor" "$(when "$L/monitor.log")"
+    d="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {printf "%.1f GB free of %.1f GB (%s used)", $4/1048576, $2/1048576, $5}')"
+    row "" "disk" "${d:-unknown}" ;;
+  *) echo "$USAGE" >&2; exit 2 ;;
+esac
