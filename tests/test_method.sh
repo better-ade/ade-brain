@@ -95,7 +95,29 @@ template_matches_pin() {
   grep -qi "lean mode" "$REPO/.ade/rules.md" && fail "the template's rules carry a lean-mode section of their own"
   return 0
 }
+# ade-method's ade.json install_templates (v2.1.0): each template file goes to its target, and check covers it
+templates_installed() {
+  local T; T="$(mktemp -d)/ade-method-t"; method_repo "$T" t1; mkdir -p "$T/templates"
+  echo "PR template t2" > "$T/templates/pull_request_template.md"; echo "commit template t2" > "$T/templates/commit-template.txt"
+  printf '{"format": 2, "install_templates": {"templates/pull_request_template.md": ".github/pull_request_template.md", "templates/commit-template.txt": ".ade/commit-template.txt"}}\n' > "$T/ade.json"
+  echo "rules t2" > "$T/rules.md"; git -C "$T" add -A && git -C "$T" commit -qm t2 && git -C "$T" tag t2
+  fresh; rm -f .github/pull_request_template.md .ade/commit-template.txt
+  AGENT_METHOD_REPO="$T" bin/method sync t2 >/dev/null || fail "sync t2 failed"
+  assert_eq "$(cat .github/pull_request_template.md)" "PR template t2" "the PR template is installed"
+  assert_eq "$(cat .ade/commit-template.txt)" "commit template t2" "the commit template is installed"
+  grep -q " .github/pull_request_template.md$" .ade/method-version || fail "the PR template's hash is recorded"
+  grep -q " .ade/commit-template.txt$" .ade/method-version || fail "the commit template's hash is recorded"
+  bin/method check >/dev/null || fail "check passes right after the sync"
+  echo edited >> .github/pull_request_template.md
+  out="$(bin/method check)"; assert_eq "$?" "1" "an edited template fails check"
+  echo "$out" | grep -qx "differs: .github/pull_request_template.md" || fail "check names it [$out]"
+  # a target outside the hub, or a source outside the method, is refused before anything changes
+  printf '{"install_templates": {"templates/commit-template.txt": "../escape.txt"}}\n' > "$T/ade.json"
+  git -C "$T" commit -qam bad && git -C "$T" tag t3; before="$(cat .ade/method-version)"
+  AGENT_METHOD_REPO="$T" bin/method sync t3 >/dev/null 2>&1; assert_eq "$?" "1" "a target outside the hub exits 1"
+  assert_eq "$(cat .ade/method-version)" "$before" "and changes nothing"; [ -e ../escape.txt ] && fail "wrote outside the hub"; true
+}
 for t in sync_copies_method version_recorded ref_from_conf_or_arg bad_ref_changes_nothing check_finds_drift \
          doctor_reports_drift init_syncs_method stale_overrides_removed \
-         init_records_failed_sync template_matches_pin; do (set -u; $t) || fail "$t"; done
+         init_records_failed_sync templates_installed template_matches_pin; do (set -u; $t) || fail "$t"; done
 echo ok
