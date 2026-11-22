@@ -23,6 +23,9 @@ if not os.isatty(0):
         if b'"session_id"' in raw and raw.rstrip().endswith(b"}"): break
 m = re.search(rb'"session_id"\s*:\s*"([A-Za-z0-9_-]+)"', raw)
 SID = m.group(1).decode() if m else ""
+if SID and os.environ.get("SIDF"):
+    try: open(os.environ["SIDF"], "w").write(SID)
+    except OSError: pass
 OWN = OWN.rstrip("/")
 ROOT = OWN in ("", ".")
 snap = os.path.join(ST, "changes-seen." + SID if SID else "changes-seen")
@@ -122,5 +125,8 @@ if out: print("\n".join(out))
 PY
 )
 R=""; [ -z "${1:-}" ] || R="$(repos_of "$1" 2>/dev/null)"
-H="$H" ST="$ST" OWN="${1:-}" EV="$(dirname "$0")/events.py" REPOS="$R" python3 -I -c "$PY_SRC" 2>/dev/null
+SIDF=""; [ -z "${1:-}" ] || SIDF="$ST/.sid.$$"
+H="$H" ST="$ST" OWN="${1:-}" EV="$(dirname "$0")/events.py" REPOS="$R" SIDF="$SIDF" python3 -I -c "$PY_SRC" 2>/dev/null
+# the Claude session id goes in the focus session's entry (bin/recover: --resume <id>, story R1)
+if [ -n "$SIDF" ] && [ -s "$SIDF" ]; then session_mark "$1" busy "$(cat "$SIDF")"; fi; [ -z "$SIDF" ] || rm -f "$SIDF"
 exit 0

@@ -1,22 +1,97 @@
 {
   "autoCompactWindow": 200000,
   "bashOutputMaxChars": 8000,
-  "permissions": { "ask": ["Bash(*bin/dispatch --approve*)", "Bash(*ade dispatch --approve*)", "Bash(script *)"] },
+  "permissions": {
+    "ask": [
+      "Bash(*bin/dispatch --approve*)",
+      "Bash(*ade dispatch --approve*)",
+      "Bash(*bin/agent --live-test*)",
+      "Bash(script *)",
+      "Bash(*bin/chat answer*)",
+      "Bash(*ade chat answer*)",
+      "Bash(*bin/chat to *)",
+      "Bash(*ade chat to *)"
+    ]
+  },
   "hooks": {
     "PreCompact": [
-      { "hooks": [ { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/bin/journal hub \"(compaction at the hub root: update the folders' STATE.md for anything in progress)\"" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/journal hub \"(compaction at the hub root: update the folders' STATE.md for anything in progress)\""
+          }
+        ]
+      }
     ],
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/bin/context" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/context"
+          }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/bin/changes" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/changes"
+          }
+        ]
+      }
     ],
     "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/bin/inbox" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/inbox"
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/bin/stop-check" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/stop-check"
+          }
+        ]
+      }
     ]
-  }
+  },
+  "skillOverrides": {
+    "bmad-code-review": "name-only",
+    "bmad-prd": "name-only",
+    "bmad-ux": "name-only",
+    "bmad-deep-recon": "name-only",
+    "bmad-retrospective": "name-only",
+    "bmad-correct-course": "name-only",
+    "bmad-brainstorming": "name-only",
+    "bmad-forge-idea": "name-only",
+    "bmad-qa-generate-e2e-tests": "name-only",
+    "bmad-walkthrough": "name-only",
+    "bmad-toolsmith": "name-only",
+    "bmad-eval": "name-only",
+    "bmad-project-context": "name-only",
+    "bmad-build-auto": "name-only",
+    "bmad-advanced-elicitation": "name-only",
+    "bmad-prfaq": "name-only",
+    "bmad-product-brief": "name-only",
+    "bmad-agent-analyst": "off",
+    "bmad-agent-architect": "off",
+    "bmad-agent-dev": "off",
+    "bmad-agent-pm": "off",
+    "bmad-agent-ux-designer": "off",
+    "bmad-party-mode": "off",
+    "bmod-core-tools": "off",
+    "bmod-method": "off",
+    "bmod-toolsmith": "off"
+  },
+  "autoCompactEnabled": true
 }

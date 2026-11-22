@@ -29,8 +29,9 @@ history** of the work and runs Claude Code agents that know them. Client code st
 | `bin/remote <cmd>` | a command on the remote box over SSH |
 | `bin/secret <name>` | a secret from the Keychain (`--set`, `--has`, `--forget`, `--list`) |
 | `bin/doctor` | what this Mac can reach; never prints a secret |
-| `bin/briefing`, `bin/schedule install` | the morning briefing; the launchd jobs (briefing, monitor, sync, chat with `HUB_CHAT=telegram`) |
+| `bin/briefing`, `bin/schedule install` | the morning briefing; the launchd jobs (briefing, monitor, sync, recover at login, chat with `HUB_CHAT=telegram`) |
 | `bin/chat setup`, `bin/chat start\|stop\|status` | the main session on Telegram (paired account only) |
+| `bin/recover` | after a crash or reboot: stale locks, dead agents (ticket blocked, work kept), a torn event log, a full disk; `bin/doctor` shows the same checks |
 | `bin/monitor` | run every folder's `monitors.d/*.sh`; journal status changes and ALERTs, notify on ALERT |
 | `bin/work --model M --agent-model [name=]M` | override this hub's models for one session (defaults in `hub.conf`; subagents with no model use an inherited `CLAUDE_CODE_SUBAGENT_MODEL`, else `HUB_SUBAGENT_MODEL`) |
 | `bin/work --force <folder>`, `bin/sessions` | a second session for a folder already running (refused without it); the running sessions (`--mine`: yours) |

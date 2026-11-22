@@ -3,21 +3,26 @@
 # HUB_BRIEFING_HOUR:HUB_BRIEFING_MINUTE local time), monitor (bin/monitor every 30 minutes), sync (bin/sync --auto
 # every 30 minutes; not installed, and removed on install, when hub.conf has HUB_AUTO_SYNC=0) and chat (bin/chat start,
 # kept alive; installed only when hub.conf has HUB_CHAT=telegram and this hub owns its name, hub_name_claim; removed on
-# install otherwise). status lists only the jobs install would install (loaded or absent).
+# install otherwise) and, on macOS, recover (bin/recover once at login, story R1). status lists only the jobs install
+# would install (loaded or absent).
 # macOS: launchd agents from launchd/<job>.plist.template. Linux (story V1, .ade/context/platform.md): systemd user units
 # ade-<hub>-<job>.service plus .timer (chat: a service that restarts) in ~/.config/systemd/user (AGENT_SYSTEMD_USER_DIR),
 # lingering on so they run without a login; never as root (exit 2); a hub name units cannot carry exits 2; a unit that
-# fails to enable fails the install (exit 1).
+# fails to enable fails the install (exit 1). The recover job is launchd's only (no Linux unit yet).
 # Re-run install after pulling new jobs into the hub.
 . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
-ALL="briefing monitor sync chat"; LOGS="$(state_dir)/logs"
+ALL="briefing monitor sync chat"; [ "$(platform)" != macos ] || ALL="$ALL recover"; LOGS="$(state_dir)/logs"
 JOBS="briefing monitor"; OFF=""
 if [ "${HUB_AUTO_SYNC:-1}" = 0 ]; then OFF="sync"; else JOBS="$JOBS sync"; fi
 if [ "$(platform)" = linux ]; then
   [ "$(id -u)" != 0 ] || { echo "schedule: never as root; create a user for the hub (adduser) and run it as that user" >&2; exit 2; }
   [[ "$(hub_name)" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "schedule: the hub name '$(hub_name)' cannot name a systemd unit; set HUB_NAME in hub.conf (A-Za-z0-9._-)" >&2; exit 2; }
 fi
-CLASH=""; [ "${1:-}" = install ] && [ "${HUB_CHAT:-}" = telegram ] && { CLASH="$(hub_name_claim)" || true; }
+# the state folder, Keychain service and labels belong to the first hub with this name: a clashing hub gets no chat and
+# no recover job (bin/recover would act on the other hub's state)
+CLASH=""; [ "${1:-}" = install ] && { CLASH="$(hub_name_claim)" || true; }
+if [ "$(platform)" = macos ]; then if [ -z "$CLASH" ]; then JOBS="$JOBS recover"; else OFF="$OFF recover"
+  [ "${1:-}" != install ] || echo "schedule: no recover job: the hub name $(hub_name) is already used by the hub at $CLASH; set HUB_NAME in hub.conf" >&2; fi; fi
 if [ "${HUB_CHAT:-}" = telegram ] && [ -z "$CLASH" ]; then JOBS="$JOBS chat"; else OFF="$OFF chat"
   [ -z "$CLASH" ] || echo "schedule: no chat job: the hub name $(hub_name) is already used by the hub at $CLASH; set HUB_NAME in hub.conf" >&2
   [ -z "${HUB_CHAT:-}" ] || [ "${HUB_CHAT:-}" = telegram ] || echo "schedule: HUB_CHAT must be telegram (or empty); no chat job" >&2; fi
@@ -27,6 +32,8 @@ if [ "$(platform)" = macos ]; then
   remove() { [ "${SCHEDULE_DRY:-}" = 1 ] || launchd_bootout "$(label "$1")"; rm -f "$LA/$(label "$1").plist"; echo "removed $(label "$1")"; }
   case "${1:-status}" in
     install) mkdir -p "$LOGS" "$LA" && chmod 700 "$LOGS"
+             # enabling chat again ends an earlier crash-loop stop (bin/chat start, story R1)
+             case " $JOBS " in *" chat "*) rm -f "$(state_dir)/chat/service-starts" "$(state_dir)/chat/service-quick" "$(state_dir)/chat/gave-up" ;; esac
              for j in $JOBS; do p="$LA/$(label "$j").plist"
                sed -e "s#{{HUB}}#$H#g" -e "s#{{HOME}}#$HOME#g" -e "s#{{LOGS}}#$LOGS#g" -e "s#{{LABEL}}#$(label "$j")#g" -e "s#{{HOUR}}#${HUB_BRIEFING_HOUR:-8}#g" -e "s#{{MINUTE}}#${HUB_BRIEFING_MINUTE:-0}#g" "$H/launchd/$j.plist.template" > "$p"
                [ "${SCHEDULE_DRY:-}" = 1 ] && { echo "wrote $p"; continue; }
@@ -62,6 +69,8 @@ remove() { [ -e "$U/$P-$1.service" ] || [ -e "$U/$P-$1.timer" ] || return 0
   [ "${SCHEDULE_DRY:-}" = 1 ] || systemd_user disable --now "$(unit "$1")" >/dev/null 2>&1; rm -f "$U/$P-$1.service" "$U/$P-$1.timer"; echo "removed $(unit "$1")"; }
 case "${1:-status}" in
   install) mkdir -p "$LOGS" "$U" && chmod 700 "$LOGS" || exit 1
+           # enabling chat again ends an earlier crash-loop stop (bin/chat start, story R1)
+           case " $JOBS " in *" chat "*) rm -f "$(state_dir)/chat/service-starts" "$(state_dir)/chat/service-quick" "$(state_dir)/chat/gave-up" ;; esac
            for j in $JOBS; do service "$j" > "$U/$P-$j.service"; [ "$j" = chat ] || timer "$j" > "$U/$P-$j.timer"; done
            for j in $OFF; do remove "$j"; done
            if [ "${SCHEDULE_DRY:-}" = 1 ]; then for j in $JOBS; do echo "wrote $U/$(unit "$j")"; done; exit 0; fi

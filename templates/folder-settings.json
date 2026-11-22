@@ -1,11 +1,73 @@
 {
-  "permissions": { "ask": ["Bash(*bin/dispatch --approve*)", "Bash(*ade dispatch --approve*)", "Bash(script *)"] },
+  "permissions": {
+    "ask": [
+      "Bash(*bin/dispatch --approve*)",
+      "Bash(*ade dispatch --approve*)",
+      "Bash(*bin/agent --live-test*)",
+      "Bash(script *)"
+    ]
+  },
   "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command", "command": "\"{{HUB}}\"/bin/context {{FOLDER}} --rules" }] }],
-    "PreCompact": [{ "hooks": [{ "type": "command", "command": "\"{{HUB}}\"/bin/journal {{FOLDER}} \"(compaction: STATE.md and this entry should say what was in progress)\"" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "\"{{HUB}}\"/bin/changes {{FOLDER}}" }] }],
-    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "\"{{HUB}}\"/bin/inbox {{FOLDER}}" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "\"{{HUB}}\"/bin/stop-check {{FOLDER}}" }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "\"{{HUB}}\"/bin/session-end {{FOLDER}}" }] }]
-  }
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/context {{FOLDER}} --rules"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/journal {{FOLDER}} \"(compaction: STATE.md and this entry should say what was in progress)\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/changes {{FOLDER}}"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/inbox {{FOLDER}}"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/stop-check {{FOLDER}}"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/session-end {{FOLDER}}"
+          }
+        ]
+      }
+    ]
+  },
+  "autoCompactEnabled": true
 }

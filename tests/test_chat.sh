@@ -14,6 +14,9 @@ printf '%s' "${CLAUDE_CONFIG_DIR:-}" > "$FAKE_REC/configdir"; d="${TELEGRAM_STAT
 if [ -f "$d/.env" ]; then python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$d/.env" > "$FAKE_REC/envmode"; sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$d/.env" > "$FAKE_REC/filetoken"; fi
 bash -c env > "$FAKE_REC/childenv"
 [ -n "${FAKE_NOBOT:-}" ] || echo $$ > "$d/bot.pid"
+# FAKE_STDIN: whether its stdin is still open after 2 s (open), or ended (eof); Python, as Bash 3.2's read -t says 1 for both
+[ -z "${FAKE_STDIN:-}" ] || python3 -c 'import os, select; r = select.select([0], [], [], 2)[0]
+print("open" if not r else ("eof" if not os.read(0, 1) else "data"))' > "$FAKE_REC/stdin"
 echo SESSION-OUTPUT-MARKER
 [ -z "${FAKE_SLEEP:-}" ] || sleep "$FAKE_SLEEP"
 exit 0
@@ -33,6 +36,10 @@ reset_rec() { rm -f "$FAKE_REC"/*; }
 launched() { [ -f "$FAKE_REC/argv" ]; }
 arg_after() { awk -v f="$1" 'p{print; exit} $0==f{p=1}' "$FAKE_REC/argv"; }
 wait_for() { local i=0; while ! eval "$1"; do i=$((i+1)); [ $i -lt 100 ] || return 1; sleep 0.1; done; }
+# start_within <s>: bin/chat start without a terminal must return within s seconds; past that it is stopped (never a hang)
+start_within() { local i=0 p; bin/chat start </dev/null >/dev/null 2>&1 & p=$!
+  while kill -0 "$p" 2>/dev/null; do i=$((i+1)); [ "$i" -lt $(($1 * 10)) ] || { kill "$p" 2>/dev/null; return 124; }; sleep 0.1; done
+  wait "$p"; }
 PIDF="$AGENT_STATE/chat/chat.pid"
 
 start_launches_channel_session() {
@@ -161,8 +168,17 @@ start_lock_and_access() {
     reset_rec; out=$(bin/chat start </dev/null 2>&1); assert_eq "$?" "1" "no terminal, access [$a]"
     echo "$out" | grep -qi "allowlist" || fail "the refusal says allowlist [$out]"; launched && fail "launched with access [$a]"; done
   rm -f "$CH/access.json"; reset_rec; bin/chat start </dev/null >/dev/null 2>&1; assert_eq "$?" "1" "no terminal, not paired"
-  access "$CH" pairing; reset_rec; script -q /dev/null bin/chat start </dev/null >/dev/null 2>&1; launched || fail "a terminal start while pairing"
+  access "$CH" pairing; reset_rec; in_pty bin/chat start </dev/null >/dev/null 2>&1; launched || fail "a terminal start while pairing"
   access "$CH" allowlist; rm -rf "$L"
+}
+
+no_terminal_session_ends() {
+  # without a terminal claude runs under script(1) with a stdin that stays open while it runs, and the start returns
+  # once the session ends (util-linux script waits for its children and its stdin: a feeder that waited for script hung)
+  reset_rec; FAKE_STDIN=1 start_within 15; assert_eq "$?" "0" "a start without a terminal returns once the session ends"
+  launched || fail "no session launched"
+  assert_eq "$(cat "$FAKE_REC/stdin" 2>/dev/null)" "open" "the session's stdin stays open while it runs (an end would reach claude as Ctrl-D)"
+  FAKE_NOBOT=1 AGENT_CHAT_ENV_TTL=60 start_within 15; assert_eq "$?" "0" "a start waits for no .env time limit"
 }
 
 same_folder_name() {
@@ -184,7 +200,7 @@ schedule_installs_chat_job() {
   echo HUB_CHAT=telegram > hub.conf
   out=$(AGENT_LAUNCHAGENTS="$L" SCHEDULE_DRY=1 bin/schedule install) || fail "install with chat"
   [ -f "$C" ] || fail "no chat plist with HUB_CHAT=telegram [$out]"
-  plutil -lint "$C" >/dev/null || fail "chat plist is not valid"
+  plist_ok "$C" || fail "chat plist is not valid"
   assert_contains "$C" "<string>ai.agent-hub.hub.chat</string>" "chat label"
   assert_contains "$C" "<string>$HUB/bin/chat</string><string>start</string>" "the job runs bin/chat start"
   assert_contains "$C" "<key>KeepAlive</key><true/>" "restarted if it dies"
@@ -194,7 +210,7 @@ schedule_installs_chat_job() {
   [ -f "$L/ai.agent-hub.hub.sync.plist" ] || fail "the other jobs stay"
   assert_contains "$C" "$HOME/.bun/bin" "the plist PATH has bun"
   assert_contains "$C" "<key>TERM</key><string>xterm-256color</string>" "the plist sets TERM"
-  [ "$(stat -f %Lp "$AGENT_STATE/logs")" = 700 ] || fail "the logs folder is private"
+  [ "$(fmode "$AGENT_STATE/logs")" = 700 ] || fail "the logs folder is private"
   rm -f "$FAKE/launchctl.log"; AGENT_LAUNCHAGENTS="$L" bin/schedule install >/dev/null 2>&1
   grep -q "enable gui/$(id -u)/ai.agent-hub.hub.chat" "$FAKE/launchctl.log" || fail "install enables the chat job [$(cat "$FAKE/launchctl.log")]"
   echo HUB_CHAT=slack > hub.conf
@@ -227,7 +243,7 @@ channels_from_conf() {
 state_per_orchestrator() {
   reset_rec; TELEGRAM_STATE_DIR=/tmp/shared-telegram bin/chat start </dev/null >/dev/null 2>&1 || fail "start"
   S1="$(cat "$FAKE_REC/statedir")"; assert_eq "$S1" "$CH" "state folder under the hub's state dir"
-  [ "$(stat -f %Lp "$S1")" = 700 ] || fail "the state folder is private to the user"
+  [ "$(fmode "$S1")" = 700 ] || fail "the state folder is private to the user"
   # two hubs on one machine (state dirs by hub name): different folders, so no shared bot token or allowlist
   H1="$HUB"; NH="$(mktemp -d)"; make_hub; H2="$HUB"
   echo 'HUB_NAME=alpha' > "$H1/hub.conf"; echo 'HUB_NAME=beta' > "$H2/hub.conf"
@@ -241,11 +257,321 @@ state_per_orchestrator() {
   HUB="$H1"; cd "$H1"; rm -f hub.conf
 }
 
+# ---- story C7: formatting, approvals and talking to focus agents. A fake channel (AGENT_CHAT_SEND) records each
+# payload it delivers (it fails for everyone with FAKE_SEND_FAIL=1, for one chat id with FAKE_FAIL_FOR); a fake
+# bin/sessions lists three agents; a fake bin/notify records its argv.
+c7_setup() {
+  mkdir -p projects/api projects/web ops/infra
+  cat > "$FAKE/bin/send" <<'STUB'
+#!/bin/bash
+p="$(cat)"; [ -z "${FAKE_SEND_FAIL:-}" ] || exit 1
+[ -z "${FAKE_FAIL_FOR:-}" ] || case "$p" in *"\"chat_id\": \"$FAKE_FAIL_FOR\""*) exit 1 ;; esac
+printf '%s\n' "$p" >> "$FAKE/sent"
+STUB
+  chmod +x "$FAKE/bin/send"; export AGENT_CHAT_SEND="$FAKE/bin/send"; : > "$FAKE/sent"
+  [ -f "$FAKE/sessions.real" ] || cp bin/sessions "$FAKE/sessions.real"; [ -f "$FAKE/notify.real" ] || cp bin/notify "$FAKE/notify.real"
+  cat > bin/sessions <<'STUB'
+#!/bin/bash
+cat <<'T'
+NAME             FOLDER                     PID      PARENT   STARTED               ROLE       STATUS LAST
+T-1.2            projects/api               4101     -        2026-11-21T10:00:00Z  builder    busy   2026-11-21T14:02:11Z
+web              projects/web               4102     -        2026-11-21T10:05:00Z  -          idle   2026-11-21T13:50:40Z
+infra            ops/infra                  4103     -        2026-11-21T10:06:00Z  ops        -      -
+T
+STUB
+  printf '#!/bin/bash\nfor a in "$@"; do printf "[%%s]" "$a"; done >> "$FAKE/notify.log"; echo >> "$FAKE/notify.log"\n' > bin/notify
+  chmod +x bin/sessions bin/notify; : > "$FAKE/notify.log"
+  rm -rf "$AGENT_STATE/events.jsonl" "$AGENT_STATE/events.jsonl.1" "$AGENT_STATE/events-seen" "$AGENT_STATE/chat/asks" \
+    "$AGENT_STATE/chat/forward.cursor" "$AGENT_STATE/chat/pending" "$AGENT_STATE/chat/forward.done" "$AGENT_STATE/chat/forward.tries" "$AGENT_STATE/chat/forward.lock" "$AGENT_STATE/logs/chat-send.log" ops/api
+  access "$CH" allowlist
+}
+c7_done() { cp "$FAKE/sessions.real" bin/sessions; cp "$FAKE/notify.real" bin/notify; unset AGENT_CHAT_SEND AGENT_CHAT_BUTTONS AGENT_CHAT_REFS; access "$CH" allowlist; }
+two_owners() { printf '{"dmPolicy": "allowlist", "allowFrom": ["111", "222"], "groups": {}}\n' > "$CH/access.json"; }
+ev() { H="$HUB" ST="$AGENT_STATE" python3 -I bin/events.py write "$@" || fail "event write $*"; }
+sent_texts() { python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    l=l.strip()
+    if l: print(json.loads(l)["text"].replace("\n","\\n"))' "$FAKE/sent"; }
+sent_to() { python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    l=l.strip()
+    if l: d=json.loads(l); print(d["chat_id"], d["text"].replace("\n","\\n"))' "$FAKE/sent"; }
+
+telegram_style_rule() {
+  for s in "Telegram replies" "markdownv2" "never a raw Markdown table" "aligned code block" "full text in <path>" \
+    "bin/chat status --card" "● busy" "○ idle" "⚠ blocked" "15 lines" "reply 1 <ref> to approve" "bin/chat to --sender" \
+    "bin/chat answer --sender" "bin/chat forward" "<<'EOF'" "Allow" "claimed"; do
+    assert_contains templates/hub/CLAUDE.md "$s" "hub CLAUDE.md Telegram style rule"; done
+}
+
+# AC5: an answer counts only after the owner's own Allow: recording it (and sending as main) is behind a permission
+# prompt in the hub root's settings, which the Telegram plugin shows the paired owner as Allow / Deny buttons
+answer_needs_owner_permission() {
+  python3 - .claude/settings.json "$HUB" <<'PY' || fail "the hub root's permissions.ask does not cover bin/chat answer and to"
+import fnmatch, json, sys
+ask = json.load(open(sys.argv[1]))["permissions"]["ask"]
+pats = [r[5:-1] for r in ask if r.startswith("Bash(") and r.endswith(")")]
+hit = lambda c: any(fnmatch.fnmatchcase(c, p) for p in pats)
+for c in ["bin/chat answer --sender 99887766 <<'EOF'\n1 abcde\nEOF", sys.argv[2] + "/bin/chat answer --sender 1",
+          "bin/chat to --sender 99887766 api <<'EOF'\nrebase\nEOF", "cd /x && bin/chat to --sender 1 web"]:
+    assert hit(c), c
+for c in ["bin/chat status --card", "bin/chat agents", "bin/chat asked abcde", "bin/chat forward"]:
+    assert not hit(c), c
+PY
+}
+
+status_card_golden() {
+  c7_setup; ev --auto --from ops/infra --to main --kind idle --text "waiting"
+  ev --from ops/infra --to main --kind note --text "blocked: the staging box is unreachable"
+  out="$(bin/chat status --card)" || fail "status --card [$out]"
+  want="hub · stopped · 3 agents
+● T-1.2 · projects/api · builder · T-1.2 · busy 14:02Z
+○ web · projects/web · - · - · idle 13:50Z
+⚠ infra · ops/infra · ops · - · blocked"
+  assert_eq "$out" "$want" "the status card layout"
+  ev --auto --from ops/infra --to main --kind idle --text "unblocked"
+  bin/chat status --card | grep -q '^○ infra · ops/infra · ops · - · idle$' || fail "a later idle clears blocked [$(bin/chat status --card)]"
+  printf '#!/bin/bash\necho "NAME FOLDER PID PARENT STARTED ROLE STATUS LAST"\n' > bin/sessions
+  assert_eq "$(bin/chat status --card)" "hub · stopped · no agents" "the card with no agents"
+  c7_done
+}
+
+to_agent_notifies() {
+  c7_setup
+  printf '%s\n' "rebase on main; don't \"force\" it" > "$FAKE/msg"
+  out="$(bin/chat to --sender 99887766 api < "$FAKE/msg" 2>&1)" || fail "to api [$out]"
+  assert_eq "$(cat "$FAKE/notify.log")" "[--from][main][projects/api][rebase on main; don't \"force\" it]" "one notify, the text from stdin as it was"
+  assert_eq "$out" "sent to projects/api" "says where it went"
+  : > "$FAKE/notify.log"; echo "and run the tests" | bin/chat to --sender 99887766 T-1.2 >/dev/null 2>&1 || fail "to by agent name"
+  assert_eq "$(cat "$FAKE/notify.log")" "[--from][main][projects/api][and run the tests]" "an agent name resolves to its folder"
+  # the text never comes as an argument
+  : > "$FAKE/notify.log"; bin/chat to --sender 99887766 api "as an argument" </dev/null >/dev/null 2>&1; assert_eq "$?" "2" "text as an argument"
+  [ -s "$FAKE/notify.log" ] && fail "an argument text was sent"
+  # unknown: the agents listed, no notify
+  out="$(echo hello | bin/chat to --sender 99887766 billing 2>&1)"; assert_eq "$?" "2" "an unknown agent"
+  for a in T-1.2 web infra; do echo "$out" | grep -q "$a" || fail "the reply lists $a [$out]"; done
+  [ -s "$FAKE/notify.log" ] && fail "an unknown name notified"
+  # ambiguous like bin/notify: the name is two hub folders (projects/api and ops/api), even with one agent running
+  mkdir -p ops/api; out="$(echo hello | bin/chat to --sender 99887766 api 2>&1)"; assert_eq "$?" "2" "a name of two hub folders"
+  echo "$out" | grep -q "ops/api" || fail "the ambiguous reply names both [$out]"; [ -s "$FAKE/notify.log" ] && fail "an ambiguous name notified"
+  rm -rf ops/api
+  # ambiguous: a session's name is another folder's name (session "web" works in projects/api; projects/web exists)
+  printf '#!/bin/bash\necho "NAME FOLDER PID PARENT STARTED ROLE STATUS LAST"\necho "web projects/api 1 - x - idle -"\n' > bin/sessions
+  echo hello | bin/chat to --sender 99887766 web >/dev/null 2>&1; assert_eq "$?" "2" "a session named after another folder"
+  [ -s "$FAKE/notify.log" ] && fail "that notified"
+  # only the paired owner
+  out="$(echo hi | bin/chat to --sender 11111 web 2>&1)"; assert_eq "$?" "2" "a sender that is not paired"
+  echo "$out" | grep -q "not the paired owner" || fail "the refusal says why [$out]"; [ -s "$FAKE/notify.log" ] && fail "an unpaired sender notified"
+  echo hi | bin/chat to web >/dev/null 2>&1; assert_eq "$?" "2" "no --sender"; [ -s "$FAKE/notify.log" ] && fail "no sender notified"
+  c7_done
+}
+
+forward_agent_events_once() {
+  c7_setup
+  ev --auto --from projects/api --to main --kind idle --text "tests green, PR open"
+  ev --from projects/web --to main --kind note --text "need the staging URL"
+  ev --from main --to projects/api --kind note --text "from main to api"
+  ev --auto --from projects/api --to main --kind pushed --text "pushed c7" --repo /x --branch c7
+  ev --auto --from projects/web --to main --kind ended --text "2 commits"
+  bin/chat forward >/dev/null 2>&1 || fail "forward"
+  want='[projects/api, claimed] idle: "tests green, PR open"
+[projects/web, claimed] note: "need the staging URL"
+[projects/web, claimed] ended: "2 commits"'
+  assert_eq "$(sent_texts)" "$want" "agent events to main are forwarded, tagged with the folder and claimed, quoted"
+  python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    l=l.strip()
+    if l: d=json.loads(l); assert d["chat_id"]=="99887766" and "parse_mode" not in d, d' "$FAKE/sent" || fail "sent as plain text to the paired owner"
+  : > "$FAKE/sent"; bin/chat forward >/dev/null 2>&1 || fail "forward again"; [ -s "$FAKE/sent" ] && fail "an event was forwarded twice"
+  # nobody reached: retried on the next run, then sent once
+  ev --auto --from projects/api --to main --kind idle --text "retry me"
+  FAKE_SEND_FAIL=1 bin/chat forward >/dev/null 2>&1; assert_eq "$?" "1" "a failed send"
+  : > "$FAKE/sent"; bin/chat forward >/dev/null 2>&1 || fail "forward after a failure"
+  assert_eq "$(sent_texts)" '[projects/api, claimed] idle: "retry me"' "the failed event is sent on the next run"
+  : > "$FAKE/sent"; bin/chat forward >/dev/null 2>&1; [ -s "$FAKE/sent" ] && fail "the retried event was sent twice"
+  # a text that looks like a secret is withheld
+  printf '{"time":"2026-11-21T10:00:00Z","from":"projects/api","to":"main","kind":"idle","text":"token=ab12cd34ef"}\n' >> "$AGENT_STATE/events.jsonl"
+  bin/chat forward >/dev/null 2>&1; grep -q ab12cd34ef "$FAKE/sent" && fail "a secret-looking text was forwarded"
+  c7_done
+}
+
+forward_partial_failure() {   # several owners, one unreachable: sent once to the one that got it, the miss logged
+  c7_setup; two_owners; ev --auto --from projects/api --to main --kind idle --text "to both"
+  FAKE_FAIL_FOR=222 bin/chat forward >/dev/null 2>&1 || fail "a line one owner got counts as sent"
+  assert_eq "$(sent_to)" '111 [projects/api, claimed] idle: "to both"' "the reachable owner got it"
+  grep -q "not delivered to 222" "$AGENT_STATE/logs/chat-send.log" || fail "the miss is logged with its chat id"
+  bin/chat forward >/dev/null 2>&1; assert_eq "$(sent_to | grep -c '^111 ')" "1" "never resent to the owner that got it"
+  ev --auto --from projects/api --to main --kind idle --text "next"
+  bin/chat forward >/dev/null 2>&1; sent_to | grep -q '^222 \[projects/api, claimed\] idle: "next"' || fail "the queue moved on [$(sent_to)]"
+  c7_done
+}
+
+forward_cap_per_run() {   # at most 20 lines a run; the rest folded into one line, the cursor past them
+  c7_setup; for i in $(seq 1 25); do ev --auto --from projects/api --to main --kind idle --text "e$i"; done
+  bin/chat forward >/dev/null 2>&1 || fail "forward"
+  assert_eq "$(sent_texts | grep -c 'idle: "e')" "20" "20 lines"
+  assert_eq "$(sent_texts | tail -1)" "(5 more events: bin/inbox)" "the rest folded into one line"
+  : > "$FAKE/sent"; bin/chat forward >/dev/null 2>&1; [ -s "$FAKE/sent" ] && fail "the folded events were sent later"
+  c7_done
+}
+
+forward_after_rotation() {   # the log rotated between runs: the rest of the old log first, then the new one
+  c7_setup; ev --auto --from projects/api --to main --kind idle --text "old 1"; bin/chat forward >/dev/null 2>&1
+  ev --auto --from projects/api --to main --kind idle --text "old 2"
+  mv "$AGENT_STATE/events.jsonl" "$AGENT_STATE/events.jsonl.1"; ev --auto --from projects/api --to main --kind idle --text "new 1"
+  : > "$FAKE/sent"; bin/chat forward >/dev/null 2>&1 || fail "forward after rotation"
+  assert_eq "$(sent_texts)" '[projects/api, claimed] idle: "old 2"
+[projects/api, claimed] idle: "new 1"' "the rotated log's rest, then the new log"
+  c7_done
+}
+
+forward_lock() {   # one forwarder at a time; a lock without a pid yet is live for a few seconds
+  c7_setup; ev --auto --from projects/api --to main --kind idle --text "locked"
+  mkdir -p "$AGENT_STATE/chat/forward.lock"; bin/chat forward >/dev/null 2>&1
+  [ -s "$FAKE/sent" ] && fail "a fresh lock with no pid yet was taken over"
+  touch -t 202001010000 "$AGENT_STATE/chat/forward.lock"; bin/chat forward >/dev/null 2>&1
+  [ -s "$FAKE/sent" ] || fail "an old lock with no pid was not taken over"
+  sleep 30 & live=$!; mkdir -p "$AGENT_STATE/chat/forward.lock"; echo "$live" > "$AGENT_STATE/chat/forward.lock/pid"
+  ev --auto --from projects/api --to main --kind idle --text "live holder"; : > "$FAKE/sent"; bin/chat forward >/dev/null 2>&1
+  [ -s "$FAKE/sent" ] && fail "a live holder's lock was taken"; kill "$live"; wait "$live" 2>/dev/null
+  rm -rf "$AGENT_STATE/chat/forward.lock"; c7_done
+}
+
+start_runs_forwarder() {   # bin/chat start runs the forward loop beside the session
+  c7_setup; reset_rec
+  AGENT_CHAT_FORWARD_EVERY=1 FAKE_SLEEP=8 bin/chat start </dev/null >/dev/null 2>&1 & bg=$!
+  wait_for "[ -f '$FAKE_REC/argv' ]" || fail "the session did not start"
+  ev --auto --from projects/api --to main --kind idle --text "while it runs"
+  wait_for "grep -q 'while it runs' '$FAKE/sent'" || fail "the loop forwarded nothing while the session ran"
+  bin/chat stop >/dev/null 2>&1; wait "$bg" 2>/dev/null; c7_done
+}
+
+approvals_buttons_or_numbered() {
+  c7_setup
+  ref="$(echo "Dispatch T-1.3 (high risk)?" | bin/chat ask)" || fail "ask"
+  [[ "$ref" =~ ^[a-z]{5}$ ]] || fail "ask prints a ref [$ref]"
+  assert_eq "$(sent_texts)" "Dispatch T-1.3 (high risk)?\\nreply 1 $ref to approve, 2 $ref to deny" "Telegram: numbered replies with the ref"
+  grep -q reply_markup "$FAKE/sent" && fail "buttons sent where the plugin takes none"
+  # the question never comes as an argument; one that looks like a secret is refused and nothing is sent
+  bin/chat ask "as an argument" </dev/null >/dev/null 2>&1; assert_eq "$?" "2" "a question as an argument"
+  : > "$FAKE/sent"; echo "use token=ab12cd34ef?" | bin/chat ask >/dev/null 2>&1; assert_eq "$?" "2" "a secret-looking question"
+  [ -s "$FAKE/sent" ] && fail "a secret-looking question was sent"
+  # a long question is cut, never the reply line
+  : > "$FAKE/sent"; r3="$(python3 -c 'print("x" * 5000)' | bin/chat ask)" || fail "a long ask"
+  sent_texts | grep -q "…\\\\nreply 1 $r3 to approve, 2 $r3 to deny$" || fail "the reply line survives a long question [$(sent_texts | cut -c1-80)...]"
+  # an unpaired sender's answer never counts; a bare number (no ref) never counts
+  out="$(echo "1 $ref" | bin/chat answer --sender 11111 2>&1)"; assert_eq "$?" "2" "an unpaired answer"
+  echo "$out" | grep -q "not the paired owner" || fail "says why [$out]"
+  out="$(echo 1 | bin/chat answer --sender 99887766 2>&1)"; assert_eq "$?" "2" "a bare 1"
+  echo "$out" | grep -q "with its ref" || fail "the refusal asks for the ref [$out]"
+  echo yes | bin/chat answer --sender 99887766 >/dev/null 2>&1; assert_eq "$?" "2" "a bare yes"
+  assert_eq "$(bin/chat asked "$ref")" "pending" "still pending"
+  echo "1 $ref" | bin/chat answer --sender 99887766 >/dev/null 2>&1 || fail "the owner approves"
+  assert_eq "$(bin/chat asked "$ref")" "approved" "the owner's 1 <ref> approves"
+  grep -rq "approved $ref" journal/ || fail "the answer is journaled"
+  echo "2 $ref" | bin/chat answer --sender 99887766 >/dev/null 2>&1; assert_eq "$?" "2" "an answered ask"
+  assert_eq "$(bin/chat asked "$ref")" "approved" "a late answer changes nothing"
+  # a channel that takes buttons: Approve / Deny buttons, answered by their callback data
+  : > "$FAKE/sent"; r2="$(echo "Restart web?" | AGENT_CHAT_BUTTONS=all bin/chat ask)" || fail "ask with buttons"
+  python3 -c 'import json,sys
+d=json.loads(open(sys.argv[1]).readline()); k=d["reply_markup"]["inline_keyboard"][0]
+assert [b["text"] for b in k]==["Approve","Deny"], k
+assert [b["callback_data"] for b in k]==["ask:approve:"+sys.argv[2],"ask:deny:"+sys.argv[2]], k
+assert d["text"]=="Restart web?", d' "$FAKE/sent" "$r2" || fail "buttons payload [$(cat "$FAKE/sent")]"
+  echo "ask:approve:$r2" | bin/chat answer --sender 11111 >/dev/null 2>&1; assert_eq "$(bin/chat asked "$r2")" "pending" "an unpaired button press"
+  echo "ask:deny:$r2" | bin/chat answer --sender 99887766 >/dev/null 2>&1 || fail "the owner's button"
+  assert_eq "$(bin/chat asked "$r2")" "denied" "the owner's Deny button"
+  # a new ask never reuses a ref that exists (asked, or answered)
+  mkdir -p "$AGENT_STATE/chat/asks"; echo old > "$AGENT_STATE/chat/asks/aaaaa"; echo "approved x" > "$AGENT_STATE/chat/asks/bbbbb.answer"
+  r4="$(echo "fresh?" | AGENT_CHAT_REFS="aaaaa bbbbb ccccc" bin/chat ask)" || fail "ask with taken refs"
+  assert_eq "$r4" "ccccc" "a taken ref is skipped"
+  c7_done
+}
+
+agents_list() {
+  c7_setup; ev --from ops/infra --to main --kind note --text "blocked: no VPN"
+  out="$(bin/chat agents)" || fail "agents"
+  want='NAME   FOLDER        ROLE     TICKET  STATE
+T-1.2  projects/api  builder  T-1.2   ● busy
+web    projects/web  -        -       ○ idle
+infra  ops/infra     ops      -       ⚠ blocked'
+  assert_eq "$out" "$want" "/agents lists folder, role, ticket and state"
+  c7_done
+}
+
+bot_send_token_on_stdin_only() {
+  # the real sender against a local stand-in for the Bot API (never the network): the token only in the request path
+  c7_setup; unset AGENT_CHAT_SEND; SRV="$(mktemp -d)"
+  # the stand-in never outlives the check: it ends itself after 60 s (SIGALRM), holds none of the test's output and is
+  # killed when the check exits, passed or failed (CI has no terminal: a server left running held run.sh for hours)
+  cat > "$SRV/api.py" <<'PYS'
+import faulthandler, http.server, json, os, signal, socketserver, sys
+signal.alarm(int(os.environ.get("FAKE_API_TTL") or 60)); faulthandler.dump_traceback_later(8)   # a slow start shows where
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0)); b = self.rfile.read(n)
+        open(sys.argv[2], "a").write(self.path + " " + b.decode() + "\n")
+        self.send_response(200); self.end_headers(); self.wfile.write(b'{"ok":true}')
+    def log_message(self, *a): pass
+# a plain TCPServer: HTTPServer's bind looks up the host's FQDN (socket.getfqdn), which stalled for over 10 s on the
+# macOS CI runner (CI run 44954682648)
+s = socketserver.TCPServer(("127.0.0.1", 0), H); open(sys.argv[1], "w").write(str(s.server_address[1])); s.serve_forever()
+PYS
+  python3 "$SRV/api.py" "$SRV/port" "$SRV/req" </dev/null >/dev/null 2>"$SRV/err" & srv=$!; trap 'kill "$srv" 2>/dev/null' EXIT
+  wait_for "[ -s '$SRV/port' ]" || fail "the stand-in API did not start [$(tail -n 5 "$SRV/err")]"; [ -z "${FAKE_API_HOLD:-}" ] || sleep "$FAKE_API_HOLD" >/dev/null 2>&1
+  ev --auto --from projects/api --to main --kind idle --text "via the bot"
+  AGENT_TELEGRAM_API="http://127.0.0.1:$(cat "$SRV/port")" bin/chat forward >"$FAKE/out" 2>&1 || fail "forward through the bot [$(cat "$FAKE/out")]"
+  kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null; trap - EXIT
+  assert_contains "$SRV/req" "/bot$K/sendMessage" "the token is used in the Bot API path"
+  assert_contains "$SRV/req" '"text": "[projects/api, claimed] idle: \"via the bot\""' "the text is sent"
+  grep -qF "$K" "$FAKE/out" && fail "the token was printed"
+  grep -qF "$K" "$STORE.argv" && fail "the token is in a security argument"
+  c7_done
+}
+
+no_terminal_stand_in_api() {
+  # CI has no terminal. The bot check runs twice at once, each in its own session (no controlling terminal), stdin
+  # /dev/null, its output a pipe (as run.sh reads it), held (FAKE_API_HOLD) while its stand-in API runs, then ended as
+  # a failed check ends (TERM) and as a cancelled one (KILL: no trap runs; FAKE_API_TTL=3 is the stand-in's deadline).
+  # Each output pipe must close and each stand-in must be gone: one left holding the output kept CI waiting for hours.
+  python3 - "$REPO/tests/test_chat.sh" <<'PY' || fail "the bot check, ended with no terminal, left something running"
+import os, signal, subprocess, sys, time
+def run():
+    r, w = os.pipe()
+    p = subprocess.Popen(["bash", sys.argv[1], "bot_send_token_on_stdin_only"], stdin=subprocess.DEVNULL, stdout=w,
+                         stderr=w, start_new_session=True, env=dict(os.environ, FAKE_API_HOLD="60", FAKE_API_TTL="3"))
+    os.close(w); os.set_blocking(r, False); return p, r
+def servers(p):   # the run's stand-ins: api.py in its process group (its own session)
+    ps = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,command="], capture_output=True, text=True).stdout.splitlines()
+    return [int(c[0]) for c in (l.split(None, 2) for l in ps) if len(c) == 3 and c[1] == str(p.pid) and "/api.py " in c[2]]
+def closed(r):
+    try: return os.read(r, 65536) == b""
+    except BlockingIOError: return False
+runs = {signal.SIGTERM: run(), signal.SIGKILL: run()}; why = []; end = time.time() + 120
+while time.time() < end and not all(servers(p) or p.poll() is not None for p, _ in runs.values()): time.sleep(0.1)
+for sig, (p, r) in runs.items():
+    if p.poll() is not None or not servers(p): why.append("%s: the stand-in API never ran (rc %s)" % (sig.name, p.poll()))
+    else: os.kill(p.pid, sig)
+for p, _ in runs.values(): p.wait()
+end = time.time() + 10
+while time.time() < end and not all(closed(r) and not servers(p) for p, r in runs.values()): time.sleep(0.1)
+for sig, (p, r) in runs.items():
+    if not closed(r): why.append("%s: the output was still held 10 s after the check ended" % sig.name)
+    if servers(p): why.append("%s: the stand-in API outlived the check by 10 s" % sig.name)
+    for s in servers(p): os.kill(s, signal.SIGKILL)
+    try: os.killpg(p.pid, signal.SIGKILL)
+    except OSError: pass
+if why: sys.exit("; ".join(why))
+PY
+}
+
 # bash tests/test_chat.sh <check>: run the checks up to and including one (to see each fail on its own)
 if [ $# -gt 0 ]; then for c in start_launches_channel_session token_short_lived_file missing_token_refuses skip_permissions_refused \
-  single_instance stop_and_status start_lock_and_access same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator; do
+  single_instance stop_and_status start_lock_and_access no_terminal_session_ends same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator \
+  telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api; do
   [ "$c" = "$1" ] && { "$c"; echo ok; exit 0; }; ( "$c" ) >/dev/null 2>&1; done; fi
 start_launches_channel_session; token_short_lived_file; missing_token_refuses; skip_permissions_refused
-single_instance; stop_and_status; start_lock_and_access; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
+single_instance; stop_and_status; start_lock_and_access; no_terminal_session_ends; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
 state_per_orchestrator
+telegram_style_rule; answer_needs_owner_permission; status_card_golden; to_agent_notifies; forward_agent_events_once; forward_partial_failure; forward_cap_per_run; forward_after_rotation; forward_lock; start_runs_forwarder; approvals_buttons_or_numbered; agents_list; bot_send_token_on_stdin_only; no_terminal_stand_in_api
 echo ok

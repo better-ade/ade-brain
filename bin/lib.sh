@@ -28,9 +28,14 @@ utc_now() { date -u +%H:%M; }
 folders() { local h; h="$(hub_root)"; for d in "$h"/projects/* "$h"/ops/*; do [ -d "$d" ] && echo "${d#$h/}"; done; }
 agent_name() { case "$1" in projects/*) echo "${1#projects/}";; ops/*) echo "ops-${1#ops/}";; esac; }
 state_dir() { echo "${AGENT_STATE:-$HOME/.agent-hub/$(hub_name)}"; }
-# session_mark <folder> <busy|idle>: a focus session started by bin/work notes its status and the time in its own
+# session_mark <folder> <busy|idle> [session id]: (with an id, from the prompt hook, it is kept as session_id= for
+# bin/recover's restart line, story R1) a focus session started by bin/work notes its status and the time in its own
 # registry entry ($(state_dir)/sessions/<name>.<launcher pid>, name = its --name or the folder name; the launcher is an ancestor of the hook that calls this).
 # Called outside a focus session (the hub root, a plain terminal) it finds no entry and does nothing. Never fails.
+# launcher_alive <pid> [start]: a live bin/work launcher (its command holds "-work.") that started at <start> (as
+# proc_start prints it; an empty or "-" start is judged by the pid alone). A pid reused by another launcher is not alive.
+launcher_alive() { [[ "$1" =~ ^[0-9]+$ ]] && ps -o command= -p "$1" 2>/dev/null | grep -q -- '-work\.' || return 1
+  [ -z "${2:-}" ] || [ "$2" = - ] || [ "$(proc_start "$1")" = "$2" ]; }
 session_mark() {
   local sd n p e i; sd="$(state_dir)/sessions"; n="${1##*/}"; p=$$
   [ -n "$n" ] && [ -d "$sd" ] || return 0
@@ -39,7 +44,9 @@ session_mark() {
     # the entry is <name>.<launcher pid>; name is the folder's or the session's --name, so match the pid and the folder
     e=""; for c in "$sd"/*."$p"; do [ -f "$c" ] && [ "$(sed -n 's/^folder=//p' "$c" | head -1)" = "$1" ] && { e="$c"; break; }; done
     [ -n "$e" ] || { [ -f "$sd/$n.$p" ] && e="$sd/$n.$p"; } || continue
-    { grep -v -e '^status=' -e '^last=' "$e"; printf 'status=%s\nlast=%s\n' "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$sd/.mark.$$" 2>/dev/null &&
+    { if [ -n "${3:-}" ]; then grep -v -e '^status=' -e '^last=' -e '^session_id=' "$e"; printf 'session_id=%s\n' "$3"
+      else grep -v -e '^status=' -e '^last=' "$e"; fi
+      printf 'status=%s\nlast=%s\n' "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$sd/.mark.$$" 2>/dev/null &&
       mv "$sd/.mark.$$" "$e" 2>/dev/null || rm -f "$sd/.mark.$$"
     return 0
   done; return 0
@@ -321,9 +328,24 @@ os.replace(tmp, dst)
 ' "$1" "$2"
 }
 # AI tools whose key bin/keys manages. A tool here need not be connected yet: a stored key enables nothing.
-key_tools() { echo "deepseek glm muse gemini telegram"; }
-key_secret() { case "$1" in deepseek|glm) provider_field "$1" secret ;; muse) echo "meta-model-api-key" ;; gemini) echo "gemini-api-key" ;; telegram) channel_secret telegram ;; *) return 1 ;; esac; }
-key_source() { case "$1" in deepseek) echo "platform.deepseek.com" ;; glm) echo "z.ai" ;; muse) echo "dev.meta.ai" ;; gemini) echo "aistudio.google.com" ;; telegram) echo "@BotFather in Telegram" ;; *) return 1 ;; esac; }
+key_tools() { echo "anthropic deepseek glm muse gemini telegram"; }
+key_secret() { case "$1" in anthropic) echo "anthropic-api-key" ;; deepseek|glm) provider_field "$1" secret ;; muse) echo "meta-model-api-key" ;; gemini) echo "gemini-api-key" ;; telegram) channel_secret telegram ;; *) return 1 ;; esac; }
+key_source() { case "$1" in anthropic) echo "console.anthropic.com" ;; deepseek) echo "platform.deepseek.com" ;; glm) echo "z.ai" ;; muse) echo "dev.meta.ai" ;; gemini) echo "aistudio.google.com" ;; telegram) echo "@BotFather in Telegram" ;; *) return 1 ;; esac; }
+# anthropic_settings_write <dst>: the settings of an Anthropic run with a stored API key (story H1): Claude Code reads the
+# key through apiKeyHelper (bin/secret anthropic-api-key, the hub and Keychain service pinned), never an environment variable
+anthropic_settings_write() {
+  local H; H="$(hub_root)"
+  python3 -c 'import json, sys; json.dump({"apiKeyHelper": sys.argv[2]}, open(sys.argv[1], "w"), indent=2)' "$1" \
+    "HUB=$(provider_sq "$H") AGENT_KEYCHAIN_SERVICE=$(provider_sq "$(keychain_service)") $(provider_sq "$H/bin/secret") $(key_secret anthropic)"
+}
+# anthropic_key_ok: the stored Anthropic API key can be read and is not empty (read once, in a subshell, never printed)
+anthropic_key_ok() { local H; H="$(hub_root)"
+  ( key="$(HUB="$H" AGENT_KEYCHAIN_SERVICE="$(keychain_service)" "$H/bin/secret" "$(key_secret anthropic)" 2>/dev/null)" && [ -n "$key" ]; r=$?; unset key; exit "$r" ); }
+# redact: stdin to stdout with escape sequences and control characters removed, then bot tokens, GLM-style keys,
+# key-shaped strings and long opaque runs hidden (the patterns live in agent.py, the live test's printer)
+redact() { python3 -I "$(dirname "${BASH_SOURCE[0]}")/agent.py" --redact; }
+# anthropic_model_ok <model>: an Anthropic model name a role or a live test may use
+anthropic_model_ok() { local am='^((opus|sonnet|haiku)(\[1m\])?|claude-[A-Za-z0-9._-]+(\[1m\])?)$'; [[ "$1" =~ $am ]]; }
 # Chat channels (story C5, ADR 0006, .ade/context/chat.md): each type's plugin, Keychain secret, the variable the
 # plugin reads its token from, and the variable that moves its state folder (bot token, access.json, inbox).
 channel_types() { echo "telegram"; }
@@ -338,6 +360,14 @@ hub_name_claim() { local f me o; f="$(state_dir)/hub-path"; me="$(cd "$(hub_root
   if [ -f "$f" ]; then o="$(cat "$f")"; [ "$o" = "$me" ] && return 0; [ -d "$o" ] && { echo "$o"; return 1; }; fi
   echo "$me" > "$f"; }
 channel_state_env() { case "$1" in telegram) echo "TELEGRAM_STATE_DIR" ;; *) return 1 ;; esac; }
+# channel_buttons <type>: which messages may carry inline buttons (story C7). telegram: "permission" (the plugin shows
+# Allow / Deny buttons on Claude Code's permission prompts itself; its reply tool sends none, so bin/chat ask uses
+# numbered replies). "all" lets bin/chat ask send Approve / Deny buttons.
+channel_buttons() { case "$1" in telegram) echo "permission" ;; *) return 1 ;; esac; }
+# chat_backoff <seconds> <failed 0|1>: the forwarder's next wait (story R1): doubled after a failed send, up to 8 times
+# AGENT_CHAT_FORWARD_EVERY (default 15), back to it after a run that worked
+chat_backoff() { local b="${AGENT_CHAT_FORWARD_EVERY:-15}" n; case "$b" in ''|*[!0-9]*|0) b=15 ;; esac
+  if [ "$2" = 1 ]; then n=$(( $1 * 2 )); [ "$n" -le $((b * 8)) ] || n=$((b * 8)); echo "$n"; else echo "$b"; fi; }
 # Role routing (.ade/context/providers.md, "Roles"): a role is an ordered list of provider:model candidates. Defaults
 # here; HUB_ROLE_<ROLE> in hub.conf (never the environment) replaces a role's list or adds a role.
 role_default() { case "$1" in
@@ -416,11 +446,11 @@ orchestrator_endpoint_warning() {
 }
 # the method (story C1, .ade/context/method.md): ade-method is its only home. method_pin is the tag this template pins
 # (bin/init writes it as HUB_METHOD_REF); method_repo is where bin/method fetches it (AGENT_METHOD_REPO: tests' fixture)
-method_pin() { echo v2.0.0; }
+method_pin() { echo v2.1.0; }
 method_repo() { echo "${AGENT_METHOD_REPO:-https://github.com/better-ade/ade-method}"; }
 # hub.conf (written by bin/init): who this agent is and what it can reach. Names and locations only, never secrets.
-# AGENT_* environment variables override it (tests use them). Provider choice, role tables and hub ownership come only from hub.conf.
-unset HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_SECRET_STORE
+# AGENT_* environment variables override it (tests use them). Provider choice, role tables, hub ownership and HUB_AGENT_ANTHROPIC_KEY come only from hub.conf.
+unset HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE
 for _v in $(compgen -v HUB_ROLE_); do unset "$_v"; done; unset _v   # role tables too
 [ -f "$(hub_root)/hub.conf" ] && . "$(hub_root)/hub.conf"
 hub_name() { echo "${HUB_NAME:-$(basename "$(hub_root)")}"; }

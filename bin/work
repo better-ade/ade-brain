@@ -1,9 +1,10 @@
 #!/bin/bash
-# bin/work [--role R | --provider P --model M] [--claude CMD] [--model M] [--effort E] [--prompt TEXT] [--mode M] [--name N] [--no-remote] [--force] [--agent-model [name=]M] [--agent-effort [name=]E] <folder> [repo]: deep work in a new Terminal, inside the project's checkout, with the folder's hooks.
+# bin/work [--role R | --provider P --model M] [--claude CMD] [--model M] [--effort E] [--prompt TEXT] [--continue | --resume ID] [--ticket REF] [--mode M] [--name N] [--no-remote] [--force] [--agent-model [name=]M] [--agent-effort [name=]E] <folder> [repo]: deep work in a new Terminal, inside the project's checkout, with the folder's hooks.
 # A folder with no repo (none, or a "(none ...)" row) works in the hub folder itself. Clones a missing checkout (owner/name as given, else HUB_CODE_OWNER/<name>) to ${AGENT_CODE_DIR:-$HOME/Project}/<name> and records the path in ACCESS.md.
 # --claude picks the Claude install (default: claude_cmd in lib.sh); a bare name runs what the caller's PATH finds, and the
 # session keeps the caller's CLAUDE_CONFIG_DIR (or none), so it runs as the same install and account. --model / --effort (anywhere in the arguments) pass through to claude for this session.
-# --prompt TEXT is the session's first message (passed last, after --, quoted for the launcher).
+# --prompt TEXT is the session's first message (passed last, after --, quoted for the launcher). --continue passes
+# claude --continue: the folder's last conversation goes on (bin/recover names it for an agent that died, story R1).
 # --mode M is the permission mode (default HUB_WORK_MODE from hub.conf, else auto, the main session's usual mode): a focus
 # session in the main session's mode takes its messages without holding them for approval in its own terminal, so the
 # main session is the one place to say go. --mode manual asks in the focus terminal. bypassPermissions is never allowed.
@@ -39,13 +40,18 @@
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
 # temp files (merged settings, launcher) go on any exit until the launcher is handed off; the launcher then removes them
 MS=""; L=""; trap '[ -z "$MS" ] || rm -f "$MS"; [ -z "$L" ] || rm -f "$L"' EXIT
-USAGE="usage: bin/work [--role R] [--provider P] [--claude CMD] [--model M] [--effort low|medium|high|xhigh|max] [--prompt TEXT] [--mode auto|manual|acceptEdits|plan] [--name N] [--no-remote] [--force] [--agent-model [name=]M] [--agent-effort [name=]E] <projects|ops>/<name> [repo]  (AGENT_TERMINAL=terminal|iterm|ade)"
-MODEL=""; EFFORT=""; PROMPT=""; MODE=""; REMOTE=1; RNAME=""; FORCE=0; CL="$(claude_cmd)"; POS=(); ASET=""; PROV="${HUB_PROVIDER:-anthropic}"; ROLE=""; PSET=0
+USAGE="usage: bin/work [--role R] [--provider P] [--claude CMD] [--model M] [--effort low|medium|high|xhigh|max] [--prompt TEXT] [--continue | --resume ID] [--ticket REF] [--mode auto|manual|acceptEdits|plan] [--name N] [--no-remote] [--force] [--agent-model [name=]M] [--agent-effort [name=]E] <projects|ops>/<name> [repo]  (AGENT_TERMINAL=terminal|iterm|ade)"
+MODEL=""; EFFORT=""; PROMPT=""; MODE=""; REMOTE=1; CONT=0; RES=""; TICKET=""; RNAME=""; FORCE=0; CL="$(claude_cmd)"; POS=(); ASET=""; PROV="${HUB_PROVIDER:-anthropic}"; ROLE=""; PSET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --model|--effort|--claude|--provider|--mode|--role) [ $# -ge 2 ] || { echo "$USAGE" >&2; exit 2; }
       case "$1" in --mode) MODE="$2" ;; --model) MODEL="$2" ;; --effort) EFFORT="$2" ;; --provider) PROV="$2"; PSET=1 ;; --role) ROLE="$2" ;; *) CL="$2" ;; esac; shift 2 ;;
     --no-remote) REMOTE=0; shift ;;
+    --continue) CONT=1; shift ;;   # story R1: pick up the folder's last conversation (an agent that died mid-task)
+    --resume) # with a session id: that exact session; anything else stays an argument (a provider session refuses it)
+      if [ $# -ge 2 ] && [[ "$2" =~ ^[A-Za-z0-9_-]{1,80}$ ]] && [[ "$2" != */* ]] && [ ! -d "$H/$2" ]; then RES="$2"; shift 2; else POS+=("$1"); shift; fi ;;   # story R1: that exact session (bin/recover names it for an agent that died)
+    --ticket) [ $# -ge 2 ] && [ -n "$2" ] && [ "${#2}" -le 200 ] && [[ "$2" != *$'\n'* ]] || { echo "work: --ticket needs a ticket ref (one line)" >&2; exit 2; }
+      TICKET="$2"; shift 2 ;;   # recorded in the session entry (bin/dispatch passes the real ref; bin/recover marks it)
     --force) FORCE=1; shift ;;
     --name) [ $# -ge 2 ] && [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "work: --name needs a name of A-Za-z0-9._- only, starting with a letter or digit" >&2; exit 2; }
       RNAME="$2"; shift 2 ;;
@@ -123,7 +129,7 @@ elif [ "$PROV" != anthropic ]; then
   [ "$CL" = claude ] || { echo "work: --provider $PROV needs plain claude, not '$CL' (a wrapper could send the session elsewhere)" >&2; exit 2; }
   provider_feature_go "$PROV" focus || { echo "work: $(provider_no_go_reason "$PROV" focus)" >&2; exit 2; }
   if [ -n "$EFFORT" ] || [[ "$ASET" == *"effort "* ]]; then provider_feature_go "$PROV" effort || { echo "work: $(provider_no_go_reason "$PROV" effort)" >&2; exit 2; }; fi
-  for a in ${POS[@]+"${POS[@]}"}; do case "$a" in --resume|--resume=*|--continue|-r|-c)
+  for a in ${POS[@]+"${POS[@]}"} $([ "$CONT" = 0 ] || echo --continue) $([ -z "$RES" ] || echo --resume); do case "$a" in --resume|--resume=*|--continue|-r|-c)
     echo "work: a provider session does not resume history ($a would send it to $PROV); start a new session (--resume leak, .ade/context/engines.md)" >&2; exit 2 ;; esac; done
   PMODELS="$(provider_models "$PROV")"
   [ -z "$MODEL" ] || provider_model_ok "$PROV" "$MODEL" || { echo "work: --model $MODEL is not a $PROV model ($PMODELS)" >&2; exit 2; }
@@ -283,6 +289,8 @@ if [ "$PROV" != gemini ]; then   # Claude Code's flags; the gemini command is co
   [ -n "$MODEL" ] && cmd="$cmd --model $(printf %q "$MODEL")"
   [ -n "$EFFORT" ] && cmd="$cmd --effort $EFFORT"
   [ "$REMOTE" = 1 ] && cmd="$cmd --remote-control $(printf %q "${RNAME:-${F##*/}}")"
+  [ "$CONT" = 1 ] && cmd="$cmd --continue"
+  [ -n "$RES" ] && cmd="$cmd --resume $RES"
   [ -n "$PROMPT" ] && cmd="$cmd -- $(printf %q "$PROMPT")"
 fi
 echo "$cmd"
@@ -322,6 +330,11 @@ fi
 SD="$(state_dir)/sessions"
 reg=$(printf 'R=%q.$$\nmkdir -p %q && printf '"'"'name=%%s\\nfolder=%%s\\nlauncher=%%s\\nparent=%%s\\nstarted=%%s\\ncwd=%%s\\nrole=%%s\\nengine=%%s\\n'"'"' %q %q "$$" %q "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" %q %q %q > "$R"' \
   "$SD/${RNAME:-${F##*/}}" "$SD" "${RNAME:-${F##*/}}" "$F" "${CLAUDE_PID:--}" "$dir" "${ROLE:--}" "$(engine_of "$PROV")")
+# ...and what a restart needs (story R1): the ticket ref, provider, model, config dir, and the launcher's own start time
+# (ps lstart in UTC, as proc_start prints it: a reused pid has another one)
+if [ "$PROV" = anthropic ]; then CFG="${CLAUDE_CONFIG_DIR:-}"; else CFG="${CD:-}"; fi
+reg="$reg"$'\n'$(printf 'printf %q %q %q %q %q "$(TZ=UTC LC_ALL=C ps -o lstart= -p $$ 2>/dev/null | head -1 | tr -s " " | sed "s/^ //; s/ \\$//")" >> "$R"' \
+  'ticket=%s\nprovider=%s\nmodel=%s\nconfig_dir=%s\nstart=%s\n' "${TICKET:--}" "$PROV" "${MODEL:--}" "${CFG:--}")
 # an Anthropic session's subagent default ($SUBM, checked above) is exported by the launcher, so a value its own shell has
 # still wins; a provider session never sets it (.ade/context/providers.md)
 sub=""; [ "$PROV" = anthropic ] && sub="export CLAUDE_CODE_SUBAGENT_MODEL=\"\${CLAUDE_CODE_SUBAGENT_MODEL:-$SUBM}\""$'\n'
