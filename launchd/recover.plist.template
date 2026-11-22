@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{{LABEL}}</string>
+  <!-- once at login (after a reboot or a power loss): bin/recover repairs what a crash left (story R1) -->
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>{{HUB}}/bin/recover</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{{HOME}}/.bun/bin:{{HOME}}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>StandardOutPath</key><string>{{LOGS}}/recover.log</string>
+  <key>StandardErrorPath</key><string>{{LOGS}}/recover.log</string>
+</dict></plist>

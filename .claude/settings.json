@@ -5,7 +5,12 @@
     "ask": [
       "Bash(*bin/dispatch --approve*)",
       "Bash(*ade dispatch --approve*)",
+      "Bash(*bin/agent --live-test*)",
       "Bash(script *)",
+      "Bash(*bin/chat answer*)",
+      "Bash(*ade chat answer*)",
+      "Bash(*bin/chat to *)",
+      "Bash(*ade chat to *)",
       "mcp__playwright__browser_click",
       "mcp__playwright__browser_type",
       "mcp__playwright__browser_fill_form",

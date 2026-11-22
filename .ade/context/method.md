@@ -4,8 +4,12 @@ ade-method (`https://github.com/better-ade/ade-method`) is the only home of the 
 copy of its own: `bin/method sync` copies it in, and a test fails when the copies drift.
 
 - **Files:** ade-method's `rules.md` becomes `.ade/rules.md`; its `bmad/custom/*.toml` become `_bmad/custom/*.toml`
+  and each `ade.json` `install_templates` entry (`"<source>": "<target>"`, both plain relative paths: no `..`, no
+  absolute path, not under `.git`) is copied to its target (v2.1.0: `.github/pull_request_template.md`,
+  `.ade/commit-template.txt`), recorded with its hash so `bin/method check` covers it. A bad entry or a missing source
+  exits 1 before any hub file changes.
   (`_bmad/custom/.gitignore` and `*.user.toml` are the hub's own and are left alone). Edit them in ade-method, not here.
-- **Pin:** `method_pin` in `bin/lib.sh` (now `v2.0.0`) is the tag the template pins. `bin/init` writes it to hub.conf as
+- **Pin:** `method_pin` in `bin/lib.sh` (now `v2.1.0`) is the tag the template pins. `bin/init` writes it to hub.conf as
   `HUB_METHOD_REF` and syncs at it. To move the template to a new release: change `method_pin`, run
   `bin/method sync <tag>`, commit the result (`template_matches_pin` in `tests/test_method.sh` checks both agree).
 - **Ref:** `bin/method sync [ref]` uses the argument, else `HUB_METHOD_REF`, else `method_pin`. A tag or branch name.

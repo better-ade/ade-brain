@@ -25,5 +25,19 @@
 - Monitors: executable `projects/*/monitors.d/*.sh`, `ops/*/monitors.d/*.sh`; read-only; first output line = status
   (leading `Ddd HH:MM TZ |` or `YYYY-MM-DD HH:MMZ |` stripped before comparing); `ALERT...` lines alert. State in
   `$(state_dir)/monitor-state/`. `MONITOR_TIMEOUT` (300 s), `MONITOR_QUIET=1` (no notification).
+- Monitor triage (story M1): `HUB_MONITOR_TRIAGE=1` in hub.conf (default off). On a new ALERT only (the `<key>.alert`
+  transition) `bin/monitor` runs `bin/agent --role triage --folder <folder>` once, the task on stdin: the hub's
+  `.ade/agents/monitor.md` if present, else a built-in five-line monitor role, then the output between
+  `<<<MONITOR-OUTPUT nonce=N>>>` and `<<<END-MONITOR-OUTPUT nonce=N>>>`, marked untrusted data. Nothing from the output
+  goes in argv. Report: `reports/monitor/<folder>/<UTC YYYYmmddTHHMMSSZ>-<monitor without .sh>.md` (bin/agent's
+  stdout). Verdict: the first `Verdict:` line inside bin/agent's frame, else its first line, control characters
+  removed, at most 200 characters. Journal (folder): `monitor triage <monitor>: <verdict> (report <path>)`; the
+  notification becomes `<ALERT line>. <verdict>`. A triage exit 1 or 2: `monitor triage failed: <monitor> exit <n>`, no
+  report, the alert still notifies, bin/monitor still exits 0. One triage at a time, each capped by `AGENT_TIMEOUT`.
+  At most one triage per `bin/monitor` run: a later new ALERT is journaled `monitor triage queued: <monitor>` and marked
+  `<key>.queued` in the monitor state; the next run triages it if it still alerts, and drops it if it cleared.
+  Secrets: the monitor output in the task and the saved report go through `events.py redact` (the event log's SECRETS
+  patterns, each match replaced by `[redacted]`). Reports stay local: `reports/monitor/` is in `.gitignore`; only the
+  journal's verdict line is synced.
 - `bin/changes [folder]` (UserPromptSubmit in the hub root and every folder): one snapshot per session,
   `$(state_dir)/changes-seen.<session_id>` (from the hook JSON on stdin), removed after 7 days.

@@ -201,8 +201,10 @@ case "${1:-}" in
     CD="${AGENT_CODE_DIR:-$HOME/Project}"
     if [ -d "$CD" ]; then echo "code folder: $CD"; else run mkdir -p "$CD" || exit 1; fi
     # the jobs: installed when any it installs is absent (bin/schedule status lists only those; bin/schedule install
-    # refreshes them after a hub update); read-only, so the dry run checks it too
-    if ! "$H/bin/schedule" status 2>/dev/null | grep -q '^absent'; then echo "scheduled jobs: installed (bin/schedule install refreshes them)"
+    # refreshes them after a hub update); read-only, so the dry run checks it too. Read to its end, then matched: a
+    # reader that stops early (grep -q) fails bin/schedule's next write, which then garbles its next systemctl call
+    st="$("$H/bin/schedule" status 2>/dev/null)"
+    if ! case $'\n'"$st" in *$'\n'absent*) true ;; *) false ;; esac; then echo "scheduled jobs: installed (bin/schedule install refreshes them)"
     else run "$H/bin/schedule" install || { echo "server: bin/schedule install failed" >&2; exit 1; }; fi
     echo "== one manual step, over SSH on this machine"
     echo "  1. claude            sign in with your Pro or Max login (Claude Code prints a link to open on your own computer)"

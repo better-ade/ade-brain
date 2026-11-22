@@ -39,7 +39,7 @@ starts_one_by_default() {
   reset; tickets "$(row 1.1 medium),$(row 1.2 low)"
   out=$(bin/dispatch projects/demo) || fail "dispatch exits 0: $out"
   assert_eq "$(calls)" 1 "one start by default"
-  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][1.1][--prompt][bmad-build 1.1][projects/demo]" "bin/work call"
+  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][1.1][--ticket][1.1][--prompt][bmad-build 1.1][projects/demo]" "bin/work call"
   assert_eq "$(cat "$S/node.argv")" "$CK/_bmad/ade-runtime.mjs tickets --project-root $CK next" "the checkout's tickets next"
   # a ref with characters bin/work does not take in a name is sanitised for --name, kept in the prompt
   reset; tickets "$(row 'demo/01-a b.md' low)"
@@ -54,7 +54,7 @@ starts_one_by_default() {
   assert_eq "$(calls)" 0 "a ref with a trailing newline is never started"
   reset; tickets "$(row 'demo/01-a.md' low)"
   bin/dispatch projects/demo >/dev/null || fail "dispatch a file ref"
-  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][demo-01-a.md][--prompt][bmad-build demo/01-a.md][projects/demo]" "sanitised name"
+  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][demo-01-a.md][--ticket][demo/01-a.md][--prompt][bmad-build demo/01-a.md][projects/demo]" "sanitised name"
 }
 
 max_capped_at_two() {
@@ -73,7 +73,7 @@ running_ticket_not_restarted() {
   reset; tickets "$(row 1.1 low),$(row 1.2 low)"
   echo "1.1 projects/demo 123 - 2026-11-21T00:00:00Z builder busy -" > "$S/sessions"
   HUB_DISPATCH_MAX=2 bin/dispatch projects/demo >/dev/null || fail "dispatch with one running"
-  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][1.2][--prompt][bmad-build 1.2][projects/demo]" "running 1.1 not restarted, 1.2 started"
+  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][1.2][--ticket][1.2][--prompt][bmad-build 1.2][projects/demo]" "running 1.1 not restarted, 1.2 started"
   reset; tickets "$(row 1.1 low),$(row 1.2 low)"
   echo "1.1 projects/demo 123 - 2026-11-21T00:00:00Z builder busy -" > "$S/sessions"
   bin/dispatch projects/demo >/dev/null || fail "dispatch with the one slot taken"
@@ -87,14 +87,14 @@ running_ticket_not_restarted() {
   reset; tickets "$(row 1.1 low),$(row 1.2 low)"
   echo "1.1 projects/other 123 - 2026-11-21T00:00:00Z builder busy -" > "$S/sessions"
   HUB_DISPATCH_MAX=2 bin/dispatch projects/demo >/dev/null || fail "dispatch with a same-name session elsewhere"
-  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][1.1][--prompt][bmad-build 1.1][projects/demo]" "name and folder match; slots hub-wide"
+  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][1.1][--ticket][1.1][--prompt][bmad-build 1.1][projects/demo]" "name and folder match; slots hub-wide"
   # a second run right after a start (its session not registered yet) starts nothing: the start marker counts
   reset; tickets "$(row 1.1 low),$(row 1.2 low)"
   bin/dispatch projects/demo >/dev/null || fail "first run"
   bin/dispatch projects/demo >/dev/null || fail "second run"
   assert_eq "$(calls)" 1 "a second run right after a start starts nothing"
   HUB_DISPATCH_MAX=2 bin/dispatch projects/demo >/dev/null || fail "third run with two slots"
-  assert_eq "$(sed -n 2p "$S/work.log")" "[--role][builder][--name][1.2][--prompt][bmad-build 1.2][projects/demo]" "a marked start is not started again"
+  assert_eq "$(sed -n 2p "$S/work.log")" "[--role][builder][--name][1.2][--ticket][1.2][--prompt][bmad-build 1.2][projects/demo]" "a marked start is not started again"
   # a marker older than 120 s no longer counts
   reset; tickets "$(row 1.1 low)"; mkdir -p "$ST/dispatch"; echo "$(( $(date +%s) - 200 )) projects/demo" > "$ST/dispatch/1.1"
   bin/dispatch projects/demo >/dev/null || fail "dispatch with an old marker"
@@ -142,7 +142,7 @@ approve_starts_one() {
   assert_eq "$(calls)" 0 "--approve without a terminal starts nothing"
   out=$(approve_tty 2.1 2.2); assert_eq "$(calls)" 0 "--approve with the wrong ref typed back starts nothing: $out"
   out=$(approve_tty 2.1 2.1); echo "$out" | grep -q "^started: 2.1" || fail "approve at the terminal: $out"
-  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][2.1][--prompt][bmad-build 2.1][projects/demo]" "approve starts only 2.1"
+  assert_eq "$(cat "$S/work.log")" "[--role][builder][--name][2.1][--ticket][2.1][--prompt][bmad-build 2.1][projects/demo]" "approve starts only 2.1"
   grep -q '^dispatch: started 2.1 (approved at the terminal)$' "$J" || fail "the --approve journal line: $(cat "$J" 2>/dev/null)"
   reset; tickets "$(row 2.1 high)" "" "" "$(row 2.9 high)"
   bin/dispatch --approve 2.9 projects/demo >/dev/null 2>&1; assert_eq "$?" 1 "approving a ticket that is not ready exits 1"

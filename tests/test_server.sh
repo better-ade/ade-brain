@@ -200,10 +200,12 @@ status_report() {   # AC5
   grep -q 'last sync  *20[0-9-]* [0-9:]* UTC' "$S/out" && grep -q 'last monitor  *20' "$S/out" || fail "last runs: $(cat "$S/out")"
   grep -q 'disk  *[0-9.]* GB free' "$S/out" || fail "disk: $(cat "$S/out")"
   grep -q 'pl-SECRET' "$S/out" && fail "status printed a secret"
-  rm -f "$AGENT_STATE/logs/sync.log"; bin/server status | grep -q 'last sync  *never' || fail "never synced"
+  rm -f "$AGENT_STATE/logs/sync.log"; bin/server status > "$S/out"; grep -q 'last sync  *never' "$S/out" || fail "never synced"
 }
 dry_run_changes_nothing() {   # AC6
-  reset; bin/server install --dry-run > "$S/out" 2> "$S/err"; assert_eq "$?" 0 "dry run: $(cat "$S/err")"
+  # with SIGPIPE ignored, as CI runners leave it: a reader that closed early would make a writer's next write fail
+  reset; ( trap '' PIPE; bin/server install --dry-run ) > "$S/out" 2> "$S/err"; assert_eq "$?" 0 "dry run: $(cat "$S/err")"
+  grep -q 'write error' "$S/err" && fail "a write failed in the dry run: $(cat "$S/err")"
   assert_eq "$(changes)" "" "a dry run installs nothing"; [ ! -e "$S/units" ] && [ ! -d "$HOME/Project" ] && [ ! -e "$HOME/.local/bin/gitleaks" ] || fail "a dry run changed the machine"
   grep -q '^+ sudo apt-get install -y -q --no-install-recommends git python3 tmux gh .* bat glow poppler-utils chafa$' "$S/out" || fail "prints the apt command, ade's tools too: $(cat "$S/out")"
   grep -q '^+ curl --proto =https --tlsv1.2 -fsSL -o .*gitleaks_8.30.1_linux_x64.tar.gz$' "$S/out" && grep -q '^+ curl .*bun-v1.3.9/bun-linux-x64-baseline.zip$' "$S/out" && grep -q '^+ curl .*claude-code-releases/2.1.330/linux-x64/claude$' "$S/out" || fail "prints the tool downloads: $(cat "$S/out")"

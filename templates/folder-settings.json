@@ -3,6 +3,7 @@
     "ask": [
       "Bash(*bin/dispatch --approve*)",
       "Bash(*ade dispatch --approve*)",
+      "Bash(*bin/agent --live-test*)",
       "Bash(script *)",
       "mcp__playwright__browser_click",
       "mcp__playwright__browser_type",

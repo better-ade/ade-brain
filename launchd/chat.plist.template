@@ -9,7 +9,7 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>60</integer>
-  <key>EnvironmentVariables</key><dict><key>TERM</key><string>xterm-256color</string><key>PATH</key><string>{{HOME}}/.bun/bin:{{HOME}}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>AGENT_CHAT_SERVICE</key><string>1</string><key>TERM</key><string>xterm-256color</string><key>PATH</key><string>{{HOME}}/.bun/bin:{{HOME}}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
   <key>StandardOutPath</key><string>{{LOGS}}/chat.log</string>
   <key>StandardErrorPath</key><string>{{LOGS}}/chat.log</string>
 </dict></plist>
