@@ -1,7 +1,9 @@
 #!/bin/bash
 # bin/new <projects|ops>/<name>: a folder from templates/, plus its named agent. Never overwrites.
-# bin/new --settings <folder>: re-renders only that existing folder's .claude/settings.json from the template (hooks
-# added since the folder was made, story C6), after copying the old file to settings.json.bak.
+# bin/new --settings <folder>: re-renders only that existing folder's .claude/settings.json and .mcp.json from the
+# templates (hooks and permissions added since the folder was made, story C6; the browser override, story V3), after
+# copying each old file to <file>.bak.
+# .mcp.json: the folder's `playwright` MCP server, <hub>/bin/browser run <folder> (its browser profile and output folder).
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; F="${1:-}"; SETTINGS=0
 if [ "$F" = --settings ]; then SETTINGS=1; F="${2:-}"; fi
 [[ "$F" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || { echo "usage: bin/new projects/<name>|ops/<name> (a-z 0-9 -) | bin/new --settings <folder>" >&2; exit 2; }
@@ -22,11 +24,12 @@ PY
   echo "made $2"
 }
 if [ "$SETTINGS" = 1 ]; then
-  S="$H/$F/.claude/settings.json"
-  if [ -f "$S" ]; then cp -p "$S" "$S.bak" || { echo "new: could not copy $S to $S.bak" >&2; exit 1; }; rm -f "$S"; fi
-  put folder-settings.json "$F/.claude/settings.json"; exit 0
+  for S in "$H/$F/.claude/settings.json" "$H/$F/.mcp.json"; do
+    if [ -f "$S" ]; then cp -p "$S" "$S.bak" || { echo "new: could not copy $S to $S.bak" >&2; exit 1; }; rm -f "$S"; fi; done
+  put folder-settings.json "$F/.claude/settings.json"; put folder-mcp.json "$F/.mcp.json"; exit 0
 fi
 put CLAUDE.md "$F/CLAUDE.md"; put ACCESS.md "$F/ACCESS.md"; put STATE.md "$F/STATE.md"
-put MEMORY.md "$F/memory/MEMORY.md"; put folder-settings.json "$F/.claude/settings.json"; put agent.md ".claude/agents/$AGENT.md"
+put MEMORY.md "$F/memory/MEMORY.md"; put folder-settings.json "$F/.claude/settings.json"; put folder-mcp.json "$F/.mcp.json"
+put agent.md ".claude/agents/$AGENT.md"
 [ -x "$H/bin/setup" ] && "$H/bin/setup" >/dev/null
 exit 0

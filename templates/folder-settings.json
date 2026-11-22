@@ -4,9 +4,35 @@
       "Bash(*bin/dispatch --approve*)",
       "Bash(*ade dispatch --approve*)",
       "Bash(*bin/agent --live-test*)",
-      "Bash(script *)"
+      "Bash(script *)",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_type",
+      "mcp__playwright__browser_fill_form",
+      "mcp__playwright__browser_file_upload",
+      "mcp__playwright__browser_press_key",
+      "mcp__playwright__browser_select_option",
+      "mcp__playwright__browser_evaluate",
+      "mcp__plugin_browser_playwright__browser_click",
+      "mcp__plugin_browser_playwright__browser_type",
+      "mcp__plugin_browser_playwright__browser_fill_form",
+      "mcp__plugin_browser_playwright__browser_file_upload",
+      "mcp__plugin_browser_playwright__browser_press_key",
+      "mcp__plugin_browser_playwright__browser_select_option",
+      "mcp__plugin_browser_playwright__browser_evaluate",
+      "Bash(*bin/browser login*)",
+      "Bash(*bin/browser forget*)",
+      "Bash(*ade browser*)",
+      "Edit(/{{HUB}}/hub.conf)",
+      "Bash(*hub.conf*)"
+    ],
+    "deny": [
+      "Read(~/.config/ade/browser/**)",
+      "Edit(~/.config/ade/browser/**)"
     ]
   },
+  "enabledMcpjsonServers": [
+    "playwright"
+  ],
   "hooks": {
     "SessionStart": [
       {

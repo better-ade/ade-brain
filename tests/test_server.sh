@@ -56,6 +56,8 @@ case "$u" in
   *) echo "fake curl: unexpected $u" >&2; exit 22 ;;
 esac
 STUB
+# npx @playwright/mcp install-browser --with-deps chromium (story V3): a Playwright-style Chromium under ~/.cache/ms-playwright
+printf '#!/bin/bash\necho "npx $*" >> "$S/calls"; [ -e "$S/npxfail" ] && exit 0; c="$HOME/.cache/ms-playwright/chromium-1234/chrome-linux"; mkdir -p "$c"; printf "#!/bin/bash\\n" > "$c/chrome"; chmod +x "$c/chrome"\n' > "$S/bin/npx"
 printf '#!/bin/bash\n[ "${1:-}" = -u ] && [ -e "$S/root" ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n' > "$S/bin/id"
 printf '#!/bin/bash\n[ "${1:-}" = -m ] && { cat "$S/arch"; exit 0; }\nexec /usr/bin/uname "$@"\n' > "$S/bin/uname"
 chmod +x "$S"/bin/*
@@ -79,7 +81,7 @@ safe() { printf 'port 22\npasswordauthentication no\nkbdinteractiveauthenticatio
   echo enabled > "$S/uu"; printf 'APT::Periodic::Unattended-Upgrade "1";\n' > "$S/aptconf"; }
 # ufw_rules <rule>...: an active ufw (status verbose) that denies incoming by default, with those rules
 ufw_rules() { { printf 'Status: active\nLogging: on (low)\nDefault: %s (incoming), allow (outgoing), disabled (routed)\nNew profiles: skip\n\nTo Action From\n-- ------ ----\n' "${DEFAULT_IN:-deny}"; printf '%s\n' "$@"; } > "$S/ufw.status"; }
-reset() { echo yazi > "$S/unpackaged"; echo x86_64 > "$S/arch"; pins; rm -rf "$S/calls" "$S/installed" "$S/root" "$S/nosudo" "$S/units" "$HOME/.local" "$HOME/.bun" "$HOME/Project" "$S/active" "$S/curlfail" "$S/bin/node" "$S/bin/npm"
+reset() { echo yazi > "$S/unpackaged"; echo x86_64 > "$S/arch"; pins; rm -rf "$S/calls" "$S/installed" "$S/root" "$S/nosudo" "$S/units" "$HOME/.local" "$HOME/.bun" "$HOME/.cache" "$HOME/Project" "$S/active" "$S/curlfail" "$S/npxfail" "$S/bin/node" "$S/bin/npm"
   : > "$S/calls"; rm -f hub.conf; safe; }
 install() { bin/server install "$@" > "$S/out" 2> "$S/err"; rc=$?; }
 # changes: every call that is not one of the known read-only ones (a new kind of call counts as a change)
@@ -89,17 +91,18 @@ changes() { grep -vE -e '^sudo -v$' -e '^sudo -n (sshd -T|ufw status verbose$|ss
 
 installs_missing_from_fixed_list() {   # AC1
   reset; echo git > "$S/installed"; install; assert_eq "$rc" 0 "install: $(cat "$S/err" "$S/out")"
-  grep -q '^apt-get install -y -q --no-install-recommends python3 tmux gh curl ca-certificates nodejs npm ufw unattended-upgrades bat glow poppler-utils chafa$' "$S/calls" || fail "only the missing packages, ade's tools too: $(grep apt-get "$S/calls")"
+  grep -q '^apt-get install -y -q --no-install-recommends python3 tmux gh curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify bat glow poppler-utils chafa$' "$S/calls" || fail "only the missing packages, ade's tools too: $(grep apt-get "$S/calls")"
   grep -q 'yazi: not packaged for this system; skipped' "$S/out" || fail "an extra that is not packaged is skipped with a note: $(cat "$S/out")"
   [ -x "$HOME/.local/bin/gitleaks" ] || fail "gitleaks installed"
   grep -q "^curl --proto =https --tlsv1.2 -fsSL -o .* https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz$" "$S/calls" || fail "gitleaks pinned, over https only: $(grep curl "$S/calls")"
   grep -q "^curl --proto =https --tlsv1.2 -fsSL -o .* https://github.com/oven-sh/bun/releases/download/bun-v1.3.9/bun-linux-x64-baseline.zip$" "$S/calls" && [ "$("$HOME/.bun/bin/bun")" = 1.3.9 ] || fail "bun pinned: $(grep curl "$S/calls")"
   grep -q "^curl --proto =https --tlsv1.2 -fsSL -o .* https://downloads.claude.ai/claude-code-releases/2.1.330/linux-x64/claude$" "$S/calls" && [ "$("$HOME/.local/bin/claude")" = 2.1.330 ] || fail "claude pinned"
+  grep -q '^npx -y @playwright/mcp@0.0.84 install-browser --with-deps chromium$' "$S/calls" || fail "Chromium from the MCP's own Playwright (V3): $(grep npx "$S/calls")"
   [ -d "$HOME/Project" ] || fail "code folder"
   [ -f "$S/units/ade-hub-monitor.timer" ] || fail "bin/schedule install ran"
   : > "$S/calls"; install; assert_eq "$rc" 0 "rerun: $(cat "$S/err")"
   assert_eq "$(changes)" "" "a rerun installs nothing"
-  grep -q "all present" "$S/out" && grep -q "gitleaks: present" "$S/out" && grep -q "claude: present" "$S/out" || fail "rerun says so: $(cat "$S/out")"
+  grep -q "all present" "$S/out" && grep -q "gitleaks: present" "$S/out" && grep -q "claude: present" "$S/out" && grep -q "chromium: present" "$S/out" || fail "rerun says so: $(cat "$S/out")"
   reset; echo 'HUB_AUTO_SYNC=0' > hub.conf; install; assert_eq "$rc" 0 "install without auto sync: $(cat "$S/err")"
   [ ! -e "$S/units/ade-hub-sync.timer" ] || fail "no sync job with HUB_AUTO_SYNC=0"
   : > "$S/calls"; install; assert_eq "$rc" 0 "rerun without auto sync"; assert_eq "$(changes)" "" "a rerun with HUB_AUTO_SYNC=0 changes nothing"
@@ -120,6 +123,8 @@ downloads_verified() {   # AC1: every download is over https, checked against it
   reset; printf '#!/bin/bash\nexit 0\n' > "$S/dl/claude.t"; cp "$S/dl/claude" "$S/dl/claude.keep"; mv "$S/dl/claude.t" "$S/dl/claude"; pins; install
   assert_eq "$rc" 1 "an installer that leaves no claude"; grep -q "claude" "$S/err" || fail "names the tool"; grep -q "Pro or Max login" "$S/out" && fail "never done without claude"
   mv "$S/dl/claude.keep" "$S/dl/claude"
+  reset; touch "$S/npxfail"; install; assert_eq "$rc" 1 "an install-browser that leaves no Chromium"; assert_contains "$S/err" "Chromium" "names it"
+  grep -q "Pro or Max login" "$S/out" && fail "never done without Chromium"
   reset; echo riscv64 > "$S/arch"; install; assert_eq "$rc" 1 "an arch with no pinned build"; assert_contains "$S/err" "riscv64" "names the machine"
   assert_eq "$(changes)" "" "nothing changes before the arch is known to be served"
   grep -q 'bun.sh/install\|claude.ai/install.sh' bin/server && fail "no piped installer script"; true
@@ -205,6 +210,7 @@ dry_run_changes_nothing() {   # AC6
   grep -q '^+ sudo apt-get install -y -q --no-install-recommends git python3 tmux gh .* bat glow poppler-utils chafa$' "$S/out" || fail "prints the apt command, ade's tools too: $(cat "$S/out")"
   grep -q '^+ curl --proto =https --tlsv1.2 -fsSL -o .*gitleaks_8.30.1_linux_x64.tar.gz$' "$S/out" && grep -q '^+ curl .*bun-v1.3.9/bun-linux-x64-baseline.zip$' "$S/out" && grep -q '^+ curl .*claude-code-releases/2.1.330/linux-x64/claude$' "$S/out" || fail "prints the tool downloads: $(cat "$S/out")"
   grep -q 'install 2.1.330$' "$S/out" || fail "prints the claude install: $(cat "$S/out")"
+  grep -q '^+ npx -y @playwright/mcp@0.0.84 install-browser --with-deps chromium$' "$S/out" || fail "prints the Chromium install"
   grep -q "^+ mkdir -p $HOME/Project" "$S/out" && grep -q "^+ $HUB/bin/schedule install" "$S/out" || fail "prints the hub steps: $(cat "$S/out")"
   grep -q '^systemctl --user is-active ' "$S/calls" || fail "the dry run checks the jobs with bin/schedule status"
   printf 'passwordauthentication yes\npermitrootlogin no\n' > "$S/sshd.conf"; bin/server install --dry-run > "$S/out" 2>&1; assert_eq "$?" 1 "dry run on an unsafe host exits as the install would"

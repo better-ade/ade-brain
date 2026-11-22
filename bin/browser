@@ -1,0 +1,113 @@
+#!/bin/bash
+# bin/browser run|mcp|login|forget|status: browser automation on the server (story V3; `ade browser ...` runs it).
+# Contract: .ade/context/browser.md. Agents use the Playwright MCP, headless Chromium; the ade-skills `browser`
+# plugin's ask-first rules stay unchanged (no form submit, purchase or message without the owner's word).
+#   run <folder>            the folder's MCP server: execs the pinned Playwright MCP (browser_mcp_pkg) with that folder's
+#                           arguments; each folder's .mcp.json (bin/new) names it as its `playwright` server
+#   mcp <folder>            those arguments, one JSON object {"args": [...]}: headless Chromium; --isolated (no logins) by
+#                           default; --user-data-dir <its profile> (and a --config keeping Chromium's disk cache in it)
+#                           only when hub.conf has HUB_BROWSER_PROFILE_<KEY>=1 (KEY = the folder path upper-case, / and
+#                           - as _); --output-dir <hub>/<folder>/reports/browser for screenshots and downloads
+#   login <folder> <url>    the owner signs in to a tool in that folder's profile: Chromium on a private display (Xvfb,
+#                           cookie auth), shown by x11vnc on localhost behind a one-time password and noVNC (websockify)
+#                           on 127.0.0.1:HUB_BROWSER_VIEW_PORT (6080), reached only through an SSH tunnel; never a public
+#                           port. Enter, closing the browser, or HUB_BROWSER_VIEW_MINUTES (10) ends it and everything
+#                           it started.
+#   forget <folder>         delete that folder's profile (and its cache), unless Chromium has it open
+#   status                  whether Chromium (Playwright's) is installed
+# The hub is the one this script lives in; $HUB counts only in the tests (AGENT_PLATFORM_TEST=1).
+# Profiles: ${XDG_CONFIG_HOME:-~/.config}/ade/browser/<key>/ (AGENT_BROWSER_DIR), 0700, one per folder, never shared.
+# Exit: 0 done, 1 failed or not ready, 2 usage, unknown folder, profile mode off.
+set -u; [ "${AGENT_PLATFORM_TEST:-}" = 1 ] || unset HUB
+. "$(dirname "$0")/lib.sh"; H="$(hub_root)"
+USAGE="usage: bin/browser run <folder> | mcp <folder> | login <folder> <url> | forget <folder> | status"
+folder() { [[ "${1:-}" =~ ^(projects|ops)/[a-z0-9][a-z0-9-]*$ ]] && [ -f "$H/$1/ACCESS.md" ] || { echo "browser: no folder '${1:-}'" >&2; exit 2; }; }
+view_port() { local p="${HUB_BROWSER_VIEW_PORT:-6080}"; [[ "$p" =~ ^[0-9]{4,5}$ ]] || { echo "browser: HUB_BROWSER_VIEW_PORT must be a port number" >&2; exit 2; }; echo "$p"; }
+# out_dir <folder>: <hub>/<folder>/reports/browser. No step below the folder may be a link (checked before anything is
+# made, and again after), and its real path must be <real folder>/reports/browser
+out_dir() { local f="$H/$1" x r
+  for x in "$f/reports" "$f/reports/browser"; do
+    [ ! -L "$x" ] || { echo "browser: $x is a link; screenshots and downloads stay in the folder" >&2; exit 1; }
+    [ ! -e "$x" ] || [ -d "$x" ] || { echo "browser: $x is not a folder" >&2; exit 1; }; done
+  mkdir -p "$f/reports/browser" || exit 1
+  r="$(cd "$f" && pwd -P)/reports/browser"
+  [ ! -L "$f/reports" ] && [ ! -L "$f/reports/browser" ] && [ "$(cd "$f/reports/browser" && pwd -P)" = "$r" ] ||
+    { echo "browser: $f/reports/browser is a link or resolves outside $1; screenshots and downloads stay in the folder" >&2; exit 1; }
+  echo "$f/reports/browser"; }
+# in_use <profile>: Chromium has it open (its SingletonLock names a live process)
+in_use() { local l; l="$(readlink "$1/SingletonLock" 2>/dev/null)" || return 1; l="${l##*-}"; [[ "$l" =~ ^[0-9]+$ ]] && kill -0 "$l" 2>/dev/null; }
+# port_free <port> / listening <port>: on 127.0.0.1
+port_free() { python3 -c 'import socket, sys
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try: s.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError: sys.exit(1)' "$1"; }
+listening() { python3 -c 'import socket, sys
+try: socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=1).close()
+except OSError: sys.exit(1)' "$1"; }
+# mcp_args <folder>: ARGS, the Playwright MCP arguments for that folder
+mcp_args() { local o p; o="$(out_dir "$1")" || exit 1; ARGS=(--browser chromium --headless)
+  if browser_profile_on "$1"; then p="$(browser_profile_dir "$1")" || exit 1
+    # Chromium keeps its disk cache in the profile (not ~/.cache), so forget deletes it too
+    ( umask 077; python3 -c 'import json, sys; json.dump({"browser": {"launchOptions": {"args": ["--disk-cache-dir=" + sys.argv[1] + "/cache"]}}}, open(sys.argv[2], "w"))' "$p" "$p/ade-mcp.json" ) || exit 1
+    ARGS+=(--user-data-dir "$p" --config "$p/ade-mcp.json")
+  else ARGS+=(--isolated); fi
+  ARGS+=(--output-dir "$o"); }
+case "${1:-}" in
+  run) [ $# -eq 2 ] || { echo "$USAGE" >&2; exit 2; }; folder "$2"; mcp_args "$2"
+    exec npx -y "$(browser_mcp_pkg)" "${ARGS[@]}" ;;
+  mcp) [ $# -eq 2 ] || { echo "$USAGE" >&2; exit 2; }; folder "$2"; mcp_args "$2"
+    python3 -c 'import json, sys; print(json.dumps({"args": sys.argv[1:]}))' "${ARGS[@]}" ;;
+  login) [ $# -eq 3 ] || { echo "$USAGE" >&2; exit 2; }; folder "$2"; U="$3"
+    [[ "$U" =~ ^https?://[^[:space:]\'\"]+$ ]] || { echo "browser: the sign-in page must be an http(s) URL" >&2; exit 2; }
+    browser_profile_on "$2" || { echo "browser: profile mode is off for $2 (isolated, no logins); turn it on with $(browser_profile_var "$2")=1 in hub.conf" >&2; exit 2; }
+    MIN="${HUB_BROWSER_VIEW_MINUTES:-10}"; [[ "$MIN" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SECS="$(awk -v m="$MIN" 'BEGIN {printf "%d", m * 60}')" && [ "$SECS" -gt 0 ] ||
+      { echo "browser: HUB_BROWSER_VIEW_MINUTES must be a number of minutes" >&2; exit 2; }
+    C="$(browser_chromium)" || { echo "browser: Chromium is not installed (bin/server install)" >&2; exit 1; }
+    for t in Xvfb x11vnc websockify; do command -v "$t" >/dev/null 2>&1 || { echo "browser: $t is not installed (bin/server install)" >&2; exit 1; }; done
+    P="$(browser_profile_dir "$2")" || exit 1; WP="$(view_port)"
+    in_use "$P" && { echo "browser: $2's profile is open in Chromium (an agent's browser?); close it first" >&2; exit 1; }
+    port_free "$WP" || { echo "browser: 127.0.0.1:$WP is in use; set HUB_BROWSER_VIEW_PORT in hub.conf to a free port" >&2; exit 1; }
+    VP="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')" || exit 1
+    T="$(mktemp -d)" && chmod 700 "$T" || exit 1
+    PIDS=""; trap 'for p in $PIDS; do kill "$p" 2>/dev/null; done; for p in $PIDS; do wait "$p" 2>/dev/null; done; rm -rf "$T"' EXIT
+    down() { echo "browser: the view did not start ($1); everything it started is stopped" >&2; exit 1; }
+    # the display's cookie (MIT-MAGIC-COOKIE-1, any display), in the private temp folder; Xvfb, x11vnc and Chromium use it
+    ( umask 077; python3 -c 'import secrets, struct, sys
+def f(b): return struct.pack(">H", len(b)) + b
+open(sys.argv[1], "wb").write(struct.pack(">H", 0xFFFF) + f(b"") + f(b"") + f(b"MIT-MAGIC-COOKIE-1") + f(secrets.token_bytes(16)))' "$T/xauth" ) || exit 1
+    PW="$(python3 -c 'import secrets; print(secrets.token_urlsafe(9))')"; ( umask 077; printf '%s\n' "$PW" > "$T/pw" ) || exit 1
+    : > "$T/display"
+    Xvfb -displayfd 3 -screen 0 1280x800x24 -nolisten tcp -auth "$T/xauth" 3> "$T/display" >/dev/null 2>&1 & XP=$!; PIDS="$PIDS $XP"
+    for i in $(seq 1 40); do grep -q '[0-9]' "$T/display" && break; kill -0 "$XP" 2>/dev/null || break; sleep 0.25; done
+    N="$(tr -dc 0-9 < "$T/display")"; [ -n "$N" ] && kill -0 "$XP" 2>/dev/null || down "Xvfb"
+    DISPLAY=":$N" XAUTHORITY="$T/xauth" "$C" --user-data-dir="$P" --disk-cache-dir="$P/cache" --no-first-run --no-default-browser-check --new-window "$U" >/dev/null 2>&1 & CP=$!; PIDS="$PIDS $CP"
+    # the password file is read once and deleted by x11vnc (rm:), so the password is never in an argument
+    x11vnc -display ":$N" -auth "$T/xauth" -localhost -rfbport "$VP" -passwdfile "rm:$T/pw" -forever -nevershared -quiet >/dev/null 2>&1 & VV=$!; PIDS="$PIDS $VV"
+    NV="${HUB_NOVNC_DIR:-/usr/share/novnc}"
+    websockify --web "$NV" "127.0.0.1:$WP" "127.0.0.1:$VP" >/dev/null 2>&1 & WS=$!; PIDS="$PIDS $WS"
+    # nothing is printed (least of all the password) until every part is alive and listening
+    up=0; for i in $(seq 1 40); do
+      kill -0 "$XP" 2>/dev/null && kill -0 "$VV" 2>/dev/null && kill -0 "$WS" 2>/dev/null || break
+      listening "$VP" && listening "$WP" && { up=1; break; }; sleep 0.25; done
+    [ "$up" = 1 ] && kill -0 "$XP" 2>/dev/null && kill -0 "$VV" 2>/dev/null && kill -0 "$WS" 2>/dev/null && kill -0 "$CP" 2>/dev/null || down "Xvfb, x11vnc, websockify or Chromium is not up"
+    echo "browser: $2's profile is open on $U, on this machine only (127.0.0.1:$WP), for $MIN minutes at most."
+    echo "  On your own computer:  ssh -N -L $WP:127.0.0.1:$WP $(id -un)@<this server>"
+    echo "  Then open:             http://localhost:$WP/vnc.html   (password: $PW)"
+    echo "  Sign in yourself, then press Enter here (or close the browser) to close the view."
+    END=$(( $(date +%s) + SECS )); why="closed"
+    # Enter or an end of input closes it; a read that times out keeps it (over 128, or 1 after the full 2 s in Bash 3.2,
+    # whose read -t says 1 for a timeout as for an end of input)
+    while kill -0 "$CP" 2>/dev/null; do
+      [ "$(date +%s)" -lt "$END" ] || { why="closed after $MIN minutes (HUB_BROWSER_VIEW_MINUTES)"; break; }
+      t0=$SECONDS; read -r -t 2 _; r=$?; [ "$r" != 0 ] || break; [ "$r" -gt 128 ] || [ $((SECONDS - t0)) -ge 2 ] || break; done
+    echo "browser: $why; the session is kept in $2's profile" ;;
+  forget) [ $# -eq 2 ] || { echo "$USAGE" >&2; exit 2; }; folder "$2"; r="$(browser_root)"; d="$(browser_profile_path "$2")"
+    [ ! -L "$r" ] || { echo "browser: $r is a link; not followed" >&2; exit 1; }
+    [ -e "$d" ] || [ -L "$d" ] || { echo "browser: $2 has no profile"; exit 0; }
+    [ ! -L "$d" ] && [ -d "$d" ] || { echo "browser: $d is not a profile folder; not touched" >&2; exit 1; }
+    in_use "$d" && { echo "browser: $2's profile is open in Chromium; close it (or stop the agent's browser) first" >&2; exit 1; }
+    rm -rf "$d" && echo "browser: forgot $2's profile (and its cache)" ;;
+  status) [ $# -eq 1 ] || { echo "$USAGE" >&2; exit 2; }
+    if C="$(browser_chromium)"; then echo "ready  chromium $C"; else echo "missing  chromium (bin/server install)"; exit 1; fi ;;
+  *) echo "$USAGE" >&2; exit 2 ;;
+esac

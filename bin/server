@@ -12,7 +12,8 @@
 #      (bat glow poppler-utils chafa yazi) where the archive has them (each one it lacks is skipped with a note), then the
 #      missing tools at pinned versions (server_pin), each from its release file over https only and checked against
 #      the sha256 pinned here (server_sha): gitleaks (~/.local/bin), bun (~/.bun/bin, linked into ~/.local/bin), Claude
-#      Code (its own `claude install`); each must be there afterwards. What is already there is left alone, so a rerun
+#      Code (its own `claude install`), and Playwright's Chromium with its system dependencies through the pinned
+#      Playwright MCP's own Playwright (story V3); each must be there afterwards. What is already there is left alone, so a rerun
 #      changes nothing;
 #   3. the code folder (AGENT_CODE_DIR, default ~/Project; bin/work clones each checkout there on first use) and the
 #      hub's scheduled jobs (bin/schedule install, when any job it installs is absent);
@@ -20,15 +21,16 @@
 #   Nothing listens on a public port: Telegram, Remote Control and git all connect out.
 #   --dry-run prints every command that would change the machine (lines starting "+ ") and changes nothing; it runs the
 #   read-only checks and exits as the install would (1 when a safety row fails or a tool has no build for this machine).
-# status: services, last sync, last monitor run, disk space; never a secret.
+# status: services, last sync, last monitor run, disk space, the browser; never a secret.
 # Exit: 0 done, 1 unsafe or a step failed, 2 usage, root, no sudo or not Linux.
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
 ROWS="ssh-password ssh-root firewall upgrades listeners"
 USAGE="usage: bin/server install [--dry-run] [--accept-risk ${ROWS// /|}]... | bin/server status"
 # the fixed package list (apt) and the pinned tool versions
-# required (ade's tool set first: git python3 tmux gh), then the extras for ade's file viewer, installed where this
-# system's archive has them (apt-cache) and skipped with a note otherwise
-server_packages() { echo "git python3 tmux gh curl ca-certificates nodejs npm ufw unattended-upgrades"; }
+# required (ade's tool set first: git python3 tmux gh; xvfb x11vnc novnc websockify: the SSH-tunnelled sign-in view of
+# bin/browser login, story V3), then the extras for ade's file viewer, installed where this system's archive has them
+# (apt-cache) and skipped with a note otherwise
+server_packages() { echo "git python3 tmux gh curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify"; }
 server_extras() { echo "bat glow poppler-utils chafa yazi"; }
 server_pin() { case "$1" in gitleaks) echo 8.30.1 ;; bun) echo 1.3.9 ;; claude) echo 2.1.330 ;; *) return 1 ;; esac; }
 # server_arch: x64 or arm64, the builds the pins cover; exit 1 on any other machine
@@ -190,6 +192,11 @@ case "${1:-}" in
       if have "$t"; then echo "$t: present"; elif [ -z "$ARCH" ]; then echo "$t: no build for $(uname -m); not installed"
       else install_tool "$t" || exit 1; fi
     done
+    # the browser (story V3): Chromium from the pinned Playwright MCP's own Playwright (so the MCP finds the revision it
+    # drives), headless, and its system libraries (Playwright runs sudo apt-get); it must be there afterwards
+    if browser_chromium >/dev/null; then echo "chromium: present"
+    else run npx -y "$(browser_mcp_pkg)" install-browser --with-deps chromium && { [ "$DRY" = 1 ] || browser_chromium >/dev/null; } ||
+      { echo "server: Chromium was not installed ($(browser_mcp_pkg) install-browser)" >&2; exit 1; }; fi
     echo "== hub"
     CD="${AGENT_CODE_DIR:-$HOME/Project}"
     if [ -d "$CD" ]; then echo "code folder: $CD"; else run mkdir -p "$CD" || exit 1; fi
@@ -211,6 +218,7 @@ case "${1:-}" in
     row "" "last sync" "$(when "$L/sync.log")"
     row "" "last monitor" "$(when "$L/monitor.log")"
     d="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {printf "%.1f GB free of %.1f GB (%s used)", $4/1048576, $2/1048576, $5}')"
-    row "" "disk" "${d:-unknown}" ;;
+    row "" "disk" "${d:-unknown}"
+    if c="$(browser_chromium)"; then row "" "browser" "ready (headless Chromium, $c)"; else row "" "browser" "missing (bin/server install)"; fi ;;
   *) echo "$USAGE" >&2; exit 2 ;;
 esac

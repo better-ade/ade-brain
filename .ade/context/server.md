@@ -21,7 +21,8 @@ elsewhere); never as root (exit 2); needs `sudo` (`sudo -v`, exit 2 without).
      the UDP DHCP clients on 68 and 546)
    `--accept-risk` takes those row names only (exit 2 otherwise). The rows are checked, never changed.
 2. **Packages**: `server_packages` (apt, the distribution's versions): ade's tool set `git python3 tmux gh`, then
-   `curl ca-certificates nodejs npm ufw unattended-upgrades`; `server_extras` for ade's file viewer: `bat glow
+   `curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify` (the last four for the browser
+   sign-in view, V3); `server_extras` for ade's file viewer: `bat glow
    poppler-utils chafa yazi`, each only where the archive has it (`apt-cache show`; otherwise `<pkg>: not packaged for this
    system; skipped`). Only the missing ones (`dpkg-query`), in one `sudo apt-get install -y -q --no-install-recommends`.
    `nodejs` is skipped when `node` is on PATH, `npm` when `npm` is (or when that `node` is not the distribution's).
@@ -32,7 +33,9 @@ elsewhere); never as root (exit 2); needs `sudo` (`sudo -v`, exit 2 without).
    `curl --proto '=https' --tlsv1.2 -fsSL -o <tmp file>`, its exit checked, its sha256 checked, and only then unpacked
    or run: gitleaks' tarball into `~/.local/bin`; bun's zip (`bun-linux-x64-baseline` or `bun-linux-aarch64`) into
    `~/.bun/bin`, linked from `~/.local/bin`; Claude Code's binary (`downloads.claude.ai/claude-code-releases/<v>/linux-<arch>/claude`)
-   runs `claude install <v>`. Each tool must be found afterwards, or the install exits 1 (never "done"). No piped
+   runs `claude install <v>`. Then Playwright's Chromium with its system libraries, when missing:
+   `npx -y @playwright/mcp@0.0.84 install-browser --with-deps chromium` (the MCP's own Playwright, `browser_mcp_pkg`;
+   story V3, `.ade/context/browser.md`). Each tool must be found afterwards, or the install exits 1 (never "done"). No piped
    installer script. Another arch exits 1 before anything changes. Tests (AGENT_PLATFORM_TEST=1 only) may replace the
    pins with `AGENT_SERVER_SHA_FILE` (`<tool>-<arch> <sha256>` lines).
 4. **Hub**: the code folder `${AGENT_CODE_DIR:-~/Project}` (bin/work clones each checkout there on first use) and
@@ -47,4 +50,5 @@ the whole plan).
 
 ## `bin/server status`
 `== services` (the `bin/schedule status` lines), then `last sync` and `last monitor` (the time of
-`$(state_dir)/logs/sync.log` and `monitor.log`, or `never`) and `disk` (free and used for `$HOME`). It reads no secret.
+`$(state_dir)/logs/sync.log` and `monitor.log`, or `never`), `disk` (free and used for `$HOME`) and `browser` (V3). It
+reads no secret.

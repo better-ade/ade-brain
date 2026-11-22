@@ -10,6 +10,8 @@ repos/
 projects/*/.local/
 .local/
 .claude/settings.local.json
+projects/*/reports/browser/
+ops/*/reports/browser/
 reports/monitor/
 
 # Python bytecode written when hub scripts run
