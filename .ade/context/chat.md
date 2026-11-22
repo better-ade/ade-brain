@@ -34,8 +34,11 @@
   `claude_home` when that is not `~/.claude`.
 - **No terminal (launchd):** starts only when each channel's `access.json` says policy `allowlist` with no groups
   (else exit 1); pairing happens in a Terminal start. The session runs under `script -q /dev/null` (a
-  pseudo-terminal), with a stdin that stays open while it lives, and its own output goes to /dev/null: only
-  `bin/chat`'s own lines reach `chat.log`.
+  pseudo-terminal; util-linux: `script -q -e -c`), with a stdin that stays open while it lives, and its own output goes
+  to /dev/null: only `bin/chat`'s own lines reach `chat.log`. The start returns once the session ends: nothing it
+  leaves running waits on `script` (util-linux script waits for its children and its stdin), the stdin feeder ends with
+  the session (util-linux: the pid in `<state dir>/chat/lock/session.pid`, or 30 s without one), and the `.env` watcher
+  and the forwarder run apart.
 - **launchd:** `launchd/chat.plist.template` -> `ai.agent-hub.<hub>.chat` (RunAtLoad, KeepAlive, PATH with
   `~/.bun/bin`, `TERM=xterm-256color`, log `<state dir>/logs/chat.log`; the logs folder is 0700), installed and
   `launchctl enable`d by `bin/schedule install` only with `HUB_CHAT=telegram`, removed otherwise. `bin/chat stop`

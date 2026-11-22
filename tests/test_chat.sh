@@ -14,6 +14,9 @@ printf '%s' "${CLAUDE_CONFIG_DIR:-}" > "$FAKE_REC/configdir"; d="${TELEGRAM_STAT
 if [ -f "$d/.env" ]; then python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$d/.env" > "$FAKE_REC/envmode"; sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$d/.env" > "$FAKE_REC/filetoken"; fi
 bash -c env > "$FAKE_REC/childenv"
 [ -n "${FAKE_NOBOT:-}" ] || echo $$ > "$d/bot.pid"
+# FAKE_STDIN: whether its stdin is still open after 2 s (open), or ended (eof); Python, as Bash 3.2's read -t says 1 for both
+[ -z "${FAKE_STDIN:-}" ] || python3 -c 'import os, select; r = select.select([0], [], [], 2)[0]
+print("open" if not r else ("eof" if not os.read(0, 1) else "data"))' > "$FAKE_REC/stdin"
 echo SESSION-OUTPUT-MARKER
 [ -z "${FAKE_SLEEP:-}" ] || sleep "$FAKE_SLEEP"
 exit 0
@@ -33,6 +36,10 @@ reset_rec() { rm -f "$FAKE_REC"/*; }
 launched() { [ -f "$FAKE_REC/argv" ]; }
 arg_after() { awk -v f="$1" 'p{print; exit} $0==f{p=1}' "$FAKE_REC/argv"; }
 wait_for() { local i=0; while ! eval "$1"; do i=$((i+1)); [ $i -lt 100 ] || return 1; sleep 0.1; done; }
+# start_within <s>: bin/chat start without a terminal must return within s seconds; past that it is stopped (never a hang)
+start_within() { local i=0 p; bin/chat start </dev/null >/dev/null 2>&1 & p=$!
+  while kill -0 "$p" 2>/dev/null; do i=$((i+1)); [ "$i" -lt $(($1 * 10)) ] || { kill "$p" 2>/dev/null; return 124; }; sleep 0.1; done
+  wait "$p"; }
 PIDF="$AGENT_STATE/chat/chat.pid"
 
 start_launches_channel_session() {
@@ -161,8 +168,17 @@ start_lock_and_access() {
     reset_rec; out=$(bin/chat start </dev/null 2>&1); assert_eq "$?" "1" "no terminal, access [$a]"
     echo "$out" | grep -qi "allowlist" || fail "the refusal says allowlist [$out]"; launched && fail "launched with access [$a]"; done
   rm -f "$CH/access.json"; reset_rec; bin/chat start </dev/null >/dev/null 2>&1; assert_eq "$?" "1" "no terminal, not paired"
-  access "$CH" pairing; reset_rec; script -q /dev/null bin/chat start </dev/null >/dev/null 2>&1; launched || fail "a terminal start while pairing"
+  access "$CH" pairing; reset_rec; in_pty bin/chat start </dev/null >/dev/null 2>&1; launched || fail "a terminal start while pairing"
   access "$CH" allowlist; rm -rf "$L"
+}
+
+no_terminal_session_ends() {
+  # without a terminal claude runs under script(1) with a stdin that stays open while it runs, and the start returns
+  # once the session ends (util-linux script waits for its children and its stdin: a feeder that waited for script hung)
+  reset_rec; FAKE_STDIN=1 start_within 15; assert_eq "$?" "0" "a start without a terminal returns once the session ends"
+  launched || fail "no session launched"
+  assert_eq "$(cat "$FAKE_REC/stdin" 2>/dev/null)" "open" "the session's stdin stays open while it runs (an end would reach claude as Ctrl-D)"
+  FAKE_NOBOT=1 AGENT_CHAT_ENV_TTL=60 start_within 15; assert_eq "$?" "0" "a start waits for no .env time limit"
 }
 
 same_folder_name() {
@@ -184,7 +200,7 @@ schedule_installs_chat_job() {
   echo HUB_CHAT=telegram > hub.conf
   out=$(AGENT_LAUNCHAGENTS="$L" SCHEDULE_DRY=1 bin/schedule install) || fail "install with chat"
   [ -f "$C" ] || fail "no chat plist with HUB_CHAT=telegram [$out]"
-  plutil -lint "$C" >/dev/null || fail "chat plist is not valid"
+  plist_ok "$C" || fail "chat plist is not valid"
   assert_contains "$C" "<string>ai.agent-hub.hub.chat</string>" "chat label"
   assert_contains "$C" "<string>$HUB/bin/chat</string><string>start</string>" "the job runs bin/chat start"
   assert_contains "$C" "<key>KeepAlive</key><true/>" "restarted if it dies"
@@ -194,7 +210,7 @@ schedule_installs_chat_job() {
   [ -f "$L/ai.agent-hub.hub.sync.plist" ] || fail "the other jobs stay"
   assert_contains "$C" "$HOME/.bun/bin" "the plist PATH has bun"
   assert_contains "$C" "<key>TERM</key><string>xterm-256color</string>" "the plist sets TERM"
-  [ "$(stat -f %Lp "$AGENT_STATE/logs")" = 700 ] || fail "the logs folder is private"
+  [ "$(fmode "$AGENT_STATE/logs")" = 700 ] || fail "the logs folder is private"
   rm -f "$FAKE/launchctl.log"; AGENT_LAUNCHAGENTS="$L" bin/schedule install >/dev/null 2>&1
   grep -q "enable gui/$(id -u)/ai.agent-hub.hub.chat" "$FAKE/launchctl.log" || fail "install enables the chat job [$(cat "$FAKE/launchctl.log")]"
   echo HUB_CHAT=slack > hub.conf
@@ -227,7 +243,7 @@ channels_from_conf() {
 state_per_orchestrator() {
   reset_rec; TELEGRAM_STATE_DIR=/tmp/shared-telegram bin/chat start </dev/null >/dev/null 2>&1 || fail "start"
   S1="$(cat "$FAKE_REC/statedir")"; assert_eq "$S1" "$CH" "state folder under the hub's state dir"
-  [ "$(stat -f %Lp "$S1")" = 700 ] || fail "the state folder is private to the user"
+  [ "$(fmode "$S1")" = 700 ] || fail "the state folder is private to the user"
   # two hubs on one machine (state dirs by hub name): different folders, so no shared bot token or allowlist
   H1="$HUB"; NH="$(mktemp -d)"; make_hub; H2="$HUB"
   echo 'HUB_NAME=alpha' > "$H1/hub.conf"; echo 'HUB_NAME=beta' > "$H2/hub.conf"
@@ -551,11 +567,11 @@ PY
 
 # bash tests/test_chat.sh <check>: run the checks up to and including one (to see each fail on its own)
 if [ $# -gt 0 ]; then for c in start_launches_channel_session token_short_lived_file missing_token_refuses skip_permissions_refused \
-  single_instance stop_and_status start_lock_and_access same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator \
+  single_instance stop_and_status start_lock_and_access no_terminal_session_ends same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator \
   telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api; do
   [ "$c" = "$1" ] && { "$c"; echo ok; exit 0; }; ( "$c" ) >/dev/null 2>&1; done; fi
 start_launches_channel_session; token_short_lived_file; missing_token_refuses; skip_permissions_refused
-single_instance; stop_and_status; start_lock_and_access; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
+single_instance; stop_and_status; start_lock_and_access; no_terminal_session_ends; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
 state_per_orchestrator
 telegram_style_rule; answer_needs_owner_permission; status_card_golden; to_agent_notifies; forward_agent_events_once; forward_partial_failure; forward_cap_per_run; forward_after_rotation; forward_lock; start_runs_forwarder; approvals_buttons_or_numbered; agents_list; bot_send_token_on_stdin_only; no_terminal_stand_in_api
 echo ok
