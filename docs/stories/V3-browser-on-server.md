@@ -1,6 +1,7 @@
 # V3: browser automation on the server
 
-Status: Ready for development (2026-11-21). Risk: high (a browser acting with stored sessions). Depends on V2 and the
+Status: **Merged (2026-11-22, PR #60)**: `bash tests/run.sh` green in CI on the merge. Earlier: ready for development
+(2026-11-21). Risk: high (a browser acting with stored sessions). Depends on V2 and the
 ade-skills `browser` plugin. Owner's intent (2026-11-21): "Ubuntu on a VPS, with browser automation of course."
 
 ## Goal

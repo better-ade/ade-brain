@@ -1,6 +1,7 @@
 # M1: an ALERT wakes the monitor role to triage it
 
-Status: Ready for development (2026-11-21). Risk: medium (runs a model unattended on alert text).
+Status: **Merged (2026-11-21, PR #56)**: `bash tests/run.sh` green in CI on the merge. Earlier: ready for development
+(2026-11-21). Risk: medium (runs a model unattended on alert text).
 Owner's intent (2026-11-21): a monitor sub-orchestrator watches tools and delegates to focus agents; it is separate
 from the main orchestrator (the developer's personal assistant), which approves anything that changes something.
 Role: `monitor` in ade-agent-registry. Verification command: `bash tests/run.sh`.

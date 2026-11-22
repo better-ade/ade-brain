@@ -1,6 +1,7 @@
 # C7: Telegram: proper formatting, buttons, and talking to focus agents
 
-Status: Ready for development (2026-11-21). Risk: high (routes chat messages to running agents). Depends on C5, C6.
+Status: **Merged (2026-11-21, PR #52)**: `bash tests/run.sh` green in CI on the merge. Earlier: ready for development
+(2026-11-21). Risk: high (routes chat messages to running agents). Depends on C5, C6.
 Owner's intent (2026-11-21): "when responding to Telegram, use proper widgets or formatting"; "I'd like to talk to these
 agents via Telegram."
 

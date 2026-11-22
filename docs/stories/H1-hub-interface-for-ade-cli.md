@@ -1,6 +1,7 @@
 # H1: the hub commands ade-cli calls (setup and ui)
 
-Status: Ready for development (2026-11-21). Risk: **high** (raised from medium while building: the change handles an
+Status: **Merged (2026-11-21, PR #62)**: `bash tests/run.sh` green in CI on the merge. Earlier: ready for development
+(2026-11-21). Risk: **high** (raised from medium while building: the change handles an
 Anthropic API key and the Telegram bot token).
 Source: the contract ade-cli expects, `.ade/context/hub-interface.md` in ade-cli (branches A5 `ade setup`, A6 `ade ui`).
 Verification command: `bash tests/run.sh` (`docs/architecture.md`).
