@@ -351,7 +351,7 @@ fi
 [ "$BMAX" = 0 ] || sub="${sub}export BASH_MAX_OUTPUT_LENGTH=\"\${BASH_MAX_OUTPUT_LENGTH:-$BMAX}\""$'\n'
 # a terminal can carry the session variables of a Claude session that has exited (ADE hands them to every sub-terminal):
 # with them the new session starts as a child of that dead session and no other session can list or message it
-SESS_UNSET='unset CLAUDE_PID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_ENTRYPOINT CLAUDECODE'
+SESS_UNSET="unset $(agent_session_vars)"   # the one list, bin/lib.sh
 L=$(mktemp "${TMPDIR:-/tmp}/agent-work.XXXXXX"); printf '#!/bin/bash\ntrap %s EXIT\n%s\n%s\n%s%s\n' "$(sq "$TRAP \"\$R\"")" "$reg" "$SESS_UNSET" "$sub" "$cmd" > "$L"; chmod +x "$L"
 # WORK_NO_OPEN=1 (tests): write the launcher, print its path, open nothing (both files are kept for the caller)
 [ "${WORK_NO_OPEN:-}" = 1 ] && { echo "launcher: $L"; MS=""; L=""; exit 0; }

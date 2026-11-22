@@ -60,6 +60,8 @@ def sources():
             return
         for d, dirs, files in os.walk(root):
             dirs[:] = sorted(x for x in dirs if x not in SKIP_DIRS and not x.startswith("."))
+            if rel_to == HUB and os.path.relpath(d, HUB) == os.path.join("memory", "users"):   # story L1: this person's only
+                dirs[:] = [x for x in dirs if x == os.environ.get("BRAIN_USER", "")]
             for f in sorted(files):
                 if f.endswith(EXTS):
                     p = os.path.join(d, f)

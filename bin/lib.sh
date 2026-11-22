@@ -452,13 +452,22 @@ method_repo() { echo "${AGENT_METHOD_REPO:-https://github.com/better-ade/ade-met
 # AGENT_* environment variables override it (tests use them). Provider choice, role tables, hub ownership and HUB_AGENT_ANTHROPIC_KEY come only from hub.conf.
 unset HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE
 for _v in $(compgen -v HUB_ROLE_) $(compgen -v HUB_BROWSER_PROFILE_); do unset "$_v"; done; unset _v   # role tables and browser profile switches too
+unset HUB_USER   # story L1: <user> comes from hub.conf or the system user, never the environment
 [ -f "$(hub_root)/hub.conf" ] && . "$(hub_root)/hub.conf"
 hub_name() { echo "${HUB_NAME:-$(basename "$(hub_root)")}"; }
 hub_owner() { echo "${HUB_OWNER:-the hub owner}"; }
-# the person running this session, as a slug (story L1, .ade/context/learn.md): AGENT_USER, else HUB_USER (hub.conf or the
-# environment), else the operating-system user; lower-cased, every run of other characters one -, at most 40; empty: owner
-hub_user() { local u="${AGENT_USER:-${HUB_USER:-}}"; [ -n "$u" ] || u="$(id -un 2>/dev/null || printf '%s' "${USER:-}")"
-  u="$(printf '%s' "$u" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9]\{1,\}/-/g; s/^-*//' | cut -c1-40 | sed 's/-*$//')"; printf '%s\n' "${u:-owner}"; }
+# the person running this session, as a slug (story L1, .ade/context/learn.md): HUB_USER from hub.conf, else the
+# operating-system user (AGENT_USER only under the tests' AGENT_PLATFORM_TEST=1); lower-cased, every other character
+# (newlines too) -, runs of - one, at most 40; empty: owner
+hub_user() { local u="${HUB_USER:-}"; [ "${AGENT_PLATFORM_TEST:-}" = 1 ] && [ -n "${AGENT_USER:-}" ] && u="$AGENT_USER"   # tests only
+  [ -n "$u" ] || u="$(id -un 2>/dev/null || printf '%s' "${USER:-}")"
+  u="$(printf '%s' "$u" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//' | cut -c1-40 | sed 's/-$//')"
+  printf '%s\n' "${u:-owner}"; }
+# the variables an agent (Claude Code) session sets for the commands it runs (story L1): a command only the person may run
+# (bin/learn confirm, edit, forget) refuses while any is set; bin/work's launcher unsets them. The one list.
+agent_session_vars() { echo CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID CLAUDE_PID CLAUDE_CODE_CHILD_SESSION \
+  CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_CODE_EXECPATH CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_SESSION_ATTENDED; }
+in_agent_session() { local v; for v in $(agent_session_vars); do [ -n "${!v:-}" ] && return 0; done; return 1; }
 persona_title() { echo "${HUB_PERSONA_TITLE:-technical agent}"; }
 code_owner() { echo "${AGENT_CODE_OWNER:-${HUB_CODE_OWNER:-}}"; }
 # The remote box (staging server, VM) reached by bin/remote; empty host = none configured.
