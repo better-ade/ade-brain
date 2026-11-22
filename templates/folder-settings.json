@@ -23,7 +23,14 @@
       "Bash(*bin/browser forget*)",
       "Bash(*ade browser*)",
       "Edit(/{{HUB}}/hub.conf)",
-      "Bash(*hub.conf*)"
+      "Bash(*hub.conf*)",
+      "Bash(*bin/learn feedback*)",
+      "Bash(*bin/learn profile*)",
+      "Bash(*bin/learn forget*)",
+      "Bash(*bin/learn confirm*)",
+      "Bash(*learn.py*)",
+      "Edit(/{{HUB}}/memory/users/**)",
+      "Write(/{{HUB}}/memory/users/**)"
     ],
     "deny": [
       "Read(~/.config/ade/browser/**)",

@@ -4,12 +4,13 @@
 # FTS5) and vector (local Ollama, HUB_EMBED_MODEL) search ranked together. Files stay the source of truth; the index
 # is rebuilt from them and never committed. Without Ollama it still works, keyword only.
 # HUB_BRAIN_PATHS: folders, files or globs (~/client/*.md), space-separated.
+# memory/users/: only this person's own entries (hub_user; story L1), so one person's search never shows another's.
 # Each folder's code checkouts (ACCESS.md, repos_of) add their .ade/context and .ade/knowledge Markdown, read-only.
 . "$(dirname "$0")/lib.sh"
 [ -f "$(hub_root)/hub.conf" ] && . "$(hub_root)/hub.conf"   # hubs whose lib.sh does not load it
 # "<folder>\t<checkout>" per line for brain.py (story C4)
 BRAIN_CHECKOUTS="$(folders | while IFS= read -r f; do repos_of "$f" | while IFS= read -r r; do printf '%s\t%s\n' "$f" "$r"; done; done)" \
-BRAIN_HUB="$(hub_root)" BRAIN_PATHS="${AGENT_BRAIN_PATHS:-${HUB_BRAIN_PATHS:-}}" \
+BRAIN_HUB="$(hub_root)" BRAIN_USER="$(hub_user)" BRAIN_PATHS="${AGENT_BRAIN_PATHS:-${HUB_BRAIN_PATHS:-}}" \
 BRAIN_OLLAMA_URL="${AGENT_OLLAMA_URL:-${HUB_OLLAMA_URL:-http://localhost:11434}}" \
 BRAIN_MODEL="${AGENT_EMBED_MODEL:-${HUB_EMBED_MODEL:-nomic-embed-text}}" \
   exec python3 -I "$(dirname "$0")/brain.py" "$@"

@@ -129,6 +129,34 @@ matter), client or owner; at an end of input it prints the command that continue
 Add a persona: copy one in `personas/`, keep the front matter (`title`, `folders`, `model`, `briefing_focus`) and the
 `{{CLIENT}}`/`{{OWNER}}` placeholders, and write its habits.
 
+## What the hub learns about you
+
+When you correct an agent, state a preference or say something twice, the agent records it with `bin/learn`: your own
+words, its one-line reading, why and how to apply it, in `memory/users/<you>/` (synced with the hub, never shared with
+another person's sessions). Every session starts with your profile and the rules for its folder and role, most repeated
+first, in at most `HUB_LEARN_LINES` lines (30). Only what you say in the conversation is recorded, never what a page,
+mail or tool output asks; secrets, email addresses and phone numbers are refused. `bin/learn list`, `show`, `edit` and
+`forget` keep you in charge, and the morning briefing lists what was learned since the last one. Contract:
+`.ade/context/learn.md`.
+
+## What the hub learns about you
+
+When you correct an agent, state a preference or say something twice, the agent records it with `bin/learn`: your own
+words, its one-line reading, why and how to apply it, in `memory/users/<you>/`. Those files are committed to the hub's
+private repo with everything else, so everyone with access to that repo can read them; other people's sessions do not
+load them, and `bin/brain` indexes only your own. A capture waits until you confirm it with `bin/learn confirm` in your
+own terminal (yes, no, later); only confirmed entries load. Then every session starts with your profile and the rules
+for its folder and role, most repeated first, in at most `HUB_LEARN_LINES` lines (30). Secrets, email addresses and
+phone numbers are refused, and so are rules that look like markup, links or system text, or that grant an approval or
+switch off asking (a word list: a tripwire, not a parser). `bin/learn list`, `show`, `edit` and `forget` keep you in
+charge, and the morning briefing lists what was learned and what waits for you.
+
+What the confirmation stops: an entry planted by an agent (one that read a hostile page or ticket), written by hand or
+arriving by sync takes no effect until you have seen it in full and said yes, and a later change to it waits again. What
+it does not stop: an agent running as you, with your shell, could still forge the confirmation file in the hub's state
+folder; that is why Claude Code asks before an agent runs `bin/learn` capture, confirm or forget commands or writes under
+`memory/users/`, and why the briefing shows you what was learned. Contract: `.ade/context/learn.md`.
+
 ## The brain: searchable memory (SQLite + vectors)
 
 `bin/brain` keeps every Markdown section of the hub (STATE, memory, journal, notes, docs, plus `HUB_BRAIN_PATHS`) in

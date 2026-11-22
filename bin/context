@@ -11,14 +11,16 @@ lastn() { awk -v k="$1" '/^## /{n++} {a[n]=a[n] $0 "\n"} END{for(i=(n>k?n-k+1:1)
 section() { awk -v s="## $2" '$0==s{p=1;n=0;next} /^## /{p=0} p&&NF{if(n<4)print "  " substr($0,1,160); n++}' "$1"; }   # capped: tokens
 rules() {  # the hub root CLAUDE.md's rule sections: a session in a checkout outside the hub does not load it itself
   local c="$H/CLAUDE.md"; grep -q '^## Shared rules' "$c" 2>/dev/null || c="$H/templates/hub/CLAUDE.md"   # an uninitialized template
-  awk '/^## /{p=($0 ~ /^## (Shared rules|Tools|Coordination|Git boundaries|Token budget)/)} p' "$c" 2>/dev/null
+  awk '/^## /{p=($0 ~ /^## (Shared rules|Tools|Coordination|Git boundaries|Token budget|Learning)/)} p' "$c" 2>/dev/null
   # the hub memory index: a checkout session doesn't load it (its memory dir is per working directory)
   local m; m="$(grep '^- ' "$H/memory/MEMORY.md" 2>/dev/null)"
   [ -n "$m" ] && { echo; echo "## Hub memory (read a file from $H/memory/ when its line applies)"; echo "$m"; }
   return 0
 }
+# what this person taught the hub (story L1): their profile and the rules for this folder and role, in a fixed line budget
+learned() { local b; [ -x "$H/bin/learn" ] || return 0; b="$("$H/bin/learn" context "$@" 2>/dev/null)"; [ -z "$b" ] || printf '%s\n\n' "$b"; }
 if [ -n "${1:-}" ]; then
-  [ "${2:-}" = "--rules" ] && { rules; echo; }
+  [ "${2:-}" = "--rules" ] && { rules; echo; learned "$1"; }
   echo "# Context: $1"; if [ -f "$H/$1/STATE.md" ]; then cat "$H/$1/STATE.md"; else echo "(no STATE.md)"; fi
   echo; echo "## Recent journal ($1)"; entries "$1" | lastn 5
   exit 0
@@ -32,4 +34,5 @@ for f in $(folders); do
   for s in "Live" "Open" "Waiting on" "Next session starts with"; do out=$(section "$S" "$s"); [ -n "$out" ] && { echo " $s:"; echo "$out"; }; done
 done
 echo; echo "## Recent journal"; entries | lastn 8 | cut -c1-200
+b="$(learned)"; [ -z "$b" ] || { echo; printf '%s\n' "$b"; }
 exit 0
