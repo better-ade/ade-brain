@@ -37,7 +37,7 @@ case "$IN" in
      # no log yet: this session's baseline is the empty log (it will read every event from the first one)
      [ -f "$E" ] || { [ -f "$C" ] || { mkdir -p "$ST/events-seen" 2>/dev/null && printf '0 0\n' > "$C" 2>/dev/null; }; exit 0; }
      [ -f "$C" ] && [ "$C" -nt "$E" ] && exit 0
-     if [ -f "$C.at" ]; then a=$(stat -f %m "$C.at" 2>/dev/null); [ -n "$a" ] && [ $(( $(date +%s) - a )) -lt 60 ] && exit 0; fi ;;
+     if [ -f "$C.at" ]; then a=$(file_mtime "$C.at"); [ -n "$a" ] && [ $(( $(date +%s) - a )) -lt 60 ] && exit 0; fi ;;
 esac
 R=""; [ -z "$F" ] || R="$(repos_of "$F" 2>/dev/null)"
 printf '%s' "$IN" | H="$(hub_root)" ST="$ST" REPOS="$R" python3 -I "$(dirname "$0")/events.py" hook-tool "$F" 2>/dev/null

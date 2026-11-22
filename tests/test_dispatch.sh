@@ -26,7 +26,7 @@ FAKE_WORK="$(cat bin/work)"
 reset() { rm -f "$S/work.log" "$S/node.argv" "$S/sessions" "$S/fail" "$J"; rm -rf "$S/find" "$ST/dispatch" "$ST/dispatch.lock"; mkdir -p "$S/find"
   : > "$S/work.log"; unset HUB_DISPATCH_MAX; printf '%s\n' "$FAKE_WORK" > bin/work; }
 # approve_tty <ref> <typed>: --approve in a pseudo-terminal (script), the owner typing <typed> at the prompt
-approve_tty() { { sleep 1; printf '%s\n' "$2"; sleep 1; } | script -q /dev/null bin/dispatch --approve "$1" projects/demo | tr -d '\r'; }
+approve_tty() { { sleep 1; printf '%s\n' "$2"; sleep 1; } | in_pty bin/dispatch --approve "$1" projects/demo | tr -d '\r'; }
 row() { printf '{"ref":"%s","state":"todo","risk":"%s"%s}' "$1" "$2" "${3:-}"; }
 tickets() {  # tickets <ready rows> [refine rows] [in-progress rows] [blocked rows]
   printf '{"store":"repo","folder":"demo","ready_to_refine":[%s],"ready_to_start":[%s],"in_progress":[%s],"blocked":[%s]}\n' \

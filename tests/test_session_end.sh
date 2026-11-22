@@ -16,7 +16,7 @@ setup() {
 }
 # code_commit <message> <epoch>: a commit in the demo checkout dated <epoch>
 code_commit() { echo "$1" >> "$R/f"; git -C "$R" add f; GIT_AUTHOR_DATE="$2 +0000" GIT_COMMITTER_DATE="$2 +0000" git -C "$R" commit -qm "$1"; }
-iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+iso() { python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(int(sys.argv[1]))))' "$1"; }
 # run_held <secs> <cmd...>: cmd's stdin is a pipe whose writer never closes; killed after <secs>. RC = its status, 124 = killed.
 run_held() {
   local s="$1" p w i=0 wp; shift; wp="$(mktemp -d)/writer"   # a real pipe: script(1) refuses a fifo as stdin
@@ -53,7 +53,7 @@ st() { bash -c '. "$1"; proc_start "$2"' _ "$HUB/bin/lib.sh" "$1"; }   # proc_st
 
 CHECK=held_pipe_under_script_finishes; setup
 echo more >> projects/demo/STATE.md
-run_held 20 script -q /dev/null "$HUB/bin/session-end" projects/demo
+run_held 20 in_pty "$HUB/bin/session-end" projects/demo
 [ "$RC" != 124 ] || f "still running after 20 s (stdin read never returned)"
 committed || f "folder not committed"
 

@@ -1,34 +1,83 @@
 #!/bin/bash
-# bin/schedule install|uninstall|status: the hub's launchd jobs: the morning briefing (weekdays at
-# HUB_BRIEFING_HOUR:HUB_BRIEFING_MINUTE local time), monitor (bin/monitor every 30 minutes) and sync (bin/sync --auto
+# bin/schedule install|uninstall|status: the hub's scheduled jobs: the morning briefing (weekdays at
+# HUB_BRIEFING_HOUR:HUB_BRIEFING_MINUTE local time), monitor (bin/monitor every 30 minutes), sync (bin/sync --auto
 # every 30 minutes; not installed, and removed on install, when hub.conf has HUB_AUTO_SYNC=0) and chat (bin/chat start,
-# kept alive; installed only when hub.conf has HUB_CHAT=telegram, removed on install otherwise) and recover (bin/recover
-# once at login, story R1).
+# kept alive; installed only when hub.conf has HUB_CHAT=telegram and this hub owns its name, hub_name_claim; removed on
+# install otherwise) and, on macOS, recover (bin/recover once at login, story R1).
+# macOS: launchd agents from launchd/<job>.plist.template. Linux (story V1, .ade/context/platform.md): systemd user units
+# ade-<hub>-<job>.service plus .timer (chat: a service that restarts) in ~/.config/systemd/user (AGENT_SYSTEMD_USER_DIR),
+# lingering on so they run without a login; never as root (exit 2); a hub name units cannot carry exits 2; a unit that
+# fails to enable fails the install (exit 1). The recover job is launchd's only (no Linux unit yet).
 # Re-run install after pulling new jobs into the hub.
-. "$(dirname "$0")/lib.sh"; H="$(hub_root)"; LA="${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}"; U="gui/$(id -u)"
-ALL="briefing monitor sync chat recover"; LOGS="$(state_dir)/logs"
+. "$(dirname "$0")/lib.sh"; H="$(hub_root)"
+ALL="briefing monitor sync chat"; [ "$(platform)" != macos ] || ALL="$ALL recover"; LOGS="$(state_dir)/logs"
 JOBS="briefing monitor"; OFF=""
 if [ "${HUB_AUTO_SYNC:-1}" = 0 ]; then OFF="sync"; else JOBS="$JOBS sync"; fi
+if [ "$(platform)" = linux ]; then
+  [ "$(id -u)" != 0 ] || { echo "schedule: never as root; create a user for the hub (adduser) and run it as that user" >&2; exit 2; }
+  [[ "$(hub_name)" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "schedule: the hub name '$(hub_name)' cannot name a systemd unit; set HUB_NAME in hub.conf (A-Za-z0-9._-)" >&2; exit 2; }
+fi
 # the state folder, Keychain service and labels belong to the first hub with this name: a clashing hub gets no chat and
 # no recover job (bin/recover would act on the other hub's state)
 CLASH=""; [ "${1:-}" = install ] && { CLASH="$(hub_name_claim)" || true; }
-if [ -z "$CLASH" ]; then JOBS="$JOBS recover"; else OFF="$OFF recover"
-  [ "${1:-}" != install ] || echo "schedule: no recover job: the hub name $(hub_name) is already used by the hub at $CLASH; set HUB_NAME in hub.conf" >&2; fi
+if [ "$(platform)" = macos ]; then if [ -z "$CLASH" ]; then JOBS="$JOBS recover"; else OFF="$OFF recover"
+  [ "${1:-}" != install ] || echo "schedule: no recover job: the hub name $(hub_name) is already used by the hub at $CLASH; set HUB_NAME in hub.conf" >&2; fi; fi
 if [ "${HUB_CHAT:-}" = telegram ] && [ -z "$CLASH" ]; then JOBS="$JOBS chat"; else OFF="$OFF chat"
   [ -z "$CLASH" ] || echo "schedule: no chat job: the hub name $(hub_name) is already used by the hub at $CLASH; set HUB_NAME in hub.conf" >&2
   [ -z "${HUB_CHAT:-}" ] || [ "${HUB_CHAT:-}" = telegram ] || echo "schedule: HUB_CHAT must be telegram (or empty); no chat job" >&2; fi
-label() { echo "ai.agent-hub.$(hub_name).$1"; }
-remove() { [ "${SCHEDULE_DRY:-}" = 1 ] || launchctl bootout "$U/$(label "$1")" 2>/dev/null; rm -f "$LA/$(label "$1").plist"; echo "removed $(label "$1")"; }
+if [ "$(platform)" = macos ]; then
+  LA="${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}"
+  label() { echo "ai.agent-hub.$(hub_name).$1"; }
+  remove() { [ "${SCHEDULE_DRY:-}" = 1 ] || launchd_bootout "$(label "$1")"; rm -f "$LA/$(label "$1").plist"; echo "removed $(label "$1")"; }
+  case "${1:-status}" in
+    install) mkdir -p "$LOGS" "$LA" && chmod 700 "$LOGS"
+             # enabling chat again ends an earlier crash-loop stop (bin/chat start, story R1)
+             case " $JOBS " in *" chat "*) rm -f "$(state_dir)/chat/service-starts" "$(state_dir)/chat/service-quick" "$(state_dir)/chat/gave-up" ;; esac
+             for j in $JOBS; do p="$LA/$(label "$j").plist"
+               sed -e "s#{{HUB}}#$H#g" -e "s#{{HOME}}#$HOME#g" -e "s#{{LOGS}}#$LOGS#g" -e "s#{{LABEL}}#$(label "$j")#g" -e "s#{{HOUR}}#${HUB_BRIEFING_HOUR:-8}#g" -e "s#{{MINUTE}}#${HUB_BRIEFING_MINUTE:-0}#g" "$H/launchd/$j.plist.template" > "$p"
+               [ "${SCHEDULE_DRY:-}" = 1 ] && { echo "wrote $p"; continue; }
+               launchd_bootout "$(label "$j")"; [ "$j" != chat ] || launchd_enable "$(label "$j")"; launchd_bootstrap "$p" && echo "installed $(label "$j")"; done
+             for j in $OFF; do [ -f "$LA/$(label "$j").plist" ] && remove "$j"; done; true ;;
+    uninstall) for j in $ALL; do remove "$j"; done ;;
+    status) for j in $ALL; do launchd_loaded "$(label "$j")" && echo "loaded  $(label "$j")" || echo "absent  $(label "$j")"; done ;;
+    *) echo "usage: bin/schedule install|uninstall|status" >&2; exit 2 ;;
+  esac
+  exit
+fi
+# Linux: systemd user units; chat is a kept-running service, the others a oneshot service and its timer. Every value is
+# escaped for systemd (% and $), every argument and Environment= assignment quoted whole.
+U="$(systemd_user_dir)"; P="ade-$(hub_name)"; HR="${HUB_BRIEFING_HOUR:-8}"; MI="${HUB_BRIEFING_MINUTE:-0}"
+[[ "$HR" =~ ^[0-9]{1,2}$ && "$MI" =~ ^[0-9]{1,2}$ ]] || { echo "schedule: HUB_BRIEFING_HOUR and HUB_BRIEFING_MINUTE must be numbers" >&2; exit 2; }
+unit() { if [ "$1" = chat ]; then echo "$P-chat.service"; else echo "$P-$1.timer"; fi; }
+dq() { printf '"%s"' "$(systemd_escape "$1" | sed 's/["\\]/\\&/g')"; }
+service() {
+  local cmd; case "$1" in sync) cmd="$(dq "$H/bin/sync") --auto" ;; chat) cmd="$(dq "$H/bin/chat") start" ;; *) cmd="$(dq "$H/bin/$1")" ;; esac
+  printf '[Unit]\nDescription=ADE hub %s: %s\n\n[Service]\n' "$(hub_name)" "$1"
+  if [ "$1" = chat ]; then printf 'Type=simple\nRestart=always\nRestartSec=30\nEnvironment="TERM=xterm-256color"\n'; else printf 'Type=oneshot\n'; fi
+  printf 'WorkingDirectory=%s\nEnvironment=%s\nExecStart=/bin/bash %s\nStandardOutput=append:%s\nStandardError=append:%s\n' \
+    "$(systemd_escape "$H")" "$(dq "PATH=$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin")" "$cmd" \
+    "$(systemd_escape "$LOGS/$1.log")" "$(systemd_escape "$LOGS/$1.log")"
+  [ "$1" != chat ] || printf '\n[Install]\nWantedBy=default.target\n'
+}
+timer() {
+  local when='*:0/30'; [ "$1" != briefing ] || when="$(printf 'Mon..Fri *-*-* %02d:%02d:00' "$((10#$HR))" "$((10#$MI))")"
+  printf '[Unit]\nDescription=ADE hub %s: %s timer\n\n[Timer]\nOnCalendar=%s\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n' "$(hub_name)" "$1" "$when"
+}
+remove() { [ -e "$U/$P-$1.service" ] || [ -e "$U/$P-$1.timer" ] || return 0
+  [ "${SCHEDULE_DRY:-}" = 1 ] || systemd_user disable --now "$(unit "$1")" >/dev/null 2>&1; rm -f "$U/$P-$1.service" "$U/$P-$1.timer"; echo "removed $(unit "$1")"; }
 case "${1:-status}" in
-  install) mkdir -p "$LOGS" "$LA" && chmod 700 "$LOGS"
+  install) mkdir -p "$LOGS" "$U" && chmod 700 "$LOGS" || exit 1
            # enabling chat again ends an earlier crash-loop stop (bin/chat start, story R1)
            case " $JOBS " in *" chat "*) rm -f "$(state_dir)/chat/service-starts" "$(state_dir)/chat/service-quick" "$(state_dir)/chat/gave-up" ;; esac
-           for j in $JOBS; do p="$LA/$(label "$j").plist"
-             sed -e "s#{{HUB}}#$H#g" -e "s#{{HOME}}#$HOME#g" -e "s#{{LOGS}}#$LOGS#g" -e "s#{{LABEL}}#$(label "$j")#g" -e "s#{{HOUR}}#${HUB_BRIEFING_HOUR:-8}#g" -e "s#{{MINUTE}}#${HUB_BRIEFING_MINUTE:-0}#g" "$H/launchd/$j.plist.template" > "$p"
-             [ "${SCHEDULE_DRY:-}" = 1 ] && { echo "wrote $p"; continue; }
-             launchctl bootout "$U/$(label "$j")" 2>/dev/null; [ "$j" != chat ] || launchctl enable "$U/$(label "$j")"; launchctl bootstrap "$U" "$p" && echo "installed $(label "$j")"; done
-           for j in $OFF; do [ -f "$LA/$(label "$j").plist" ] && remove "$j"; done; true ;;
-  uninstall) for j in $ALL; do remove "$j"; done ;;
-  status) for j in $ALL; do launchctl print "$U/$(label "$j")" >/dev/null 2>&1 && echo "loaded  $(label "$j")" || echo "absent  $(label "$j")"; done ;;
+           for j in $JOBS; do service "$j" > "$U/$P-$j.service"; [ "$j" = chat ] || timer "$j" > "$U/$P-$j.timer"; done
+           for j in $OFF; do remove "$j"; done
+           if [ "${SCHEDULE_DRY:-}" = 1 ]; then for j in $JOBS; do echo "wrote $U/$(unit "$j")"; done; exit 0; fi
+           systemd_user daemon-reload || { echo "schedule: systemctl --user failed (no user session bus? turn lingering on, then log in again)" >&2; exit 1; }
+           linger_on || echo "schedule: could not turn lingering on (loginctl enable-linger $(id -un)); the jobs run only while you are logged in" >&2
+           rc=0; for j in $JOBS; do if systemd_user enable --now "$(unit "$j")" >/dev/null; then echo "installed $(unit "$j")"
+             else echo "schedule: could not enable $(unit "$j")" >&2; rc=1; fi; done; exit "$rc" ;;
+  uninstall) for j in $ALL; do remove "$j"; done; [ "${SCHEDULE_DRY:-}" = 1 ] || systemd_user daemon-reload >/dev/null 2>&1; true ;;
+  status) for j in $ALL; do [ "$j" != chat ] || [ -e "$U/$P-chat.service" ] || continue
+            systemd_user is-active "$(unit "$j")" >/dev/null 2>&1 && echo "loaded  $(unit "$j")" || echo "absent  $(unit "$j")"; done ;;
   *) echo "usage: bin/schedule install|uninstall|status" >&2; exit 2 ;;
 esac

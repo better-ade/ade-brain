@@ -4,7 +4,8 @@
 # bash tests/test_hub_interface.sh [check ...] runs only the named checks (all of them by default).
 # Hermetic: a fake claude, curl and node first on PATH, a stub bin/secret in the hub copy; no network, no real key.
 . "$(dirname "$0")/helpers.sh"
-make_hub; cd "$HUB"
+# (a fake security too: the hub is macOS-shaped on any runner, story V1, and bin/keys asks for the Keychain's command)
+make_hub; cd "$HUB"; stub_security
 unset CLAUDE_CONFIG_DIR HUB_CLAUDE_CONFIG_DIR AGENT_CLAUDE AGENT_FOLDER AGENT_TIMEOUT TELEGRAM_BOT_TOKEN HUB_CHANNELS HUB_ORCHESTRATOR
 S="$(mktemp -d)"; S="$(cd "$S" && pwd -P)"; mkdir -p "$S/tmp" "$S/home" "$S/bin" "$S/val"; export HI="$S" TMPDIR="$S/tmp" HOME="$S/home"
 ST="$S/state"; mkdir -p "$ST"; export AGENT_STATE="$ST"

@@ -68,7 +68,7 @@ tp=$(printf '%s' "$in" | sed -n 's/.*"transcript_path"[ ]*:[ ]*"\([^"]*\)".*/\1/
 start=""
 if [ -n "$tp" ] && [ -f "$tp" ]; then
   ts=$(head -1 "$tp" | sed -n 's/.*"timestamp"[ ]*:[ ]*"\([0-9T:-]*\).*/\1/p')
-  [ -n "$ts" ] && start=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "$ts" +%s 2>/dev/null)
+  [ -n "$ts" ] && start=$(utc_epoch "$ts")
 fi
 [ "$SINCE_GIVEN" = 1 ] && start="$SINCE"
 [ -n "$start" ] || start=$((now - 8*3600))

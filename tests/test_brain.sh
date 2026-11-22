@@ -67,13 +67,17 @@ printf '# Guide\nokapi docs only\n' > "$C/docs/guide.md"; printf '# Src\nokapi c
 printf '# CI\nokapi ci\n' > "$C/.github/ci.md"; printf '# Other\nokapi other ade\n' > "$C/.ade/notes.md"
 printf 'okapi context text\n' > "$C/.ade/context/plain.txt"
 printf '| demo-code | %s | main | owner | none |\n| gone | /nonexistent/gone-code | main | owner | none |\n' "$C" >> projects/demo/ACCESS.md
-before=$(cd "$C" && find . -type f -exec stat -f '%N %m %z' {} + | sort)
+before=$(cd "$C" && python3 -c 'import os
+for r, _, fs in os.walk("."):
+    for f in fs: p = os.path.join(r, f); s = os.stat(p); print(p, int(s.st_mtime), s.st_size)' | sort)
 out=$(AGENT_OLLAMA_URL="$U" bin/brain index 2>&1) || fail "index with a missing checkout failed: [$out]"   # missing_checkout_skipped
 out=$(bin/brain search walrus queue); echo "$out" | head -1 | grep -q "decisions/0001-x.md:" || fail "project_decision_indexed: [$out]"
 echo "$out" | head -1 | grep -q "^projects/demo: demo-code/.ade/context/decisions/0001-x.md:1" || fail "results_name_project: [$out]"
 bin/brain search narwhal cache | head -1 | grep -q "^projects/demo: demo-code/.ade/knowledge/ops.md:" || fail "project_knowledge_indexed"
 bin/brain search okapi | grep -q . && fail "only_ade_folders: [$(bin/brain search okapi)]"
-after=$(cd "$C" && find . -type f -exec stat -f '%N %m %z' {} + | sort)
+after=$(cd "$C" && python3 -c 'import os
+for r, _, fs in os.walk("."):
+    for f in fs: p = os.path.join(r, f); s = os.stat(p); print(p, int(s.st_mtime), s.st_size)' | sort)
 assert_eq "$after" "$before" "checkout_untouched"
 rm "$C/.ade/context/decisions/0001-x.md"; AGENT_OLLAMA_URL="$U" bin/brain index >/dev/null
 bin/brain search walrus | grep -q "0001-x.md" && fail "removed_file_dropped"

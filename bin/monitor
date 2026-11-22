@@ -2,7 +2,9 @@
 # bin/monitor: run every folder's read-only monitors; journal when the status line changes, and once per ALERT; notify on ALERT.
 # A monitor is an executable projects/<x>/monitors.d/*.sh or ops/<x>/monitors.d/*.sh: read-only, its first output line is
 # the status (an optional leading timestamp is ignored), lines starting with ALERT alert. Runs under launchd every 30
-# minutes (bin/schedule) with the plist's PATH only, killed after MONITOR_TIMEOUT seconds (300).
+# minutes (bin/schedule) with the plist's PATH only, killed after MONITOR_TIMEOUT seconds (300). A new ALERT notifies: on
+# macOS a desktop notification (unless MONITOR_QUIET=1), on Linux an event to main in the hub log (bin/notify, story C6;
+# a chat channel forwards it), written once per ALERT.
 # State per monitor in $ST: <key> (last output), <key>.status (status line, leading timestamp stripped), <key>.alert (present while alerting).
 # Story M1: with HUB_MONITOR_TRIAGE=1 in hub.conf (default off), a new ALERT gets one read-only triage by the monitor role:
 # bin/agent --role triage --folder <folder>, the task on stdin (the hub's .ade/agents/monitor.md, else a built-in role
@@ -58,9 +60,9 @@ for m in "$H"/projects/*/monitors.d/*.sh "$H"/ops/*/monitors.d/*.sh; do
       elif [ ! -e "$ST/$key.queued" ]; then : > "$ST/$key.queued"; "$H/bin/journal" "$folder" "monitor triage queued: $(basename "$m") (one triage per run)"; fi
     fi
   fi
-  if [ "$alert" = 1 ] && [ "${MONITOR_QUIET:-}" != 1 ]; then
-    msg="$(echo "$out" | grep '^ALERT' | head -1)"; [ -z "$VERDICT" ] || msg="$msg. $VERDICT"
-    osascript -e "display notification \"$(printf '%s' "$msg" | tr -d '"\\')\" with title \"$(hub_name): $folder\"" 2>/dev/null
+  if [ "$alert" = 1 ]; then msg="$(echo "$out" | grep '^ALERT' | head -1)"; [ -z "$VERDICT" ] || msg="$msg. $VERDICT"
+    if [ "$(platform)" = macos ]; then [ "${MONITOR_QUIET:-}" = 1 ] || desktop_notify "$(hub_name): $folder" "$msg"
+    else "$H/bin/notify" --from "$folder" main "$msg (monitor $(basename "$m"))" >/dev/null 2>&1; fi
   fi
 done
 # refresh the brain index (incremental: only changed files are re-read and re-embedded), quietly; it never fails the run

@@ -77,7 +77,7 @@ assert_eq "$(get provider) $(get model) $(get config_dir)" "anthropic opus /keep
 assert_eq "$(get session_id)" "sess-abc_1" "the prompt hook records the session id"
 assert_eq "$(get start)" "$(. bin/lib.sh; proc_start "$lp")" "the launcher's start time is recorded"
 # the same pid with another start time (the launcher died, its pid was reused by another launcher) counts as dead
-sed -i '' 's/^start=.*/start=Mon Jan  1 00:00:00 2001/' "$e"
+sed -i.bak 's/^start=.*/start=Mon Jan  1 00:00:00 2001/' "$e"; rm -f "$e.bak"
 bin/sessions | grep -q "^t-2.1 " && fail "a start-time mismatch is still listed"
 [ -e "$e" ] && fail "a start-time mismatch is not pruned"; ls "$ST/sessions-dead/" | grep -q "^t-2.1\.$lp$" || fail "kept in sessions-dead for bin/recover"
 kill "$(pgrep -P "$lp" | head -1)" 2>/dev/null; wait "$lp" 2>/dev/null; rm -rf "$ST/sessions-dead"

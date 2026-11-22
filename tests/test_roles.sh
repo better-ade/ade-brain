@@ -15,7 +15,7 @@ cat > "$S/claude" <<STUB
 #!/bin/bash
 C="$C"; [ "\${1:-}" = --version ] && { echo "fake claude"; exit 0; }
 echo run >> "\$C/runs"; printf '%s\n' "\$@" > "\$C/argv"; env > "\$C/env"; pwd -P > "\$C/cwd"; cat > "\$C/stdin"
-p=""; for a in "\$@"; do [ "\$p" = --settings ] && { cp "\$a" "\$C/settings.json"; stat -f %Lp "\$a" > "\$C/settings.mode"; echo "\$a" > "\$C/settings.path"; }; p="\$a"; done
+p=""; for a in "\$@"; do [ "\$p" = --settings ] && { cp "\$a" "\$C/settings.json"; python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "\$a" > "\$C/settings.mode"; echo "\$a" > "\$C/settings.path"; }; p="\$a"; done
 [ -f "$S/behave" ] && . "$S/behave"
 echo "report from the fake"
 STUB
@@ -120,7 +120,7 @@ gate_matches_bin_work() {
   reset; owner; mkdir -p "$S/co/.claude"; printf '{"env":{"ANTHROPIC_API_KEY":"x"}}' > "$S/co/.claude/settings.json"
   printf '\n## Code\n| Repo | Checkout |\n|---|---|\n| o/co | %s |\n' "$S/co" >> projects/demo/ACCESS.md
   run --role reviewer --folder projects/demo; assert_eq "$rc" 0 "checkout: fallback"; [ ! -e "$C/settings.json" ] || fail "checkout setting a credential must refuse the provider"
-  assert_eq "$(cat "$C/cwd")" "$S/co" "runs in the folder's checkout"; git checkout -q -- . 2>/dev/null; sed -i '' '/^| o\/co /d' projects/demo/ACCESS.md
+  assert_eq "$(cat "$C/cwd")" "$S/co" "runs in the folder's checkout"; git checkout -q -- . 2>/dev/null; grep -v '^| o/co ' projects/demo/ACCESS.md > "$S/access.tmp"; cat "$S/access.tmp" > projects/demo/ACCESS.md
 }
 environment_cannot_configure_roles() {
   HUB_ROLE_ROUTINE="anthropic:opus" HUB_ROLE_EVIL="anthropic:opus" run --role routine --folder projects/demo
@@ -163,7 +163,7 @@ output_is_capped_with_full_text_kept() {
   grep -q 'truncated=yes' "$S/out" || fail "truncation not stated"
   f="$(sed -n 's/.* full=\([^ ]*\).*/\1/p' "$S/out" | head -1)"; [ -f "$f" ] || fail "no full text at [$f]"
   case "$f" in "$HUB/.local/agent-out/"*) ;; *) fail "full text is at $f";; esac
-  [ "$(wc -c < "$f" | tr -d ' ')" -ge 50000 ] || fail "full text cut"; assert_eq "$(stat -f %Lp "$f")" 600 "full text mode"
+  [ "$(wc -c < "$f" | tr -d ' ')" -ge 50000 ] || fail "full text cut"; assert_eq "$(fmode "$f")" 600 "full text mode"
 }
 engine_failure_exits_1_without_fallback() {
   owner; echo 'echo partial; exit 7' > "$S/behave"; run --role reviewer --folder projects/demo; assert_eq "$rc" 1 "engine error"

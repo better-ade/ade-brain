@@ -10,7 +10,7 @@ make_hub; cd "$HUB"
 unset CLAUDE_CONFIG_DIR HUB_CLAUDE_CONFIG_DIR
 S="$(mktemp -d)"; mkdir -p "$S/tmp" "$S/home"; export TMPDIR="$S/tmp" HOME="$S/home"   # never the tester's HOME
 # every temp dir this suite (and make_hub) made goes when it exits
-trap 'rm -rf "$S" "$(dirname "$HUB")" "$CLAUDE_HOME" "$(dirname "$AGENT_SYNC_LOG")" "$(dirname "$AGENT_SYNC_LOCK")"' EXIT
+trap 'rm -rf "$S" "$(dirname "$HUB")" "$CLAUDE_HOME" "$(dirname "$AGENT_SYNC_LOG")" "$(dirname "$AGENT_SYNC_LOCK")" "$(dirname "$METHOD_FIXTURE")"' EXIT
 bin/new projects/demo >/dev/null
 export SP_ROOT="$S" SP_CAP="$S/cap" SP_CALLS="$S/calls" SP_KEYFILE="$S/key" SP_STORED="$S/stored" SP_NONCE="fake-$$-$RANDOM"
 KEY="sk-SPTEST-$RANDOM$RANDOM-c0ffee"; printf '%s' "$KEY" > "$SP_KEYFILE"; chmod 600 "$SP_KEYFILE"; : > "$SP_CALLS"
@@ -33,7 +33,7 @@ L=$(printf '%s\n' "$@" | grep -o 'bash -l [^"]*' | head -1); L="${L#bash -l }"
 [ -f "$L" ] || { echo "osascript stub: no launcher in [$*]" >&2; exit 1; }
 mkdir -p "$SP_CAP"; cp "$L" "$SP_CAP/launcher"
 m=$(grep -o -- "--settings '[^']*'" "$L" | head -1 | sed "s/^--settings '//; s/'\$//")
-[ -n "$m" ] && [ -f "$m" ] && { cp "$m" "$SP_CAP/settings.json"; stat -f %Lp "$m" > "$SP_CAP/settings.mode"; echo "$m" > "$SP_CAP/settings.path"; }
+[ -n "$m" ] && [ -f "$m" ] && { cp "$m" "$SP_CAP/settings.json"; python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$m" > "$SP_CAP/settings.mode"; echo "$m" > "$SP_CAP/settings.path"; }
 bash "$L" > "$SP_CAP/launcher.out" 2>&1
 STUB
 # the fake engine: writes a marker, its argv, whether its environment holds the key, and a /model-style settings write

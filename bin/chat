@@ -134,10 +134,13 @@ case "${1:-}" in
         "$H/bin/journal" . "chat: login expired? the orchestrator stopped after $q sessions in a row that each lived under a minute (run claude once, then bin/schedule install)"
         "$H/bin/chat" say "⚠ login expired: run \`claude\` once at the hub, then bin/schedule install (the orchestrator stopped after $q quick restarts)" >/dev/null 2>&1
         echo "chat: stopped after $q quick restarts (login expired?): run claude once, then bin/schedule install" >&2
-        U="gui/$(id -u)"; launchctl disable "$U/$LABEL" 2>/dev/null; launchctl bootout "$U/$LABEL" 2>/dev/null; exit 1; fi
+        # the job is turned off through the platform layer (launchd, or systemd on Linux, story V1)
+        if [ "$(platform)" = macos ]; then launchd_disable "$LABEL"; launchd_bootout "$LABEL"
+        else systemd_user disable --now "ade-$(hub_name)-chat.service" >/dev/null 2>&1; fi; exit 1; fi
       # each start is "<epoch>.<pid>", so two starts in one second are still two sessions
       { tail -9 "$SF" 2>/dev/null; echo "$now.$$"; } > "$SF.new" && mv "$SF.new" "$SF"; echo "$q" > "$QF"
-      ( exec </dev/null >/dev/null 2>&1; while sleep 10; kill -0 $$ 2>/dev/null; do echo "$now.$$ $(date +%s)" > "$AF"; done ) &
+      # (started apart, not a child of script after the exec: util-linux script would wait for it)
+      ( ( exec </dev/null >/dev/null 2>&1; while sleep 10; kill -0 $$ 2>/dev/null; do echo "$now.$$ $(date +%s)" > "$AF"; done ) & )
     else rm -f "$SF" "$QF" "$S/chat/gave-up"; fi
     take_lock || { p="$(running_pid)" && { echo "chat: already running (pid $p, since $(since)); bin/chat stop first" >&2; exit 1; }
       echo "chat: another bin/chat start holds the lock $LOCK (pid $(cat "$LOCK/pid" 2>/dev/null)); if none runs, remove that folder" >&2; exit 1; }
@@ -155,8 +158,16 @@ case "${1:-}" in
     CD="$(claude_home)"; [ "$CD" = "$HOME/.claude" ] || export CLAUDE_CONFIG_DIR="$CD"
     cd "$H" || refuse "cannot enter $H"
     # launchd gives no terminal, and claude's interface needs one: script(1) gives it a pseudo-terminal, fed a stdin
-    # that never ends while this process lives (an end of input would reach claude as Ctrl-D)
-    if [ "$TTY" = 0 ]; then exec 0< <(exec >/dev/null 2>&1; while kill -0 $$ 2>/dev/null; do sleep 5; done); cmd=(script -q /dev/null "${cmd[@]}"); fi
+    # that stays open while the session runs (an end of input would reach claude as Ctrl-D). The feeder keeps the pipe
+    # (only its stderr is dropped) and ends once this process (script, after the exec) is gone. util-linux script
+    # waits for its children and for the end of its stdin, so there the feeder also ends once the session itself is
+    # gone (the pid the command under script writes before it execs claude), or 30 s after the start if none appears.
+    if [ "$TTY" = 0 ]; then UL=0; SP="$LOCK/session.pid"; rm -f "$SP"; script_is_util_linux && UL=1
+      exec 0< <(exec 2>/dev/null </dev/null; p=""; i=0
+        while kill -0 $$; do if [ "$UL" = 1 ]; then [ -n "$p" ] || p="$(cat "$SP")"
+            if [ -n "$p" ]; then kill -0 "$p" || break; else i=$((i+1)); [ "$i" -lt 30 ] || break; fi; fi; sleep 1; done)
+      if [ "$UL" = 1 ]; then cmd=(script -q -e -c "echo \$\$ > $(printf '%q' "$SP"); exec $(printf '%q ' "${cmd[@]}")" /dev/null)
+      else cmd=(script -q /dev/null "${cmd[@]}"); fi; fi
     ttl="${AGENT_CHAT_ENV_TTL:-60}"; case "$ttl" in ''|*[!0-9]*) ttl=60 ;; esac; [ "$ttl" -le 60 ] || ttl=60
     for c in $CHANNELS; do d="$(channel_dir "$c")"; mkdir -p "$d" && chmod 700 "$d" || refuse "cannot make $d"
       export "$(channel_state_env "$c")=$d"; rm -f "$d/bot.pid" "$d/.env"
@@ -164,21 +175,28 @@ case "${1:-}" in
       # the token goes to a 0600 file only (printf is a builtin: no argument of any process carries it)
       ( umask 077; printf '%s=%s\n' "$(channel_token_env "$c")" "$t" > "$d/.env" ) || { unset t; rm -f "$d/.env"; refuse "cannot write $d/.env"; }
       unset t
-      # deleted once the plugin has read it (it writes bot.pid when it starts), or after the time limit
-      ( exec </dev/null >/dev/null 2>&1; i=0; while [ "$i" -lt $((ttl * 2)) ] && [ ! -f "$d/bot.pid" ]; do sleep 0.5; i=$((i+1)); done; rm -f "$d/.env" ) &
+      # deleted once the plugin has read it (it writes bot.pid when it starts), or after the time limit; started apart
+      # (not a child of script after the exec: util-linux script would wait for it)
+      ( ( exec </dev/null >/dev/null 2>&1; i=0; while [ "$i" -lt $((ttl * 2)) ] && [ ! -f "$d/bot.pid" ]; do sleep 0.5; i=$((i+1)); done; rm -f "$d/.env" ) & )
     done
     # the forwarder: the agents' events to main reach the chat while the session lives (story C7)
     fe="${AGENT_CHAT_FORWARD_EVERY:-15}"; case "$fe" in ''|*[!0-9]*) fe=15 ;; esac
-    if [ "$fe" -gt 0 ]; then ( exec </dev/null >/dev/null 2>&1; w="$fe"; while kill -0 $$ 2>/dev/null; do sleep "$w"
-      kill -0 $$ 2>/dev/null || break; "$H/bin/chat" forward; r=$?; [ "$r" = 1 ] && r=1 || r=0; w="$(chat_backoff "$w" "$r")"; done ) & fi
+    # (started apart, not a child of script after the exec: util-linux script would wait for it)
+    if [ "$fe" -gt 0 ]; then ( ( exec </dev/null >/dev/null 2>&1; w="$fe"; while kill -0 $$ 2>/dev/null; do sleep "$w"
+      kill -0 $$ 2>/dev/null || break; "$H/bin/chat" forward; r=$?; [ "$r" = 1 ] && r=1 || r=0; w="$(chat_backoff "$w" "$r")"; done ) & ) fi
     echo "$$ $(date -u +%Y-%m-%dT%H:%MZ)" > "$PIDF"; echo $$ > "$LOCK/pid"
     echo "chat: $NAME on $CHANNELS (pid $$, mode $MODE)" >&2
     # the lock stays with the session (same pid); it is stale once the session is gone
     if [ "$TTY" = 0 ]; then exec "${cmd[@]}" >/dev/null 2>&1; else exec "${cmd[@]}"; fi ;;
   stop) [ $# -eq 1 ] || usage
-    if [ -f "$LA/$LABEL.plist" ]; then U="gui/$(id -u)"
-      launchctl disable "$U/$LABEL" 2>/dev/null; launchctl bootout "$U/$LABEL" 2>/dev/null
-      echo "disabled $LABEL (bin/schedule install enables it again)"; fi
+    # the scheduled job would restart it: disabled through the platform layer (launchd, or systemd on Linux, story V1)
+    if [ "$(platform)" = macos ]; then
+      if [ -f "$LA/$LABEL.plist" ]; then launchd_disable "$LABEL"; launchd_bootout "$LABEL"
+        echo "disabled $LABEL (bin/schedule install enables it again)"; fi
+    else CU="ade-$(hub_name)-chat.service"
+      if [ -e "$(systemd_user_dir)/$CU" ]; then systemd_user disable --now "$CU" >/dev/null 2>&1
+        echo "disabled $CU (bin/schedule install enables it again)"; fi
+    fi
     if p="$(running_pid)"; then kill "$p" 2>/dev/null; i=0
       while kill -0 "$p" 2>/dev/null; do i=$((i+1)); [ $i -lt 100 ] || { echo "chat: pid $p still runs after 10 s; the pid file is kept" >&2; exit 1; }; sleep 0.1; done
       rm -f "$PIDF"; rm -rf "$LOCK"; echo "stopped (pid $p)"
@@ -221,7 +239,7 @@ EOF
     # one forwarder at a time; a lock whose holder is gone is taken over
     # a lock with no pid yet belongs to a forwarder that is just starting: live for 10 s (the folder's mtime)
     if ! mkdir "$FL" 2>/dev/null; then p="$(cat "$FL/pid" 2>/dev/null)"
-      case "$p" in ''|*[!0-9]*) m="$(stat -f %m "$FL" 2>/dev/null || echo 0)"; [ $(( $(date +%s) - m )) -gt 10 ] || exit 0 ;;
+      case "$p" in ''|*[!0-9]*) m="$(file_mtime "$FL")"; m="${m:-0}"; [ $(( $(date +%s) - m )) -gt 10 ] || exit 0 ;;
         *) kill -0 "$p" 2>/dev/null && exit 0 ;; esac
       rm -rf "${FL:?}"; mkdir "$FL" 2>/dev/null || exit 0; fi
     echo $$ > "$FL/pid"; trap 'rm -rf "${FL:?}"' EXIT
@@ -231,7 +249,7 @@ EOF
     for m in "$S"/chat/pending/*.txt; do [ -f "$m" ] || continue
       if chat_send --done "$m.done" < "$m"; then rm -f "${m:?}" "$m.done" "$m.tries"; continue; fi
       rc=1; t="$(cat "$m.tries" 2>/dev/null)"; case "$t" in ''|*[!0-9]*) t=0 ;; esac; t=$((t + 1)); echo "$t" > "$m.tries"
-      age=$(( $(date +%s) - $(stat -f %m "$m" 2>/dev/null || date +%s) ))
+      mt="$(file_mtime "$m")"; age=$(( $(date +%s) - ${mt:-$(date +%s)} ))
       if [ "$t" -ge "$MAXTRY" ] || [ "$age" -gt 86400 ]; then rm -f "${m:?}" "$m.done" "$m.tries"
         "$H/bin/journal" . "chat: dropped a message after $t tries (the channel kept failing)"; fi
     done
@@ -288,9 +306,11 @@ EOF
     case " $(channel_types) " in *" $c "*) ;; *) echo "chat: unknown channel type (known channel types: $(channel_types))" >&2; exit 2 ;; esac
     TO="${AGENT_CHAT_TEST_TIMEOUT:-120}"; [[ "$TO" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$TO" -le 600 ] || { echo "chat: AGENT_CHAT_TEST_TIMEOUT must be 1 to 600 seconds" >&2; exit 2; }
     if p="$(running_pid)"; then echo "chat: the orchestrator runs (pid $p) and reads the bot's messages: bin/chat stop, then bin/chat test $c" >&2; exit 1; fi
-    # the launchd job would start the orchestrator (and its plugin would read the bot's updates) at any moment
-    if command -v launchctl >/dev/null 2>&1 && launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-      echo "chat: the chat job $LABEL is loaded: bin/chat stop, then bin/chat test $c" >&2; exit 1; fi
+    # the scheduled job would start the orchestrator (and its plugin would read the bot's updates) at any moment
+    # (launchd, or systemd on Linux: the platform layer, story V1)
+    if [ "$(platform)" = macos ]; then JOB="$LABEL"; launchd_loaded "$LABEL"; else JOB="ade-$(hub_name)-chat.service"
+      systemd_user is-active "$JOB" >/dev/null 2>&1; fi && {
+      echo "chat: the chat job $JOB is loaded: bin/chat stop, then bin/chat test $c" >&2; exit 1; }
     take_lock || { echo "chat: another bin/chat holds the lock $LOCK (pid $(cat "$LOCK/pid" 2>/dev/null)); try again when it is done" >&2; exit 1; }
     trap '[ "$(cat "$LOCK/pid" 2>/dev/null)" != $$ ] || rm -rf "$LOCK"' EXIT
     "$H/bin/secret" --has "$(channel_secret "$c")" 2>/dev/null || { echo "chat: no $c bot token in the Keychain: run bin/keys set $c" >&2; exit 1; }

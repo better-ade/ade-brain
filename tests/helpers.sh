@@ -11,6 +11,10 @@ make_hub() {
   local v; for v in $(compgen -e); do case "$v" in ANTHROPIC_*|CLAUDE_CODE_USE_*|CLAUDE_CODE_OAUTH_TOKEN) unset "$v" ;; esac; done
   # nor a tester's ADE terminal or terminal choice: bin/work would open a real ADE sub-terminal (story W1)
   unset ADE_HOOK_BIN ADE_HOOK_PORT ADE_HOOK_TOKEN ADE_PTY_ID AGENT_TERMINAL
+  # the macOS behaviour (Keychain, launchd, Terminal) with the stubs the tests give, on any machine; tests/test_platform.sh
+  # runs the Linux behaviour (story V1). GNU or BSD tools underneath are the machine's own.
+  export AGENT_PLATFORM=macos AGENT_PLATFORM_TEST=1   # the override only counts with the test flag (bin/lib.sh)
+  unset XDG_CONFIG_HOME   # the file store and systemd units go under the test's HOME, never a runner's real config
   HUB="$(mktemp -d)/hub"; mkdir -p "$HUB"
   (cd "$REPO" && tar cf - --exclude ./repos --exclude ./.git --exclude ./hub.conf --exclude ./.local --exclude ./.superpowers --exclude ./.claude/worktrees --exclude ./_bmad/render --exclude ./_bmad-output .) | (cd "$HUB" && tar xf -)
   rm -f "$HUB"/journal/[0-9]*.md   # test hubs start with an empty journal; the real journal/ is never touched
@@ -24,6 +28,12 @@ make_hub() {
   # tests never push a real hub or touch the real sync log/lock; test_report turns auto sync on with a stub
   export AGENT_AUTO_SYNC=0 AGENT_SYNC_LOG="$(mktemp -d)/sync.log" AGENT_SYNC_LOCK="$(mktemp -d)/sync.lock"
 }
+# fmode <file>: its permission bits in octal (700), on GNU and BSD alike
+fmode() { python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$1"; }
+# in_pty <cmd...>: run cmd in a pseudo-terminal (util-linux script on Linux, BSD script on macOS)
+in_pty() { if script --version 2>/dev/null | grep -q util-linux; then script -q -e -c "$(printf '%q ' "$@")" /dev/null; else script -q /dev/null "$@"; fi; }
+# plist_ok <file>: a valid property list (plutil where it exists, else Python's plistlib)
+plist_ok() { if command -v plutil >/dev/null; then plutil -lint "$1" >/dev/null; else python3 -c 'import plistlib, sys; plistlib.load(open(sys.argv[1], "rb"))' "$1"; fi; }
 # a fake macOS `security`: a name=value file ($STORE), every argv logged ($STORE.argv); -i reads commands from stdin
 stub_security() {
   local d; d="$(mktemp -d)"; export STORE="$d/store"; : > "$STORE"

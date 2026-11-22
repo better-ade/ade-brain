@@ -8,7 +8,8 @@
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
 USAGE="usage: bin/keys | bin/keys set <tool> | bin/keys forget <tool> (tools: $(key_tools))"
 bad() { echo "$USAGE" >&2; exit 2; }
-keychain() { command -v security >/dev/null || { echo "keys: needs the macOS Keychain (the security command)" >&2; exit 1; }; }
+# the hub's secret store (bin/lib.sh, story V1): the Keychain on macOS, pass or the file store on Linux
+keychain() { local why; why="$(secret_store_refusal)"; [ -z "$why" ] || { echo "keys: $why" >&2; exit 1; }; }
 # an unknown name is not repeated: it may be a key typed in the wrong place
 tool_name() { case " $(key_tools) " in *" $1 "*) key_secret "$1" ;; *) echo "keys: unknown tool" >&2; bad ;; esac; }
 # tool_state <tool>: what stands between this tool and a run, other than its key (empty = nothing)

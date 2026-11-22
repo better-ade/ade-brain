@@ -16,6 +16,6 @@ AGENT_CLAUDE="$S/emptyclaude" bin/briefing; assert_eq "$?" "1" "empty output is 
 # schedule writes a weekday plist pointing at this hub (dry: nothing loaded)
 L="$(mktemp -d)"; AGENT_LAUNCHAGENTS="$L" SCHEDULE_DRY=1 bin/schedule install >/dev/null || fail "schedule install"
 assert_contains "$L/ai.agent-hub.hub.briefing.plist" "$HUB/bin/briefing" "plist runs this hub's briefing"
-plutil -lint "$L/ai.agent-hub.hub.briefing.plist" >/dev/null || fail "plist is not valid"
+plist_ok "$L/ai.agent-hub.hub.briefing.plist" || fail "plist is not valid"
 bin/schedule bogus >/dev/null 2>&1; assert_eq "$?" "2" "bad subcommand exits 2"
 echo ok

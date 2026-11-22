@@ -33,6 +33,10 @@
 #   the command to paste into the new sub-terminal; the launcher is kept;
 # - any other `ade open` answer, or an ADE without `ade open`: fails with ADE's message, nothing opened, no window.
 # AGENT_TERMINAL=terminal|iterm is a window outside ADE and exit 2 inside it; AGENT_TERMINAL=ade is exit 2 outside ADE.
+# AGENT_TERMINAL=tmux (the default on Linux; story V1, .ade/context/platform.md): a new window, left in the background,
+# in tmux session ade-<hub> when it exists (ade-cli's `ade ui` attaches to it), else a detached session named after the
+# session (--name N, else the folder name; . and : become _). A tmux session or window of that name already open: exit 3
+# (--force opens another anyway). Terminal and iTerm are macOS only (exit 2 elsewhere).
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
 # temp files (merged settings, launcher) go on any exit until the launcher is handed off; the launcher then removes them
 MS=""; L=""; trap '[ -z "$MS" ] || rm -f "$MS"; [ -z "$L" ] || rm -f "$L"' EXIT
@@ -62,6 +66,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ "$CL" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "work: bad claude command '$CL'" >&2; exit 2; }
+# a server's hub runs as a normal user (story V1): never as root on Linux
+[ "$(platform)" != linux ] || [ "$(id -u)" != 0 ] || { echo "work: never as root; create a user for the hub (adduser) and run it as that user" >&2; exit 2; }
 # --role: one way to choose; the pick becomes --provider and --model, so every check below applies to it
 if [ -n "$ROLE" ]; then
   [ -z "$MODEL" ] && [ "$PSET" = 0 ] || { echo "work: --role picks the provider and model; drop --model and --provider" >&2; exit 2; }
@@ -167,6 +173,16 @@ if in_ade; then
   fi
 elif [ "${AGENT_TERMINAL:-}" = ade ]; then
   echo "work: AGENT_TERMINAL=ade needs an ADE terminal (ADE_HOOK_BIN, ADE_HOOK_PORT, ADE_HOOK_TOKEN and ADE_PTY_ID set)" >&2; exit 2
+elif [ "${AGENT_TERMINAL:-}" = tmux ] || { [ -z "${AGENT_TERMINAL:-}" ] && [ "$(platform)" = linux ]; }; then
+  OPEN=tmux; TN="$(tmux_name "${RNAME:-${F##*/}}")"
+  case "$TN" in ade-*) echo "work: a focus session is never named ade-* (the hub sessions' names); use --name" >&2; exit 2 ;; esac
+  other="$(hub_name_claim)" || { echo "work: the hub name $(hub_name) is already used by the hub at $other, so its tmux session $(tmux_hub_session) is not this hub's; set HUB_NAME in hub.conf" >&2; exit 2; }
+  if command -v tmux >/dev/null 2>&1; then
+    if [ "$FORCE" = 1 ]; then b="$TN"; i=2; while tmux_taken "$TN"; do TN="$b-$i"; i=$((i + 1)); done   # another one: <name>-2, -3 ...
+    else ! tmux_taken "$TN" || { echo "work: $TN is already open in tmux (tmux attach -t $(tmux has-session -t "=$TN" 2>/dev/null && echo "$TN" || tmux_hub_session)); use it, or stop it first (--force opens another)" >&2; exit 3; }; fi
+  elif [ "${WORK_DRY:-}" != 1 ]; then echo "work: tmux is not installed (sudo apt-get install tmux)" >&2; exit 1; fi
+elif [ "$(platform)" != macos ]; then
+  echo "work: AGENT_TERMINAL=${AGENT_TERMINAL}: Terminal and iTerm windows are macOS only; on $(platform) sessions open in tmux" >&2; exit 2
 fi
 A="$H/$F/ACCESS.md"
 # Code table rows (or rows appended later with an absolute checkout) as "<repo>|<checkout>" (first = default)
@@ -280,7 +296,11 @@ fi
 echo "$cmd"
 # a dry run shows the merged settings instead of keeping the file (the EXIT trap removes it)
 if [ "${WORK_DRY:-}" = 1 ]; then
-  if [ "$OPEN" != window ]; then
+  if [ "$OPEN" = tmux ]; then
+    if command -v tmux >/dev/null 2>&1 && tmux has-session -t "=$(tmux_hub_session)" 2>/dev/null; then
+      echo "work: this runs: tmux new-window -d -t =$(tmux_hub_session): -n $TN -c $dir bash -l <launcher>" >&2
+    else echo "work: this runs: tmux new-session -d -s $TN -c $dir bash -l <launcher>" >&2; fi
+  elif [ "$OPEN" != window ]; then
     echo "work: if this ADE lists capabilities: command, this runs: $ADE_HOOK_BIN open --cwd $dir --name ${F##*/} --focus -- bash -l <launcher>" >&2
     echo "work: if it does not, this runs: $ADE_HOOK_BIN open --cwd $dir --name ${F##*/} --focus (no command) and prints the command to paste there: bash -l <launcher>" >&2
   fi
@@ -333,6 +353,15 @@ SESS_UNSET='unset CLAUDE_PID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_MESSAGING_SOC
 L=$(mktemp "${TMPDIR:-/tmp}/agent-work.XXXXXX"); printf '#!/bin/bash\ntrap %s EXIT\n%s\n%s\n%s%s\n' "$(sq "$TRAP \"\$R\"")" "$reg" "$SESS_UNSET" "$sub" "$cmd" > "$L"; chmod +x "$L"
 # WORK_NO_OPEN=1 (tests): write the launcher, print its path, open nothing (both files are kept for the caller)
 [ "${WORK_NO_OPEN:-}" = 1 ] && { echo "launcher: $L"; MS=""; L=""; exit 0; }
+if [ "$OPEN" = tmux ]; then
+  where="$(tmux_open "$TN" "$dir" "$L")" || { echo "work: tmux could not open $TN; nothing was opened" >&2; exit 1; }
+  MS=""; L=""   # handed off: the launcher's own trap removes both
+  case "$where" in
+    window*) echo "work: opened window $TN in tmux session $(tmux_hub_session) (tmux attach -t $(tmux_hub_session))" >&2 ;;
+    *) echo "work: opened tmux session $TN (attach with: tmux attach -t $TN)" >&2 ;;
+  esac
+  exit 0
+fi
 if [ "$OPEN" != window ]; then
   # inside ADE: never a window (W1b). Only the launcher's path goes to ADE (with "command"; "bare" sends no command); its
   # stdout is dropped, the first line of its stderr is the reason
@@ -349,8 +378,4 @@ if [ "$OPEN" != window ]; then
       echo "work: ade open failed (exit $rc): $why; nothing was opened; $NOWIN" >&2; exit "$rc" ;;
   esac
 fi
-if [ "${AGENT_TERMINAL:-terminal}" = iterm ]; then
-  osascript -e "tell application \"iTerm\" to create window with default profile command \"bash -l $L\""
-else
-  osascript -e "tell application \"Terminal\" to do script \"bash -l $L\"" -e 'tell application "Terminal" to activate'
-fi && { MS=""; L=""; }   # handed off: the launcher's own trap removes both
+terminal_window "${AGENT_TERMINAL:-terminal}" "$L" && { MS=""; L=""; }   # handed off: the launcher's own trap removes both

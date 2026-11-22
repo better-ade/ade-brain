@@ -9,3 +9,6 @@ jobs:
   ci:
     uses: better-ade/.github/.github/workflows/verify.yml@v1
     with: { command: "bash tests/run.sh", runs-on: macos-latest }
+  ci-linux:
+    uses: better-ade/.github/.github/workflows/verify.yml@v1
+    with: { command: "bash tests/run.sh", runs-on: ubuntu-latest }

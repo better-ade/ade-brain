@@ -252,7 +252,7 @@ role_keeps_provider_gates() {
   echo "$out" | grep -q "providers/deepseek" || fail "--claude claude on a wrapper hub picks deepseek: $out"
   : > "$WT_STORED"; rm -f hub.conf
 }
-with_focus_nogo() { local b; b="$(mktemp)"; cp bin/lib.sh "$b"; sed -i '' '/deepseek:focus)/d' bin/lib.sh
+with_focus_nogo() { local b; b="$(mktemp)"; cp bin/lib.sh "$b"; grep -v 'deepseek:focus)' "$b" > bin/lib.sh
   WORK_DRY=1 bin/work --role builder projects/demo; local r=$?; cp "$b" bin/lib.sh; rm -f "$b"; return "$r"; }
 role_one_m_context() {
   printf '%s\n' 'HUB_ROLE_BUILDER="anthropic:opus[1m]"' > hub.conf
