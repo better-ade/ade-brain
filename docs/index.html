@@ -637,7 +637,7 @@ flowchart LR
       <tr><td><code>HUB_REPOS</code></td><td>repos <code>bin/doctor</code> checks you can read</td><td></td></tr>
       <tr><td><code>HUB_REMOTE_HOST</code>, <code>_USER</code>, <code>_PORT</code>, <code>_KEY</code>, <code>_DIR</code></td><td>the SSH box for <code>bin/remote</code></td><td><code>AGENT_REMOTE_*</code></td></tr>
       <tr><td><code>HUB_STAGING_URL</code></td><td>checked by <code>bin/doctor</code></td><td><code>AGENT_STAGING_URL</code></td></tr>
-      <tr><td><code>HUB_SECRETS</code></td><td>secret names <code>bin/doctor</code> checks for</td><td></td></tr>
+      <tr><td><code>HUB_SECRETS</code></td><td>secret names <code>bin/doctor</code> checks for (in the environment, <code>HUB_SECRETS=builtin</code> is a different thing: it keeps the hub's own store when ade-secrets is installed)</td><td></td></tr>
       <tr><td><code>HUB_KEYCHAIN_SERVICE</code></td><td>Keychain service name (default: the hub name)</td><td><code>AGENT_KEYCHAIN_SERVICE</code></td></tr>
       <tr><td><code>HUB_BRIEFING_HOUR</code>, <code>HUB_BRIEFING_MINUTE</code></td><td>briefing time, local</td><td></td></tr>
       <tr><td><code>HUB_BRIEFING_FOCUS</code></td><td>extra instruction for the briefing (from the persona)</td><td></td></tr>

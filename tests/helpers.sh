@@ -15,6 +15,9 @@ make_hub() {
   # runs the Linux behaviour (story V1). GNU or BSD tools underneath are the machine's own.
   export AGENT_PLATFORM=macos AGENT_PLATFORM_TEST=1   # the override only counts with the test flag (bin/lib.sh)
   unset XDG_CONFIG_HOME   # the file store and systemd units go under the test's HOME, never a runner's real config
+  # tests never reach a real ade-secrets (story H2): a PATH folder holding one is dropped, except the fake a test names
+  # in ADE_SECRETS_FAKE_DIR, so bin/secret uses the hub's own store (with the stubs above) unless a test says otherwise
+  PATH="$(path_without_ade_secrets)"; export PATH
   HUB="$(mktemp -d)/hub"; mkdir -p "$HUB"
   (cd "$REPO" && tar cf - --exclude ./repos --exclude ./.git --exclude ./hub.conf --exclude ./.local --exclude ./.superpowers --exclude ./.claude/worktrees --exclude ./_bmad/render --exclude ./_bmad-output .) | (cd "$HUB" && tar xf -)
   rm -f "$HUB"/journal/[0-9]*.md   # test hubs start with an empty journal; the real journal/ is never touched
@@ -27,6 +30,14 @@ make_hub() {
   export AGENT_METHOD_REPO="$METHOD_FIXTURE"
   # tests never push a real hub or touch the real sync log/lock; test_report turns auto sync on with a stub
   export AGENT_AUTO_SYNC=0 AGENT_SYNC_LOG="$(mktemp -d)/sync.log" AGENT_SYNC_LOCK="$(mktemp -d)/sync.lock"
+}
+# path_without_ade_secrets: $PATH without the folders that hold an ade-secrets (ADE_SECRETS_FAKE_DIR, a test's fake, is kept)
+path_without_ade_secrets() {
+  local d out="" IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] && [ -e "$d/ade-secrets" ] && [ "$d" != "${ADE_SECRETS_FAKE_DIR:-}" ] && continue
+    out="${out:+$out:}$d"; done
+  printf '%s' "$out"
 }
 # fmode <file>: its permission bits in octal (700), on GNU and BSD alike
 fmode() { python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$1"; }

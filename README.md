@@ -248,6 +248,25 @@ A focus session can run Claude Code against DeepSeek instead of Anthropic. The C
   decision per hub, recorded in ADR 0002; do not use it for client work.
 - GLM is disabled until it passes the same checks as DeepSeek. Meta is not offered.
 
+## The key store: ade-secrets
+
+With [ade-secrets](https://github.com/better-ade/ade-secrets) installed (on `PATH`), `bin/secret` hands every call to it
+(contract v1, ade-secrets v0.3.0; `.ade/context/ade-secrets.md`): one local key store for every hub, and none of it runs
+inside an agent session. Without it, or with `HUB_SECRETS=builtin` in the environment, the hub keeps its own store
+(the Keychain, pass or the file store) exactly as before.
+
+- **Keys are not moved.** Keys already in the hub's own store stay there; enter each one again in your own terminal with
+  `bin/keys set <tool>` (or `bin/secret --set <name>`). Nothing is copied across automatically.
+- **Do the contract's "Owner check" first.** Before you store a real key, run the steps under "Owner check" in
+  ade-secrets' `docs/contract.md`, in your own terminal, with throwaway values: only a real Keychain can confirm them.
+- **Your own terminal only.** ade-secrets refuses every command but the key helper's `get` inside an agent session, so
+  there `bin/keys` says "run this in your own terminal" (exit 3), never "missing". `bin/doctor` names the store in use.
+- **The key helper line is unchanged** (`bin/secret <name>`): Claude Code runs it, and it prints the key from
+  `ade-secrets get <name>`. ade-secrets keeps one entry per name for the whole machine, whatever `HUB_KEYCHAIN_SERVICE` says.
+- The hub's settings deny reads of `~/.ade-secrets` and of the Keychain, pass and the clipboard by plain command, and ask
+  before any `ade-secrets` command (ade-secrets' `docs/claude-settings.json`); `bin/new --settings <folder>` brings them
+  to a folder made before.
+
 ## What a hub has
 
 - **The persona** in `CLAUDE.md` and `.claude/agents/<persona>.md`, with shared rules: verified not vibed, secrets never

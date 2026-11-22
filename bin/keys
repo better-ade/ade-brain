@@ -1,15 +1,21 @@
 #!/bin/bash
 # bin/keys: the key for each AI tool, in this hub's Keychain. Never prints a value, and a stored key enables nothing.
 #   bin/keys                 each tool: stored or missing, and what it still needs
-#   bin/keys set <tool>      store or replace its key (hidden prompt, or stdin; never an argument)
+#   bin/keys set <tool>      store or replace its key (hidden prompt, or stdin for the hub's own store; never an argument)
 #   bin/keys forget <tool>   remove its key
 # anthropic is optional: a stored Anthropic API key is used through apiKeyHelper by bin/agent --live-test, and by role runs
 # only with HUB_AGENT_ANTHROPIC_KEY=1 in hub.conf (story H1, ADR 0002); otherwise bin/agent uses the Claude login. Contract: .ade/context/providers.md, "Keys", and .ade/context/hub-interface.md.
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
 USAGE="usage: bin/keys | bin/keys set <tool> | bin/keys forget <tool> (tools: $(key_tools))"
 bad() { echo "$USAGE" >&2; exit 2; }
-# the hub's secret store (bin/lib.sh, story V1): the Keychain on macOS, pass or the file store on Linux
-keychain() { local why; why="$(secret_store_refusal)"; [ -z "$why" ] || { echo "keys: $why" >&2; exit 1; }; }
+# the hub's secret store (bin/lib.sh, story V1): the Keychain on macOS, pass or the file store on Linux; with ade-secrets
+# installed (story H2) bin/secret hands every call to it, and the hub's own store is not checked
+keychain() { local why; secret_delegated && return 0; why="$(secret_store_refusal)"; [ -z "$why" ] || { echo "keys: $why" >&2; exit 1; }; }
+# has <secret>: 0 stored, else not (the hub's own store, as before). With ade-secrets: 1 not stored; a refusal inside an
+# agent session (exit 3) is said and stops, never "missing"; any other exit is passed on
+has() { local r=0; secret_delegated || { "$H/bin/secret" --has "$1"; return; }; "$H/bin/secret" --has "$1" || r=$?
+  case "$r" in 0|1) return "$r" ;; 3) echo "keys: run this in your own terminal: ade-secrets answers presence checks only there, not inside an agent session" >&2; exit 3 ;;
+    *) echo "keys: the key store could not check $1 (exit $r)" >&2; exit "$r" ;; esac; }
 # an unknown name is not repeated: it may be a key typed in the wrong place
 tool_name() { case " $(key_tools) " in *" $1 "*) key_secret "$1" ;; *) echo "keys: unknown tool" >&2; bad ;; esac; }
 # tool_state <tool>: what stands between this tool and a run, other than its key (empty = nothing)
@@ -24,7 +30,7 @@ case "${1:-}" in
   "") [ $# -eq 0 ] || bad; keychain
     for t in $(key_tools); do
       s="$(key_secret "$t")"; why="$(tool_state "$t")"
-      if "$H/bin/secret" --has "$s"; then st=stored; else st=missing; fi
+      if has "$s"; then st=stored; else st=missing; fi
       printf '%-10s %-8s %s\n' "$t" "$st" "$s"
       [ "$st" = stored ] || echo "  set it: bin/keys set $t (key from $(key_source "$t"))"
       if [ "$t" = anthropic ] && [ "$st" != stored ]; then echo "  optional: without it, bin/agent uses your Claude login"; continue; fi
@@ -34,7 +40,7 @@ case "${1:-}" in
     [ "$2" != anthropic ] || echo "keys: the Anthropic key is used by bin/agent --live-test; role runs use it only with HUB_AGENT_ANTHROPIC_KEY=1 in hub.conf (else the Claude login)" >&2
     exec "$H/bin/secret" --set "$s" ;;
   forget) [ $# -eq 2 ] || bad; s="$(tool_name "$2")" || exit 2; keychain
-    "$H/bin/secret" --has "$s" || { echo "keys: no key stored for $2" >&2; exit 1; }
+    has "$s" || { echo "keys: no key stored for $2" >&2; exit 1; }
     exec "$H/bin/secret" --forget "$s" ;;
   *) bad ;;
 esac

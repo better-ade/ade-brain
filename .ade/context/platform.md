@@ -8,12 +8,14 @@ The same hub runs on macOS and on Linux (Ubuntu, a VPS). Every macOS-only call i
   with `AGENT_PLATFORM_TEST=1` (tests: `make_hub` exports both, `macos`, so the suite tests the macOS behaviour with its
   stubs on any machine; `tests/test_platform.sh` sets `linux` with fakes). A stray `AGENT_PLATFORM` alone changes nothing.
 - A checkout's `.claude/settings*.json` may not set `AGENT_PLATFORM`, `AGENT_PLATFORM_TEST`, `AGENT_SECRETS_DIR`,
-  `PASSWORD_STORE_DIR` or `HUB_SECRET_STORE` in `env` (`checkout_gate_vars`, part of `provider_checkout_refusal`).
+  `PASSWORD_STORE_DIR`, `HUB_SECRET_STORE` or `HUB_SECRETS` (story H2) in `env` (`checkout_gate_vars`, part of `provider_checkout_refusal`).
 - On Linux, `bin/schedule install` and `bin/work` refuse to run as root (exit 2, "create a user").
 - File facts follow the machine's own `stat` (GNU `-c` or BSD `-f`, probed once): `file_mtime`, `file_inode`,
   `file_mode` (octal bits, `700`), `file_owner` (uid).
 
 ## Secrets (`bin/secret`, `bin/keys`, `bin/doctor`)
+- With ade-secrets installed, every call goes to it instead (story H2, `.ade/context/ade-secrets.md`); what follows is
+  the hub's own store, used when it is absent or with `HUB_SECRETS=builtin`.
 - `secret_store`: `HUB_SECRET_STORE` from `hub.conf` only (`keychain|pass|file`; unset before `hub.conf` is sourced),
   default `keychain` on macOS and `file` on Linux. It never switches by itself when pass appears. `secret_store_refusal`
   (empty = usable): an unknown value; `keychain` off macOS; `pass` not installed and initialised

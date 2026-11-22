@@ -13,6 +13,13 @@ history** of the work and runs Claude Code agents that know them. Client code st
 4. `bin/schedule install`: the weekday morning briefing, `bin/monitor` and `bin/sync --auto` (both every 30 minutes).
    Auto sync off: `HUB_AUTO_SYNC=0` in `hub.conf`, then `bin/schedule install` again.
 
+## Keys (ade-secrets)
+
+With ade-secrets installed, `bin/secret` and `bin/keys` use it instead of this hub's own store (`HUB_SECRETS=builtin` in
+the environment keeps the hub's own). Keys already stored here are not moved: enter them again in your own terminal with
+`bin/keys set <tool>`. Before storing a real key, do the "Owner check" in ade-secrets' `docs/contract.md` with
+throwaway values. Inside an agent session presence checks say "run this in your own terminal" (exit 3).
+
 ## Folders
 
 {{FOLDER_LIST}}
@@ -27,7 +34,7 @@ history** of the work and runs Claude Code agents that know them. Client code st
 | `bin/new projects/<name>` / `ops/<name>` | a new folder plus its agent |
 | `bin/brain search "<words>"` | search every section of the hub (keywords + meaning); `bin/brain index` refreshes |
 | `bin/remote <cmd>` | a command on the remote box over SSH |
-| `bin/secret <name>` | a secret from the Keychain (`--set`, `--has`, `--forget`, `--list`) |
+| `bin/secret <name>` | a secret from the Keychain, or from ade-secrets when it is installed (`--set`, `--has`, `--forget`, `--list`) |
 | `bin/doctor` | what this Mac can reach; never prints a secret |
 | `bin/briefing`, `bin/schedule install` | the morning briefing; the launchd jobs (briefing, monitor, sync, recover at login, chat with `HUB_CHAT=telegram`) |
 | `bin/chat setup`, `bin/chat start\|stop\|status` | the main session on Telegram (paired account only) |

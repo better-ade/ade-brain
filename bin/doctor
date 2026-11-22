@@ -9,9 +9,11 @@ for t in claude gh git ssh node python3 curl gitleaks ${HUB_TOOLS:-}; do
 done
 line OK "claude install" "$(claude_cmd) ($(claude_home))"
 # the secret store (story V1, HUB_SECRET_STORE): the Keychain, pass (tried without a terminal, as scheduled jobs and
-# delegated runs use it), or the weaker file store; names only, never a value
+# delegated runs use it), or the weaker file store; names only, never a value. With ade-secrets installed (story H2)
+# bin/secret hands every call to it: its name and version only (never a value; the hub's own store is not used)
 w="$(secret_store_refusal)"
-if [ -n "$w" ]; then line MISSING "secrets" "$w"
+if secret_delegated; then line OK "secrets" "$(secret_store_name) (bin/secret hands every call to it; HUB_SECRETS=builtin for the hub's own store)"
+elif [ -n "$w" ]; then line MISSING "secrets" "$w"
 else case "$(secret_store)" in
   keychain) line OK "secrets" "the macOS Keychain (service $(keychain_service))" ;;
   pass) n1="$(secret_names | head -1)"
@@ -40,7 +42,9 @@ else line MISSING "brain index" "none yet: bin/brain index"; fi
 k="$(remote_key)"; [ -z "$k" ] || { [ -f "$k" ] && line OK "remote ssh key" "$k" || line MISSING "remote ssh key" "$k (ask the owner; never copy it into the hub)"; }
 # providers behind Claude Code (story SP): the key's name and whether it is stored, never its value
 for p in ${HUB_PROVIDERS_ALLOWED:-}; do s="$(provider_field "$p" secret)" || continue; l="$(provider_field "$p" label)"
-  "$H/bin/secret" --has "$s" && line OK "$l" "$s in the Keychain" || line MISSING "$l" "$s: bin/secret --set $s"
+  if secret_delegated; then r=0; "$H/bin/secret" --has "$s" 2>/dev/null || r=$?; case "$r" in 0) line OK "$l" "$s in ade-secrets" ;;
+      3) line WARN "$l" "$s: not checked here (ade-secrets answers in your own terminal only: bin/keys)" ;; *) line MISSING "$l" "$s: bin/secret --set $s, in your own terminal" ;; esac
+  else "$H/bin/secret" --has "$s" && line OK "$l" "$s in the Keychain" || line MISSING "$l" "$s: bin/secret --set $s"; fi
   [ -z "$(provider_hub_refusal "$p")" ] || line MISSING "client hub" "HUB_PROVIDERS_ALLOWED lists $p, which needs HUB_OWNED_BY_OWNER=1 (owner's own hubs only, ADR 0002); remove it"
 done
 # the method (story C1): one row, the drifted files by name only, never their contents
@@ -66,5 +70,9 @@ for r in ${HUB_REPOS:-}; do gh api "repos/$r" >/dev/null 2>&1 && line OK "repo $
 u="$(staging_url)"; [ -n "$u" ] && { c=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$u/" 2>/dev/null); case "$c" in 2*|3*|401) line OK "staging site" "$u ($c)";; *) line MISSING "staging site" "$u returned ${c:-nothing}";; esac; }
 ou="${AGENT_OLLAMA_URL:-${HUB_OLLAMA_URL:-http://localhost:11434}}"; em="${AGENT_EMBED_MODEL:-${HUB_EMBED_MODEL:-nomic-embed-text}}"
 if curl -s -m 5 "$ou/api/tags" 2>/dev/null | grep -q "\"$em"; then line OK "embeddings" "$em via $ou"; else line MISSING "embeddings" "ollama pull $em (brain search is keyword-only until then)"; fi
-for s in ${HUB_SECRETS:-}; do "$H/bin/secret" --has "$s" && line OK "secret $s" "in the Keychain" || line MISSING "secret $s" "bin/secret --set $s"; done
+for s in ${HUB_SECRET_NAMES:-}; do
+  if secret_delegated; then r=0; "$H/bin/secret" --has "$s" 2>/dev/null || r=$?; case "$r" in 0) line OK "secret $s" "in ade-secrets" ;;
+      3) line WARN "secret $s" "not checked here (ade-secrets answers in your own terminal only)" ;; *) line MISSING "secret $s" "bin/secret --set $s" ;; esac
+  else "$H/bin/secret" --has "$s" && line OK "secret $s" "in the Keychain" || line MISSING "secret $s" "bin/secret --set $s"; fi
+done
 exit 0

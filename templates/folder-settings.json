@@ -23,11 +23,17 @@
       "Bash(*bin/browser forget*)",
       "Bash(*ade browser*)",
       "Edit(/{{HUB}}/hub.conf)",
-      "Bash(*hub.conf*)"
+      "Bash(*hub.conf*)",
+      "Bash(ade-secrets *)"
     ],
     "deny": [
       "Read(~/.config/ade/browser/**)",
-      "Edit(~/.config/ade/browser/**)"
+      "Edit(~/.config/ade/browser/**)",
+      "Read(~/.ade-secrets/**)",
+      "Bash(security find-generic-password*)",
+      "Bash(security dump-keychain*)",
+      "Bash(pass show*)",
+      "Bash(pbpaste*)"
     ]
   },
   "enabledMcpjsonServers": [

@@ -171,7 +171,7 @@ provider_config_refusal() {
 }
 # checkout_gate_vars: hub switches a checkout's settings may never set either (story V1): they would move the secret store
 # or the platform the session's hooks run on
-checkout_gate_vars() { echo "AGENT_PLATFORM AGENT_PLATFORM_TEST AGENT_SECRETS_DIR PASSWORD_STORE_DIR HUB_SECRET_STORE"; }
+checkout_gate_vars() { echo "AGENT_PLATFORM AGENT_PLATFORM_TEST AGENT_SECRETS_DIR PASSWORD_STORE_DIR HUB_SECRET_STORE HUB_SECRETS"; }
 # provider_checkout_refusal <provider> <dir>: the checkout's own settings load below nothing that can unset a key: an
 # Anthropic credential or a backend switch in their env would beat apiKeyHelper and go to the provider (names only, never values)
 provider_checkout_refusal() {
@@ -452,7 +452,12 @@ method_repo() { echo "${AGENT_METHOD_REPO:-https://github.com/better-ade/ade-met
 # AGENT_* environment variables override it (tests use them). Provider choice, role tables, hub ownership and HUB_AGENT_ANTHROPIC_KEY come only from hub.conf.
 unset HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE
 for _v in $(compgen -v HUB_ROLE_) $(compgen -v HUB_BROWSER_PROFILE_); do unset "$_v"; done; unset _v   # role tables and browser profile switches too
+# HUB_SECRETS means two things (story H2, .ade/context/ade-secrets.md): in hub.conf, the secret names bin/doctor checks
+# (HUB_SECRET_NAMES from here on); in the environment, ade-secrets' switch (HUB_SECRETS=builtin keeps the hub's own store,
+# read by bin/secret's delegation block). hub.conf's value never replaces the environment's, which bin/secret inherits.
+_hs="${HUB_SECRETS-}" _hss="${HUB_SECRETS+1}"; unset HUB_SECRETS
 [ -f "$(hub_root)/hub.conf" ] && . "$(hub_root)/hub.conf"
+HUB_SECRET_NAMES="${HUB_SECRETS:-}"; unset HUB_SECRETS; [ -z "$_hss" ] || export HUB_SECRETS="$_hs"; unset _hs _hss
 hub_name() { echo "${HUB_NAME:-$(basename "$(hub_root)")}"; }
 hub_owner() { echo "${HUB_OWNER:-the hub owner}"; }
 persona_title() { echo "${HUB_PERSONA_TITLE:-technical agent}"; }
@@ -602,6 +607,16 @@ linger_on() { local u; u="$(id -un)"; loginctl show-user "$u" -p Linger 2>/dev/n
 # ~/.config/ade/secrets/<service>/ (dirs 0700, files 0600, no loose parent up to $HOME; bin/doctor calls it the weaker
 # store). A value only ever moves on stdin or in this shell's variables: never an argument of another program, the
 # environment or a log.
+# secret_delegated: bin/secret hands every call to ade-secrets (story H2): it is on PATH and HUB_SECRETS is not builtin.
+# The same test as bin/secret's delegation block; then the hub's own store (and its checks) is not used.
+secret_delegated() { [ "${HUB_SECRETS:-}" != builtin ] && command -v ade-secrets >/dev/null 2>&1; }
+# secret_store_name: the store in use, for bin/doctor: "ade-secrets <version>" (or "ade-secrets (version unknown)"), else
+# the hub's own (secret_store_label). Never a value: only `ade-secrets --version`, which every context may run.
+secret_store_name() {
+  local v; secret_delegated || { secret_store_label; return 0; }
+  v="$(ade-secrets --version 2>/dev/null </dev/null | head -1 | tr -cd 'A-Za-z0-9.+-' | cut -c1-32)"
+  echo "ade-secrets ${v:-(version unknown)}"
+}
 secret_store() { case "${HUB_SECRET_STORE:-}" in
     "") if [ "$(platform)" = macos ]; then echo keychain; else echo file; fi ;;
     keychain|pass|file) echo "$HUB_SECRET_STORE" ;; *) echo invalid ;; esac; }
