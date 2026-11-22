@@ -16,3 +16,7 @@ reports/monitor/
 
 # Python bytecode written when hub scripts run
 __pycache__/
+
+# Claude Code's worktrees (whole copies of the hub) and rendered BMAD workflows: local, never synced
+.claude/worktrees/
+_bmad/render/

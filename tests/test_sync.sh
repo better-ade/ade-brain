@@ -25,6 +25,12 @@ git config core.excludesFile /dev/null
 echo '{"permissions":{}}' > .claude/settings.local.json; echo w >> memory/MEMORY.md
 bin/sync --yes >/dev/null 2>&1
 git ls-files --error-unmatch .claude/settings.local.json >/dev/null 2>&1 && fail "settings.local.json committed"
+# agents' worktrees under .claude/ (whole copies of the hub) and rendered BMAD workflows are never synced
+mkdir -p .claude/worktrees/w1/bin _bmad/render/x; echo copy > .claude/worktrees/w1/bin/work; echo r > _bmad/render/x/workflow.md
+echo v >> memory/MEMORY.md; bin/sync --yes >/dev/null 2>&1
+git ls-files | grep -q '^\.claude/worktrees/' && fail "a worktree under .claude/worktrees was committed"
+git ls-files | grep -q '^_bmad/render/' && fail "_bmad/render was committed"
+bin/sync 2>/dev/null | grep -q 'worktrees' && fail "the review lists .claude/worktrees as something --yes would include"
 # unreachable remote: the commit stays, the failure is reported with exit 1
 echo "z" >> memory/MEMORY.md; git remote add origin /nonexistent; git config push.default current
 out=$(bin/sync --yes 2>&1); rc=$?
