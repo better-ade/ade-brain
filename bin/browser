@@ -95,9 +95,11 @@ open(sys.argv[1], "wb").write(struct.pack(">H", 0xFFFF) + f(b"") + f(b"") + f(b"
     echo "  Then open:             http://localhost:$WP/vnc.html   (password: $PW)"
     echo "  Sign in yourself, then press Enter here (or close the browser) to close the view."
     END=$(( $(date +%s) + SECS )); why="closed"
+    # Enter or an end of input closes it; a read that times out keeps it (over 128, or 1 after the full 2 s in Bash 3.2,
+    # whose read -t says 1 for a timeout as for an end of input)
     while kill -0 "$CP" 2>/dev/null; do
       [ "$(date +%s)" -lt "$END" ] || { why="closed after $MIN minutes (HUB_BROWSER_VIEW_MINUTES)"; break; }
-      read -r -t 2 _ && break; [ $? -gt 128 ] || break; done
+      t0=$SECONDS; read -r -t 2 _; r=$?; [ "$r" != 0 ] || break; [ "$r" -gt 128 ] || [ $((SECONDS - t0)) -ge 2 ] || break; done
     echo "browser: $why; the session is kept in $2's profile" ;;
   forget) [ $# -eq 2 ] || { echo "$USAGE" >&2; exit 2; }; folder "$2"; r="$(browser_root)"; d="$(browser_profile_path "$2")"
     [ ! -L "$r" ] || { echo "browser: $r is a link; not followed" >&2; exit 1; }

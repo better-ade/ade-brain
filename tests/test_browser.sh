@@ -56,7 +56,7 @@ server_installs_chromium() {   # AC1
   grep -q 'npx -y "$(browser_mcp_pkg)" install-browser --with-deps chromium' bin/server || fail "bin/server installs Chromium with the MCP's own Playwright"
   rm -rf "$HOME/.cache"; bin/browser status > "$S/out" 2>&1; assert_eq "$?" 1 "no Chromium yet"; assert_contains "$S/out" "missing" "status says missing"
   make_chromium; bin/browser status > "$S/out"; assert_eq "$?" 0 "Chromium found"; grep -q "^ready  chromium $CH" "$S/out" || fail "status: $(cat "$S/out")"
-  AGENT_PLATFORM=linux bin/server status 2>/dev/null | grep -q 'browser  *ready' || fail "ade server status shows the browser: $(AGENT_PLATFORM=linux bin/server status 2>&1)"
+  AGENT_PLATFORM=linux bin/server status > "$S/out" 2>&1; grep -q 'browser  *ready' "$S/out" || fail "ade server status shows the browser: $(cat "$S/out")"
 }
 isolated_by_default() {   # AC2, AC6
   make_chromium; conf '# none'; mcp_args projects/acme > "$S/args"
@@ -109,7 +109,11 @@ hub_from_own_path() {   # bin/browser never takes another hub from $HUB outside 
 }
 login_tunnelled_view() {   # AC3
   make_chromium; local wp; wp="$(free_port)"; conf 'HUB_BROWSER_PROFILE_PROJECTS_ACME=1' "HUB_BROWSER_VIEW_PORT=$wp"; rm -f "$S"/*.argv "$S"/*.pid "$S/close-browser" "$S/x11vnc.pw"
-  { sleep 4; echo; } | bin/browser login projects/acme https://tool.example/login > "$S/out" 2> "$S/err"; assert_eq "$?" 0 "login: $(cat "$S/err")"
+  # the view waits for the Enter, which it reads (a read timeout is not an end of input, in Bash 3.2 too, whose read -t
+  # says 1 for both): the Enter's writer finds the view still reading (else its write fails and $S/entered is missing)
+  rm -f "$S/entered"; { sleep 6; echo && touch "$S/entered"; } 2>/dev/null | { bin/browser login projects/acme https://tool.example/login > "$S/out" 2> "$S/err"
+    echo $? > "$S/rc"; }; assert_eq "$(cat "$S/rc")" 0 "login: $(cat "$S/err")"
+  [ -e "$S/entered" ] || fail "the view closed before Enter: $(cat "$S/out")"
   grep -qx -- -displayfd "$S/Xvfb.argv" || fail "Xvfb picks its own display: $(cat "$S/Xvfb.argv")"
   grep -qx -- -nolisten "$S/Xvfb.argv" && [ "$(arg_after -nolisten "$S/Xvfb.argv")" = tcp ] || fail "Xvfb takes no TCP"
   local xa; xa="$(arg_after -auth "$S/Xvfb.argv")"; [ -n "$xa" ] || fail "Xvfb needs a cookie (-auth)"
@@ -125,9 +129,10 @@ login_tunnelled_view() {   # AC3
   grep -q "ssh -N -L $wp:127.0.0.1:$wp " "$S/out" && grep -q "http://localhost:$wp/vnc.html" "$S/out" || fail "the tunnel to use: $(cat "$S/out")"
   sleep 0.5; alive Xvfb x11vnc websockify chrome && fail "the view is still up after Enter"
   # closing the browser ends the view
-  rm -f "$S"/*.pid; ( sleep 4; touch "$S/close-browser" ) & sleep 40 | bin/browser login projects/acme https://tool.example/login >/dev/null 2>&1 &
+  rm -f "$S"/*.pid; ( sleep 4; touch "$S/close-browser" ) & local tp=$!; sleep 40 | bin/browser login projects/acme https://tool.example/login > "$S/out" 2>&1 &
   local lp=$! i; for i in $(seq 1 80); do kill -0 "$lp" 2>/dev/null || break; sleep 0.25; done
   kill -0 "$lp" 2>/dev/null && { kill "$lp"; fail "closing the browser ends the view"; }; sleep 0.5; alive Xvfb x11vnc websockify && fail "the view is still up after the browser closed"
+  wait "$tp"   # the closer has run before its file is removed (else it would close the next view)
   rm -f "$S/close-browser"
   # the deadline ends it too (HUB_BROWSER_VIEW_MINUTES, 10 by default)
   grep -q 'HUB_BROWSER_VIEW_MINUTES:-10' bin/browser || fail "a 10 minute view by default"
