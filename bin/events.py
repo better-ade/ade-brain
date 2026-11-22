@@ -11,6 +11,9 @@ calling folder's checkouts, one per line, from repos_of), AGENT_EVENTS_ROTATE (t
                                the chat, one "<inode> <end>\t[<agent>] <kind>: <text>" line each (oldest first)
   events.py ack INODE END      bin/chat forward: that line was sent; the next outbox starts after it
   events.py latest             each folder's newest event to main, one "<folder>\t<kind>\t<text>" line (bin/chat agents)
+  events.py redact             stdin to stdout with every secret-pattern match replaced by [redacted] (bin/monitor)
+  events.py repair [--check]   bin/recover (story R1): drop a torn last line (under the log's lock) and reset every
+                               cursor past the log's end to its end; one line per repair (--check: changes nothing)
   events.py count OWN          (story H1) the number of unread events for main or a folder; writes nothing
 
 Event text is data: nothing here runs it, and every delivered line says so. Every call shares one deadline
@@ -106,7 +109,7 @@ def for_me(ev, own, repos):
 
 
 def _open():
-    fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    fd = os.open(LOG, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)   # read: the last byte (append)
     if not stat.S_ISREG(os.fstat(fd).st_mode): os.close(fd); raise OSError("not a file")
     return fd
 
@@ -136,6 +139,9 @@ def append(ev):
             os.replace(LOG, LOG + ".1")   # readers see a new inode; waiting writers reopen (above)
             nfd = _open()                 # a writer that just started may have made it already: append to it
             os.close(fd); fd = nfd
+        # a torn last line (a writer killed mid-write): start after a line end, so this event is a whole line
+        end = os.fstat(fd).st_size
+        if end and os.pread(fd, 1, end - 1) != b"\n": line = b"\n" + line
         return os.write(fd, line) == len(line)
     finally:
         os.close(fd)
@@ -473,6 +479,38 @@ def latest():
     return 0
 
 
+def repair(check):
+    """a crash can leave the log's last line half-written (a writer killed mid-write, a full disk) and a cursor past
+    the end (a log truncated or restored). Readers already skip a torn line; this removes it, and moves such cursors
+    to the end, so nothing is read twice or waits on bytes that never come."""
+    if not os.path.isfile(LOG) or os.path.islink(LOG): return 0
+    fd = os.open(LOG, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        if not check and not _lock(fd): print("event log: busy, not repaired"); return 1
+        size = os.fstat(fd).st_size
+        if size:
+            os.lseek(fd, max(0, size - (1 << 20)), 0); tail = os.read(fd, 1 << 20)
+            if not tail.endswith(b"\n"):
+                if b"\n" not in tail:
+                    # never cut before the window read: the torn bytes stay (writers start a new line after them)
+                    print("event log: not repaired: no line end in the last %d bytes (readers skip it)" % len(tail))
+                else:
+                    keep = size - len(tail) + tail.rfind(b"\n") + 1
+                    print("event log: %s a torn last line (%d bytes)" % ("has" if check else "dropped", size - keep))
+                    if not check: os.ftruncate(fd, keep); os.fsync(fd)
+                    size = keep
+        ino = os.fstat(fd).st_ino
+    finally:
+        os.close(fd)
+    curs = [q for q in glob.glob(os.path.join(SEEN, "*")) if not q.endswith(".at") and not q.endswith(".new")]
+    for q in curs + [FORWARD]:
+        c = _pos(q)
+        if c and c[0] == ino and c[1] > size:
+            print("event log: %s cursor %s past the end" % ("a" if check else "reset", os.path.basename(q)))
+            if not check: save(q, (ino, size))
+    return 0
+
+
 def count(own):
     """unread events for main or a folder: after the folder's last delivery, else what its first delivery would show"""
     evs, _ = unread_at(read_path(own), own)
@@ -499,6 +537,11 @@ def main(a):
     if a[:1] == ["outbox"]: return outbox()
     if a[:1] == ["ack"] and len(a) == 3 and a[1].isdigit() and a[2].isdigit(): save(FORWARD, (int(a[1]), int(a[2]))); return 0
     if a[:1] == ["latest"]: return latest()
+    if a[:1] == ["redact"]:
+        t = sys.stdin.read()
+        for p in SECRETS: t = p.sub("[redacted]", t)
+        sys.stdout.write(t); return 0
+    if a[:1] == ["repair"]: return repair(a[1:] == ["--check"])
     if a[:1] == ["secret"]: return 0 if secret(sys.stdin.read()) else 1   # bin/chat ask: exit 0 = looks like a secret
     own = a[1] if len(a) > 1 else ""
     try:

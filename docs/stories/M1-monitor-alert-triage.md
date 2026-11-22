@@ -37,3 +37,43 @@ Starting focus sessions or work orders (M2); any write action; new monitors or M
 
 ## Verification
 Command: `bash tests/run.sh` (must print `ok    test_monitor.sh` and exit 0). Real output recorded by the reviewer:
+
+Run 2026-11-21 by the builder on m1-build at 9ac47f0 (after the review fixes: reports local, secrets redacted, one triage per run), `PATH=/bin` first (Bash 3.2), stdin /dev/null. CI and the reviewer confirm:
+
+```
+ok    test_ade_open.sh
+ok    test_brain.sh
+ok    test_briefing.sh
+ok    test_changes.sh
+ok    test_chat.sh
+ok    test_context.sh
+ok    test_dispatch.sh
+ok    test_doctor.sh
+ok    test_events.sh
+ok    test_init.sh
+ok    test_keys.sh
+ok    test_lib.sh
+ok    test_limits.sh
+ok    test_method.sh
+ok    test_models.sh
+ok    test_monitor.sh
+ok    test_new.sh
+ok    test_precommit.sh
+ok    test_prodtest.sh
+ok    test_providers.sh
+ok    test_recover.sh
+ok    test_remote.sh
+ok    test_report.sh
+ok    test_roles.sh
+ok    test_root.sh
+ok    test_schedule.sh
+ok    test_secret.sh
+ok    test_session_end.sh
+ok    test_sessions.sh
+ok    test_setup.sh
+ok    test_staged_change.sh
+ok    test_sync.sh
+ok    test_work.sh
+exit 0
+```
+

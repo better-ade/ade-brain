@@ -266,7 +266,7 @@ STUB
   printf '#!/bin/bash\nfor a in "$@"; do printf "[%%s]" "$a"; done >> "$FAKE/notify.log"; echo >> "$FAKE/notify.log"\n' > bin/notify
   chmod +x bin/sessions bin/notify; : > "$FAKE/notify.log"
   rm -rf "$AGENT_STATE/events.jsonl" "$AGENT_STATE/events.jsonl.1" "$AGENT_STATE/events-seen" "$AGENT_STATE/chat/asks" \
-    "$AGENT_STATE/chat/forward.cursor" "$AGENT_STATE/chat/forward.lock" "$AGENT_STATE/logs/chat-send.log" ops/api
+    "$AGENT_STATE/chat/forward.cursor" "$AGENT_STATE/chat/pending" "$AGENT_STATE/chat/forward.done" "$AGENT_STATE/chat/forward.tries" "$AGENT_STATE/chat/forward.lock" "$AGENT_STATE/logs/chat-send.log" ops/api
   access "$CH" allowlist
 }
 c7_done() { cp "$FAKE/sessions.real" bin/sessions; cp "$FAKE/notify.real" bin/notify; unset AGENT_CHAT_SEND AGENT_CHAT_BUTTONS AGENT_CHAT_REFS; access "$CH" allowlist; }
