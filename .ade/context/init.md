@@ -22,3 +22,11 @@
   `_bmad/config.toml` keys and `.claude/settings.json` keys are bin/init's own and rendered again from the templates
   (never from their output); `bin/new` keeps every file it finds; repo rows are added only when missing; the journal
   entry and a `synced no <pin>` line are written once.
+- **Git:** decided by `git rev-parse --is-inside-work-tree`. Not inside a repo: `git init`, `branch -M main`,
+  `core.hooksPath .githooks` (as before). Inside one (a clone, a linked worktree, a submodule, a folder of a bigger
+  repo): never `git init`, never a branch renamed or moved. `core.hooksPath` is set only when `git_config_own`
+  (`bin/lib.sh`) holds: the folder is the repo's top and its git dir is the common dir, so the config is not shared with
+  other checkouts. Otherwise it is left as is and bin/init says so in one stderr line; `bin/setup` follows the same rule.
+- **Client and hub name:** without `--name`, the hub name is the client slugified plus the persona. A client with no
+  letter or digit a-z 0-9 is asked again (one line naming `--name`); as `--client` it exits 2 before anything is
+  written, naming `--name`.

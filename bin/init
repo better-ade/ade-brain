@@ -76,6 +76,7 @@ closest() {
     [ "$score" -gt 0 ] && printf '%s %s %s\n' "$score" "$i" "${SLUGS[$i]} (${TITLES[$i]})"
   done | sort -k1,1nr -k2,2n | head -3 | cut -d' ' -f3- | paste -sd, - | sed 's/,/, /g'
 }
+slugify() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'; }
 defaults; parse "$@"; ARG_DEST="$DEST"; GIVEN_REST=(${REST[@]+"${REST[@]}"})
 if [ -n "$PERSONA" ]; then
   match_persona "$PERSONA" || {
@@ -98,7 +99,6 @@ if [ "$RESUME" = 1 ]; then
     { echo "init: an earlier run started $H with: ${was% }; run bin/init there with no options (or those) to finish it" >&2; exit 2; }
   defaults; parse ${INIT_REST[@]+"${INIT_REST[@]}"} --persona "$INIT_PERSONA" --client "$INIT_CLIENT" --owner "$INIT_OWNER"; DEST="$ARG_DEST"
 fi
-slugify() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'; }
 [ -z "$NAME" ] || [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "init: --name must be a-z 0-9 -" >&2; exit 2; }
 [[ "$BRIEF" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || { echo "init: --briefing must be HH:MM" >&2; exit 2; }
 [[ "$CLAUDE_CMD" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "init: bad --claude command" >&2; exit 2; }
@@ -121,6 +121,9 @@ if [ -n "$REMOTE" ]; then
   [[ "$REMOTE" =~ ^(([A-Za-z0-9._-]+)@)?([A-Za-z0-9.-]+)(:([0-9]+))?$ ]] || { echo "init: --remote must be user@host[:port]" >&2; exit 2; }
   RUSER="${BASH_REMATCH[2]}"; RHOST="${BASH_REMATCH[3]}"; RPORT="${BASH_REMATCH[5]:-22}"
 fi
+# the hub's name comes from the client unless --name gives it: a client with no letter or digit a-z 0-9 needs --name
+[ -n "$NAME" ] || [ -z "$CLIENT" ] || [ -n "$(slugify "$CLIENT")" ] ||
+  { echo "init: --client '$CLIENT' has no letter or digit a-z 0-9 for the hub's folder name; give one with --name <hub-name>" >&2; exit 2; }
 for r in ${REPOS[@]+"${REPOS[@]}"}; do
   [[ "${r%%=*}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "init: --repo must be owner/name[=checkout]" >&2; exit 2; }; done
 # the three values: asked for on a terminal, else named in one line (exit 2). Nothing is written before they are known.
@@ -152,7 +155,11 @@ if [ -z "$PERSONA" ] || [ -z "$CLIENT" ] || [ -z "$OWNER" ]; then
     while :; do
       printf '%s' "$3" >&2; IFS= read -r a || stop "$1"
       a="${a#"${a%%[![:space:]]*}"}"; a="${a%"${a##*[![:space:]]}"}"
-      [ -n "$a" ] && ! [[ "$a" =~ [[:cntrl:]] ]] && { eval "$2=\$a"; return; }
+      if [ -n "$a" ] && ! [[ "$a" =~ [[:cntrl:]] ]]; then
+        [ "$1" != client ] || [ -n "$NAME" ] || [ -n "$(slugify "$a")" ] ||
+          { echo "init: the client: a hub's folder name needs at least one letter or digit a-z 0-9 (or give the folder name with --name)" >&2; continue; }
+        eval "$2=\$a"; return
+      fi
       echo "init: the $1: not empty, no control characters (arrow keys, tabs); type the name and press Return" >&2
     done
   }
@@ -288,8 +295,18 @@ for k, v in d.items():
 open(p, "w").write(json.dumps(out, indent=2) + "\n")
 PY
 [ -f "$H/memory/MEMORY.md" ] || printf '# Memory index (hub root: cross-folder facts)\n\n' > "$H/memory/MEMORY.md"
-if [ ! -d "$H/.git" ]; then git -C "$H" init -q && git -C "$H" branch -M main 2>/dev/null; fi
-git -C "$H" config core.hooksPath .githooks
+# git, decided by git itself: a folder already inside a repository (a clone, a worktree, a submodule, a folder of a
+# bigger repo) gets no git init and no branch renamed or moved. The hooks path is set only where the config is this
+# hub's own: the top of a repo whose config no other checkout shares. A linked worktree shares its main repo's config,
+# and a folder below a repo's top would point it at the wrong .githooks, so there it is left as is, in one line.
+if git -C "$H" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if git_config_own "$H"; then git -C "$H" config core.hooksPath .githooks
+  elif [ "$(git -C "$H" config core.hooksPath)" != .githooks ]; then
+    echo "init: $H is inside the git repository at $(git -C "$H" rev-parse --show-toplevel) (a worktree or a folder of it): no git init, branches untouched; hooks path left as is, since that git config is shared with other checkouts (to share the hub's hooks too: git config core.hooksPath .githooks)" >&2
+  fi
+else
+  git -C "$H" init -q && git -C "$H" branch -M main 2>/dev/null; git -C "$H" config core.hooksPath .githooks
+fi
 # the first folder checks out the repos: deep work (bin/work <folder> [repo]) goes there; rows go inside its Code table,
 # each once (a run again after a stop adds only the rows not there yet); bin/new keeps every file it finds
 f1="${FOLDERS%% *}"

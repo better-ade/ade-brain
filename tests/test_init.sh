@@ -189,5 +189,48 @@ init_no_terminal() {
   [ -e "$W/nt" ] && fail "a refused run wrote the copy"
 }
 
-init_persona_forgives; init_persona_flag; init_asks_again; init_resume_line; init_runs_again; init_no_terminal
+
+# a template copy in a folder of its own, with no git of its own (the same files make_hub copies)
+copy_template() { mkdir -p "$1"; (cd "$REPO" && tar cf - --exclude ./repos --exclude ./.git --exclude ./hub.conf --exclude ./.local \
+  --exclude ./.superpowers --exclude ./.claude/worktrees --exclude ./_bmad/render --exclude ./_bmad-output .) | (cd "$1" && tar xf -)
+  rm -f "$1"/journal/[0-9]*.md; }
+
+init_existing_repo() {
+  local R="$W/repo" WT="$W/wt" P="$W/plain" out refs cfg
+  # in a git worktree: no git init, the branch keeps its name, the main repo's refs and config are untouched
+  mkdir -p "$R" && git -C "$R" init -q && git -C "$R" config user.name t && git -C "$R" config user.email t@t
+  echo x > "$R/f" && git -C "$R" add f && git -C "$R" commit -qm one && git -C "$R" worktree add -q "$WT" -b feature
+  copy_template "$WT"
+  refs=$(git -C "$R" for-each-ref --format='%(refname) %(objectname)'); cfg=$(cat "$R/.git/config")
+  out=$(cd "$WT" && bin/init --persona tech-lead --client "Acme Corp" --owner "Sam Lee" 2>&1) || fail "init in a worktree: $out"
+  assert_eq "$(git -C "$WT" branch --show-current)" "feature" "the worktree's branch keeps its name"
+  assert_eq "$(git -C "$R" for-each-ref --format='%(refname) %(objectname)')" "$refs" "the main repo's refs are unchanged"
+  assert_eq "$(cat "$R/.git/config")" "$cfg" "the main repo's .git/config is unchanged"
+  [ -f "$WT/.git" ] || fail "the worktree's .git file was replaced"
+  assert_eq "$(printf '%s\n' "$out" | grep -c "hooks path")" "1" "one line says what is done about the hooks path"
+  # in a plain folder that is not a repo: today's behaviour (a repo on main, the hub's hooks)
+  copy_template "$P"
+  out=$(cd "$P" && bin/init --persona tech-lead --client "Acme Corp" --owner "Sam Lee" 2>&1) || fail "init in a plain folder: $out"
+  [ -d "$P/.git" ] || fail "a plain folder becomes a repo"
+  assert_eq "$(git -C "$P" symbolic-ref --short HEAD)" "main" "on main"
+  assert_eq "$(git -C "$P" config core.hooksPath)" ".githooks" "the hub's hooks"
+}
+
+init_client_needs_a_letter() {
+  local out rc
+  # asked: a client with no letter or digit for the folder name is asked again, with one line
+  out=$(pty -i "株式会社" -i "Acme Corp" -i "Sam Lee" -- bin/init --persona tech-lead --dest "$W/cn") || fail "asked again after a client with no letter: $out"
+  assert_eq "$(printf '%s\n' "$out" | grep -c "needs at least one letter or digit")" "1" "one line on the refused client"
+  printf '%s\n' "$out" | grep "needs at least one letter or digit" | grep -q -- "--name" || fail "the line names --name: $out"
+  . "$W/cn/hub.conf"; assert_eq "$HUB_CLIENT" "Acme Corp" "the client answered again"
+  # given as a flag: exit 2 before anything is written, naming --name; with --name it is fine
+  out=$(bin/init --persona tech-lead --client "株式会社" --owner "Sam Lee" --dest "$W/cf" 2>&1 </dev/null); rc=$?
+  assert_eq "$rc" "2" "a --client with no letter or digit"
+  case "$out" in *"--client '株式会社' has no letter or digit"*--name*) ;; *) fail "the refusal names the client and --name: $out";; esac
+  [ -e "$W/cf" ] && fail "a refused --client wrote the copy"
+  bin/init --persona tech-lead --client "株式会社" --owner "Sam Lee" --name kk-lead --dest "$W/ck" >/dev/null 2>&1 </dev/null || fail "--name gives the folder name"
+  . "$W/ck/hub.conf"; assert_eq "$HUB_CLIENT|$HUB_NAME" "株式会社|kk-lead" "client kept, name from --name"
+}
+
+init_persona_forgives; init_persona_flag; init_asks_again; init_resume_line; init_runs_again; init_no_terminal; init_existing_repo; init_client_needs_a_letter
 echo ok

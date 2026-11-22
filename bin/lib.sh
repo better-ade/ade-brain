@@ -708,3 +708,11 @@ browser_chromium() {
   local c; for c in "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"/chromium-*/chrome-linux*/chrome; do [ -x "$c" ] && { echo "$c"; return 0; }; done
   return 1
 }
+# git_config_own <dir>: 0 when <dir> is the top of a git repo whose config no other checkout shares (not a linked
+# worktree, not a folder below a repo's top), so setting core.hooksPath there touches only this hub (story H3)
+git_config_own() {
+  local top gdir cdir; top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  top="$(cd "$top" && pwd -P)"; gdir="$(cd "$(git -C "$1" rev-parse --absolute-git-dir)" && pwd -P)"
+  cdir="$(cd "$1" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+  [ "$top" = "$(cd "$1" && pwd -P)" ] && [ "$gdir" = "$cdir" ]
+}
