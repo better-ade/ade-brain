@@ -338,6 +338,8 @@ reg="$reg"$'\n'$(printf 'printf %q %q %q %q %q "$(TZ=UTC LC_ALL=C ps -o lstart= 
 # an Anthropic session's subagent default ($SUBM, checked above) is exported by the launcher, so a value its own shell has
 # still wins; a provider session never sets it (.ade/context/providers.md)
 sub=""; [ "$PROV" = anthropic ] && sub="export CLAUDE_CODE_SUBAGENT_MODEL=\"\${CLAUDE_CODE_SUBAGENT_MODEL:-$SUBM}\""$'\n'
+# the session's role (story L1): its hooks load that role's learned rules (bin/learn context); none: unset, never inherited
+if [ -n "$ROLE" ]; then sub="${sub}export AGENT_ROLE=$(sq "$ROLE")"$'\n'; else sub="${sub}unset AGENT_ROLE"$'\n'; fi
 # ...and the caller's account: its CLAUDE_CONFIG_DIR, or none (unset, so a login shell's value cannot switch accounts).
 # A wrapper that exports its own still wins. A provider session sets its own dir.
 if [ "$PROV" = anthropic ]; then

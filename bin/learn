@@ -1,0 +1,49 @@
+#!/bin/bash
+# bin/learn: what a person tells their agents about how to work, kept per person and loaded at every session start
+# (story L1; contract .ade/context/learn.md). Files: memory/users/<user>/{profile.md,feedback/<slug>.md,MEMORY.md,log.md};
+# <user> is hub_user (bin/lib.sh). No model is ever called.
+#   bin/learn feedback [--scope hub|<folder>|role:<role>] --rule "<line>" --words "<their words>" --why "<line>" --apply "<line>"
+#       one file per rule; the same rule again (same scope, equal after normalising) raises its `repeated` instead.
+#       Scope default: this session's folder (AGENT_FOLDER, else the hub folder the command runs in), else hub. Inside a
+#       folder, another folder's scope is refused.
+#   bin/learn profile "<fact>"            one dated line in profile.md
+#   bin/learn list | show <slug|profile>  the person's own entries
+#   bin/learn edit <slug|profile>         $EDITOR on a copy, at a terminal only; saved only when it passes the same checks
+#   bin/learn forget <slug> [--yes]       the slug typed back at a terminal (or --yes); logs "forgot <slug>"
+#   bin/learn context [folder]            the session-start block (bin/context prints it): profile and rules for this
+#       folder and role (AGENT_ROLE), most repeated first, at most HUB_LEARN_LINES lines (default 30); the hub root: hub only
+#   bin/learn recent [--mark <UTC time>]  log lines since the last briefing's mark (bin/briefing); --mark moves the mark
+# Every value is refused (exit 1, one line naming the reason, never the value) when gitleaks finds a secret in it (or
+# gitleaks is missing), or it holds an email address, a phone number, or a control, bidi or zero-width character.
+# Exit: 0 done, 1 refused / not found / not confirmed, 2 usage.
+. "$(dirname "$0")/lib.sh"; H="$(hub_root)"
+USAGE="usage: bin/learn feedback [--scope S] --rule R --words W --why Y --apply A | profile <fact> | list | show <slug> | edit <slug> | forget <slug> [--yes] | context [folder] | recent [--mark T]"
+# this session's folder: AGENT_FOLDER (bin/work, bin/agent), else the hub folder the command runs in
+here="${AGENT_FOLDER:-}"
+if [ -z "$here" ]; then case "$PWD/" in "$H"/projects/?*/*|"$H"/ops/?*/*) here="$(printf '%s' "${PWD#"$H"/}" | cut -d/ -f1-2)" ;; esac; fi
+learn_py() { LEARN_HUB="$H" LEARN_USER="$(hub_user)" LEARN_HERE="$here" LEARN_ROLE="${AGENT_ROLE:-}" LEARN_FOLDERS="$(folders)" \
+  LEARN_STATE="$(state_dir)" LEARN_LINES="${HUB_LEARN_LINES:-30}" python3 -I "$(dirname "$0")/learn.py" "$@"; }
+tty_ok() { [ -t 0 ] && [ -t 1 ] && { : </dev/tty; } 2>/dev/null; }
+case "${1:-}" in
+  feedback|profile|list|show|context|recent) learn_py "$@"; exit $? ;;
+  edit)
+    [ $# -eq 2 ] || { echo "$USAGE" >&2; exit 2; }
+    f="$(learn_py path "$2")" || exit $?
+    tty_ok || { echo "learn: edit needs the person at an interactive terminal; nothing changed" >&2; exit 1; }
+    ed="${VISUAL:-${EDITOR:-vi}}"; T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT; cp "$f" "$T/$2.md" || exit 1
+    # shellcheck disable=SC2086
+    $ed "$T/$2.md" </dev/tty >/dev/tty || { echo "learn: the editor failed; nothing changed" >&2; exit 1; }
+    learn_py apply "$2" "$T/$2.md"; exit $? ;;
+  forget)
+    [ $# -ge 2 ] && [ $# -le 3 ] && { [ $# -eq 2 ] || [ "$3" = --yes ]; } || { echo "$USAGE" >&2; exit 2; }
+    learn_py path "$2" >/dev/null || exit $?
+    [ "$2" != profile ] || { echo "learn: the profile is not forgotten whole; bin/learn edit profile" >&2; exit 2; }
+    if [ "${3:-}" != --yes ]; then
+      tty_ok || { echo "learn: forget needs the slug typed back at an interactive terminal (or --yes); nothing forgotten" >&2; exit 1; }
+      printf 'Forget %s? Type the slug to confirm: ' "$2" >/dev/tty
+      typed=""; read -r -t 120 typed </dev/tty || true
+      [ "$typed" = "$2" ] || { echo "learn: not confirmed; nothing forgotten" >&2; exit 1; }
+    fi
+    learn_py forget "$2"; exit $? ;;
+  *) echo "$USAGE" >&2; exit 2 ;;
+esac

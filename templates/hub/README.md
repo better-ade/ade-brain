@@ -26,6 +26,7 @@ history** of the work and runs Claude Code agents that know them. Client code st
 | `bin/journal <folder> "<text>"` | one dated journal entry |
 | `bin/new projects/<name>` / `ops/<name>` | a new folder plus its agent |
 | `bin/brain search "<words>"` | search every section of the hub (keywords + meaning); `bin/brain index` refreshes |
+| `bin/learn list\|show\|edit\|forget` | what the hub learned about you (`memory/users/<you>/`); agents capture with `bin/learn feedback` and `bin/learn profile`, and each session starts with your rules for that folder |
 | `bin/remote <cmd>` | a command on the remote box over SSH |
 | `bin/secret <name>` | a secret from the Keychain (`--set`, `--has`, `--forget`, `--list`) |
 | `bin/doctor` | what this Mac can reach; never prints a secret |

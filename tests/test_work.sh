@@ -265,6 +265,7 @@ sessions_show_role() {
   printf '#!/bin/bash\nexec sleep 30\n' > "$WT/claude-stub"; chmod +x "$WT/claude-stub"
   f=$(AGENT_STATE="$st" WORK_NO_OPEN=1 bin/work --force --role builder --claude claude-stub projects/demo 2>/dev/null | sed -n 's/^launcher: //p')
   [ -x "$f" ] || fail "launcher written for --role"
+  grep -qx "export AGENT_ROLE='builder'" "$f" || fail "the launcher exports the role for the session's hooks (story L1)"
   AGENT_STATE="$st" PATH="$WT:$PATH" bash "$f" & lp=$!
   for _ in $(seq 1 50); do [ -f "$st/sessions/demo.$lp" ] && break; sleep 0.1; done
   out=$(AGENT_STATE="$st" bin/sessions)

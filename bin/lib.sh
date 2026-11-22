@@ -455,6 +455,10 @@ for _v in $(compgen -v HUB_ROLE_) $(compgen -v HUB_BROWSER_PROFILE_); do unset "
 [ -f "$(hub_root)/hub.conf" ] && . "$(hub_root)/hub.conf"
 hub_name() { echo "${HUB_NAME:-$(basename "$(hub_root)")}"; }
 hub_owner() { echo "${HUB_OWNER:-the hub owner}"; }
+# the person running this session, as a slug (story L1, .ade/context/learn.md): AGENT_USER, else HUB_USER (hub.conf or the
+# environment), else the operating-system user; lower-cased, every run of other characters one -, at most 40; empty: owner
+hub_user() { local u="${AGENT_USER:-${HUB_USER:-}}"; [ -n "$u" ] || u="$(id -un 2>/dev/null || printf '%s' "${USER:-}")"
+  u="$(printf '%s' "$u" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9]\{1,\}/-/g; s/^-*//' | cut -c1-40 | sed 's/-*$//')"; printf '%s\n' "${u:-owner}"; }
 persona_title() { echo "${HUB_PERSONA_TITLE:-technical agent}"; }
 code_owner() { echo "${AGENT_CODE_OWNER:-${HUB_CODE_OWNER:-}}"; }
 # The remote box (staging server, VM) reached by bin/remote; empty host = none configured.
