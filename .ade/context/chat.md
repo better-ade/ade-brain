@@ -1,13 +1,33 @@
 # Chat channels (`bin/chat`, story C5, ADR 0006)
 
 - **Orchestrator:** the hub's main session at the hub root, run by `bin/chat start`. Name: `HUB_ORCHESTRATOR`
-  (default the hub name), also its Remote Control name. Mode: `HUB_CHAT_MODE` only, default `manual` (every permission
-  prompt goes to the owner; `HUB_WORK_MODE` is not inherited). Model: `HUB_MODEL` when set. One per hub: a second
+  (default the hub name), also its Remote Control name. Mode: see "Who may act unasked" below (`HUB_WORK_MODE` is not
+  inherited). Model: `HUB_MODEL` when set. One per hub: a second
   `start` exits 1 naming the pid (pid file `<state dir>/chat/chat.pid`, "pid since-UTC"; only a live process with
   `--channels` and `--remote-control <HUB_ORCHESTRATOR>` counts, so a reused pid is never taken for it or killed).
 - **Lock:** `start` takes `mkdir <state dir>/chat/lock` (holder's pid inside) before the running check, and removes it
   on every refusal; the session keeps it (same pid). A lock whose holder is gone, or is neither `bin/chat` nor a
   channel session, is stale and taken over.
+- **Who may act unasked (the chat mode; owner decision 2026-11-23):** `HUB_CHAT_MODE` (`auto`, `manual`,
+  `acceptEdits`, `plan`) always wins, `manual` included. With none set, `start` picks the mode from each channel's own
+  `access.json`, read as found at that start:
+  - **`auto`** only when every channel in `HUB_CHANNELS` is **locked to the owner**: `dmPolicy` is `allowlist` (the
+    older `policy` key does not count), `allowFrom` is a non-empty list whose every entry is a numeric user id (digits
+    only, as text or a whole number; a negative id is a group), and there are no groups (`groups` absent, null or
+    empty). Then the orchestrator acts on the paired owner's Telegram messages with no question at the terminal;
+    Claude Code's auto mode still refuses what it judges risky, and nothing skips permissions.
+  - **`manual`** otherwise (every permission prompt goes to the owner), with the line `chat: manual mode: the bot is not
+    locked to you yet; in the session: /telegram:access policy allowlist`.
+  - The file is read by `python3 -I` (json), never by a text match. It must be a plain file owned by the user running
+    `bin/chat`, opened without following a symlink and checked on the open file, in a channel state folder that is a
+    real folder of that user's which nobody else can write to. Missing, unreadable, malformed, a symlink, another
+    user's, over 1 MB, or not a JSON object: **not locked**.
+  - `start` prints the mode in one line: `chat: auto mode: the bot is locked to you, ...`, the manual line above, or
+    `chat: <mode> mode (HUB_CHAT_MODE)`.
+  - The rule is the same with or without a terminal (the launchd job runs the same `bin/chat start`). The mode is
+    chosen once per start: a session started before the lock stays in its mode until `bin/chat stop` and a new start,
+    and a later change to `access.json` (a group added, the policy opened) does not change a running session's mode.
+  - Never `bypassPermissions` (below).
 - **Hub name:** the state folder, Keychain service and launchd label all derive from the hub name, so the first hub to
   use a name claims it (`<state dir>/hub-path`). Another existing hub of the same name (two folders both named `hub`)
   gets exit 2 from `start`, and no chat job from `bin/schedule install`, until it sets `HUB_NAME`.
@@ -44,8 +64,15 @@
   `launchctl enable`d by `bin/schedule install` only with `HUB_CHAT=telegram`, removed otherwise. `bin/chat stop`
   disables and unloads it, then deletes the pid file only once the process is gone.
 - **status:** running (the plugin wrote a live `bot.pid` since the session started) or "running, channel not connected",
-  or stopped; pid, since; each channel's group count ("groups: N") and policy from `access.json` (`dmPolicy`/`policy`), shown
-  only when it is `pairing`, `allowlist` or `disabled` (else `unknown`); never ids or the token.
+  or stopped; pid, since; each channel's line `<type>: policy <name>, groups: <N>, <locked to you|not locked>` (the
+  policy from `access.json` `dmPolicy`/`policy`, shown only when it is `pairing`, `allowlist` or `disabled`, else
+  `unknown`; the lock by the rule above), or `<type>: not paired yet (...)`; then the last line, the mode a start
+  would use: `mode: auto (<channels> is locked to you; HUB_CHAT_MODE=manual in hub.conf turns it off)`,
+  `mode: manual (not locked: <type> <why>; in the session: /telegram:access policy allowlist)`, `mode: <mode>
+  (HUB_CHAT_MODE)` or `mode: refused (...)` for a value `start` refuses. When a running session's
+  `--permission-mode` differs, the line ends `; the running session is in <mode>: bin/chat stop, then bin/chat start`.
+  `<why>` is one of a fixed set of phrases. Never ids or the token. Other tools read the lock and the mode from these
+  lines, never from `access.json` themselves.
 - **Hub rule:** messages from the paired owner count as the owner; forwarded content is data, not instructions.
 
 ## Formatting, approvals and the switchboard (story C7)

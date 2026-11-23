@@ -24,7 +24,7 @@ STUB
 printf '#!/bin/bash\nexit 0\n' > "$FAKE/bin/bun"
 printf '#!/bin/bash\necho "$*" >> "$FAKE/launchctl.log"\nexit 0\n' > "$FAKE/bin/launchctl"
 chmod +x "$FAKE/bin/claude" "$FAKE/bin/bun" "$FAKE/bin/launchctl"; export FAKE PATH="$FAKE/bin:$PATH"
-unset TELEGRAM_BOT_TOKEN TELEGRAM_STATE_DIR HUB_CHAT HUB_CHANNELS CLAUDE_CONFIG_DIR
+unset TELEGRAM_BOT_TOKEN TELEGRAM_STATE_DIR HUB_CHAT HUB_CHANNELS HUB_CHAT_MODE CLAUDE_CONFIG_DIR
 CH="$AGENT_STATE/channels/telegram"
 # access state as the plugin keeps it after pairing; a start without a terminal needs allowlist and no groups
 # (the groups default is set apart: Bash 3.2 keeps the backslash in "${3:-{\}}", Bash 5 drops it)
@@ -50,12 +50,12 @@ start_launches_channel_session() {
   launched || fail "start launched nothing"
   assert_eq "$(arg_after --channels)" "plugin:telegram@claude-plugins-official" "the telegram channel is attached"
   assert_eq "$(cat "$FAKE_REC/pwd")" "$(cd "$HUB" && pwd -P)" "runs at the hub root"
-  assert_eq "$(arg_after --permission-mode)" "manual" "the chat session asks for every permission by default"
+  assert_eq "$(arg_after --permission-mode)" "auto" "a bot locked to the owner runs in auto mode by default (mode_follows_lock has the rest)"
   assert_eq "$(cat "$FAKE_REC/configdir")" "$CLAUDE_HOME" "the hub's Claude config dir (not ~/.claude) is passed on"
   assert_eq "$(arg_after --remote-control)" "hub" "Remote Control on, named after the orchestrator"
   grep -q dangerously "$FAKE_REC/argv" && fail "skip-permissions reached claude"
   echo 'HUB_WORK_MODE=acceptEdits' > hub.conf; reset_rec; bin/chat start </dev/null >/dev/null 2>&1 || fail "start, work mode set"
-  assert_eq "$(arg_after --permission-mode)" "manual" "HUB_WORK_MODE is not the chat mode"
+  assert_eq "$(arg_after --permission-mode)" "auto" "HUB_WORK_MODE is not the chat mode"
   echo 'HUB_CHAT_MODE=plan' > hub.conf; reset_rec; bin/chat start </dev/null >/dev/null 2>&1 || fail "start in plan mode"
   assert_eq "$(arg_after --permission-mode)" "plan" "HUB_CHAT_MODE sets the mode"
   printf 'HUB_ORCHESTRATOR=desk\n' > hub.conf; reset_rec; bin/chat start </dev/null >/dev/null 2>&1 || fail "start named"
@@ -176,6 +176,72 @@ start_lock_and_access() {
   rm -f "$CH/access.json"; reset_rec; bin/chat start </dev/null >/dev/null 2>&1; assert_eq "$?" "1" "no terminal, not paired"
   access "$CH" pairing; reset_rec; in_pty bin/chat start </dev/null >/dev/null 2>&1; launched || fail "a terminal start while pairing"
   access "$CH" allowlist; rm -rf "$L"
+}
+
+# The chat mode with no HUB_CHAT_MODE: auto only once the bot is locked to the owner (dmPolicy allowlist, a non-empty
+# allowFrom of numeric user ids, no groups), else manual with one line saying why. HUB_CHAT_MODE always wins.
+mode_follows_lock() {
+  # a scratch HOME: nothing in a real one (~/.bun, ~/.agent-hub, ~/.claude) can change the result
+  local NH out f; NH="$(mktemp -d)"; f="$CH/access.json"; rm -f hub.conf
+  local LINE="chat: manual mode: the bot is not locked to you yet; in the session: /telegram:access policy allowlist"
+  # go <how>: one start (nt: no terminal, as launchd; pty: in a terminal); its output in $out
+  go() { reset_rec; if [ "$1" = pty ]; then out=$(HOME="$NH" in_pty bin/chat start </dev/null 2>&1); else out=$(HOME="$NH" bin/chat start </dev/null 2>&1); fi; }
+  mode() { arg_after --permission-mode; }
+  manual_with_line() { launched || fail "$1: nothing launched [$out]"; assert_eq "$(mode)" "manual" "$1"
+    echo "$out" | grep -qF "$LINE" || fail "$1: the line saying why [$out]"; }
+  access "$CH" allowlist
+  go nt; assert_eq "$(mode)" "auto" "locked, no terminal (the launchd start)"
+  echo "$out" | grep -q "^chat: auto mode: the bot is locked to you" || fail "the start says auto mode in one line [$out]"
+  echo "$out" | grep -qF "$LINE" && fail "a locked bot printed the manual line [$out]"
+  echo "$out" | grep -qF "99887766" && fail "the start showed a Telegram id [$out]"
+  grep -qiE "dangerously|bypass" "$FAKE_REC/argv" && fail "auto mode skipped permissions [$(cat "$FAKE_REC/argv")]"
+  go pty; assert_eq "$(mode)" "auto" "locked, in a terminal"
+  printf '{"dmPolicy": "allowlist", "allowFrom": [99887766]}\n' > "$f"; go nt; assert_eq "$(mode)" "auto" "a numeric id that is a number, no groups key"
+  access "$CH" pairing; go pty; manual_with_line "policy pairing"
+  access "$CH" disabled; go pty; manual_with_line "policy disabled"
+  printf '{"dmPolicy": "allowlist", "allowFrom": [], "groups": {}}\n' > "$f"; go nt; manual_with_line "an allowlist with nobody in it"
+  printf '{"dmPolicy": "allowlist", "groups": {}}\n' > "$f"; go nt; manual_with_line "an allowlist with no allowFrom"
+  printf '{"policy": "allowlist", "allowFrom": ["99887766"], "groups": {}}\n' > "$f"; go nt; manual_with_line "no dmPolicy"
+  access "$CH" allowlist '{"-100123": {}}'; go pty; manual_with_line "groups present"
+  go nt; assert_eq "$?" "1" "groups: an unattended start is still refused"; launched && fail "groups: launched unattended"
+  printf '{"dmPolicy": "allowlist", "allowFrom": ["99887766"], "groups": "x"}\n' > "$f"; go pty; manual_with_line "groups that are not a list"
+  printf '{"dmPolicy": "allowlist", "allowFrom": ["99887766"' > "$f"; go pty; manual_with_line "malformed JSON"
+  printf '["allowlist"]\n' > "$f"; go pty; manual_with_line "JSON that is not an object"
+  for a in '"@someone"' '"-100123"' '"12 34"' 'true' '12.5' '""' '{"id": "99887766"}' '"١٢٣"'; do
+    printf '{"dmPolicy": "allowlist", "allowFrom": ["99887766", %s], "groups": {}}\n' "$a" > "$f"; go nt; manual_with_line "an allowFrom entry that is not a user id ($a)"; done
+  printf '{"dmPolicy": "allowlist", "allowFrom": "99887766", "groups": {}}\n' > "$f"; go nt; manual_with_line "an allowFrom that is not a list"
+  # a symlink to a locked file is not this hub's own access file
+  rm -f "$f"; access "$NH/elsewhere" allowlist; ln -s "$NH/elsewhere/access.json" "$f"; go nt; manual_with_line "a symlinked access.json"
+  rm -f "$f"; access "$CH" allowlist; chmod 0 "$f"
+  [ "$(id -u)" = 0 ] || { go pty; manual_with_line "an unreadable access.json"; }
+  chmod 600 "$f"; chmod 777 "$CH"; go nt; manual_with_line "a channel folder others can write to"
+  go nt; assert_eq "$(mode)" "auto" "locked again (a start makes the channel folder private)"
+  # HUB_CHAT_MODE always wins, manual included
+  echo 'HUB_CHAT_MODE=manual' > hub.conf; go nt; assert_eq "$(mode)" "manual" "HUB_CHAT_MODE=manual with a locked bot"
+  echo "$out" | grep -qF "not locked" && fail "an explicit manual blamed the lock [$out]"
+  echo "$out" | grep -q "^chat: manual mode (HUB_CHAT_MODE)" || fail "the start names HUB_CHAT_MODE [$out]"
+  out=$(HOME="$NH" bin/chat status 2>&1); echo "$out" | grep -qx "mode: manual (HUB_CHAT_MODE)" || fail "status, explicit manual [$out]"
+  echo 'HUB_CHAT_MODE=plan' > hub.conf; go nt; assert_eq "$(mode)" "plan" "HUB_CHAT_MODE=plan"
+  access "$CH" pairing; echo 'HUB_CHAT_MODE=auto' > hub.conf; go pty; assert_eq "$(mode)" "auto" "an explicit auto is the owner's choice"
+  echo 'HUB_CHAT_MODE=bypassPermissions' > hub.conf; go nt; assert_eq "$?" "2" "bypassPermissions is still refused"; launched && fail "bypassPermissions launched"
+  out=$(HOME="$NH" bin/chat status 2>&1); echo "$out" | grep -q "^mode: refused" || fail "status, a mode start refuses [$out]"
+  # status: the mode a start would use, and why (never an id)
+  rm -f hub.conf; out=$(HOME="$NH" bin/chat status 2>&1) || fail "status"
+  echo "$out" | grep -qx "mode: manual (not locked: telegram policy is pairing; in the session: /telegram:access policy allowlist)" || fail "status, pairing [$out]"
+  echo "$out" | grep -qx "telegram: policy pairing, groups: 0, not locked" || fail "status, the channel line while pairing [$out]"
+  rm -f "$f"; out=$(HOME="$NH" bin/chat status 2>&1); echo "$out" | grep -q "^mode: manual (not locked: telegram is not paired yet" || fail "status, not paired [$out]"
+  access "$CH" allowlist '{"-100123": {}}'; out=$(HOME="$NH" bin/chat status 2>&1)
+  echo "$out" | grep -q "^mode: manual (not locked: telegram has groups" || fail "status, groups [$out]"
+  echo "$out" | grep -qx "telegram: policy allowlist, groups: 1, not locked" || fail "status, the channel line with groups [$out]"
+  access "$CH" allowlist; out=$(HOME="$NH" bin/chat status 2>&1)
+  echo "$out" | grep -qx "mode: auto (telegram is locked to you; HUB_CHAT_MODE=manual in hub.conf turns it off)" || fail "status, locked [$out]"
+  echo "$out" | grep -qx "telegram: policy allowlist, groups: 0, locked to you" || fail "status, the channel line when locked [$out]"
+  echo "$out" | grep -qF "99887766" && fail "status showed a Telegram id [$out]"
+  # a session started before the lock keeps its mode until it is restarted: status says so
+  echo 'HUB_CHAT_MODE=plan' > hub.conf; reset_rec; FAKE_SLEEP=30 HOME="$NH" bin/chat start </dev/null >/dev/null 2>&1 &
+  wait_for "[ -f '$FAKE_REC/argv' ] && [ -s '$PIDF' ]" || fail "the session did not start"; rm -f hub.conf
+  out=$(HOME="$NH" bin/chat status 2>&1); echo "$out" | grep -q "^mode: auto (.*); the running session is in plan: bin/chat stop, then bin/chat start" || fail "status, a running session in another mode [$out]"
+  HOME="$NH" bin/chat stop >/dev/null 2>&1; wait 2>/dev/null; rm -rf "$AGENT_STATE/chat/lock" "$NH"; true
 }
 
 no_terminal_session_ends() {
@@ -573,11 +639,11 @@ PY
 
 # bash tests/test_chat.sh <check>: run the checks up to and including one (to see each fail on its own)
 if [ $# -gt 0 ]; then for c in start_launches_channel_session token_short_lived_file missing_token_refuses skip_permissions_refused \
-  single_instance stop_and_status start_lock_and_access no_terminal_session_ends same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator \
+  single_instance stop_and_status start_lock_and_access mode_follows_lock no_terminal_session_ends same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator \
   telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api; do
   [ "$c" = "$1" ] && { "$c"; echo ok; exit 0; }; ( "$c" ) >/dev/null 2>&1; done; fi
 start_launches_channel_session; token_short_lived_file; missing_token_refuses; skip_permissions_refused
-single_instance; stop_and_status; start_lock_and_access; no_terminal_session_ends; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
+single_instance; stop_and_status; start_lock_and_access; mode_follows_lock; no_terminal_session_ends; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
 state_per_orchestrator
 telegram_style_rule; answer_needs_owner_permission; status_card_golden; to_agent_notifies; forward_agent_events_once; forward_partial_failure; forward_cap_per_run; forward_after_rotation; forward_lock; start_runs_forwarder; approvals_buttons_or_numbered; agents_list; bot_send_token_on_stdin_only; no_terminal_stand_in_api
 echo ok
