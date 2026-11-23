@@ -306,6 +306,10 @@ if [ "${WORK_DRY:-}" = 1 ]; then
   fi
   [ -z "$MS" ] || { cat "$MS"; echo; } 2>/dev/null; exit 0
 fi
+# the hub's rules reach the folder as copies inside it, refreshed on every start, so a session whose working directory
+# is the folder is never stopped by Claude Code's external-imports question (focus_hub_sync, bin/lib.sh;
+# .ade/context/focus-folders.md). A folder from before this is migrated here, once, and the line says so.
+focus_hub_sync "$F" >&2
 if [ "$PROV" != anthropic ] && [ "$PROV" != gemini ]; then   # the memory links bin/setup makes, inside the provider's config dir
   plink() { local m="$CD/projects/$(encode_path "$1")/memory"; mkdir -p "$2" "$(dirname "$m")"
     [ -L "$m" ] && [ "$(readlink "$m")" = "$2" ] && return 0
@@ -349,10 +353,22 @@ fi
 [ "$PROV" = gemini ] && CWIN=0 BMAX=0
 [ "$CWIN" = 0 ] || sub="${sub}export CLAUDE_CODE_AUTO_COMPACT_WINDOW=\"\${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-$CWIN}\""$'\n'
 [ "$BMAX" = 0 ] || sub="${sub}export BASH_MAX_OUTPUT_LENGTH=\"\${BASH_MAX_OUTPUT_LENGTH:-$BMAX}\""$'\n'
+# a start nobody watches (bin/work run by a Claude session, or the hub's chat is on) that has not got going after
+# HUB_WORK_START_WAIT seconds (default 90; 0 = never) is reported once: a note from the folder to the main session
+# (bin/notify; bin/chat forward passes it on to the owner). "Got going" = the session's hooks wrote a status to its
+# entry: any status (ready, from SessionStart) with no first message, busy or idle (its first message was taken) with
+# --prompt. An entry that is gone (the session ended) is not reported. .ade/context/focus-folders.md
+# The check is forked twice, so it is never a child of the launcher (bin/sessions takes the launcher's child as the engine).
+SWAIT="${HUB_WORK_START_WAIT:-90}"; [[ "$SWAIT" =~ ^[0-9]+$ ]] || { echo "work: bad HUB_WORK_START_WAIT '$SWAIT' (seconds; 0 = no report)" >&2; exit 2; }
+watch=""
+if [ "$SWAIT" != 0 ] && [ "$PROV" != gemini ] && { [ -n "${CLAUDE_PID:-}" ] || chat_running; }; then   # the Gemini CLI has no hooks: no signal
+  SRE='^status='; [ -z "$PROMPT" ] || SRE='^status=(busy|idle)'
+  watch="( ( sleep $SWAIT; [ -f \"\$R\" ] || exit 0; grep -Eq $(sq "$SRE") \"\$R\" && exit 0; $(sq "$H/bin/notify") --from $(sq "$F") main $(sq "$F (${RNAME:-${F##*/}}) has not started after $SWAIT s: it is waiting at its terminal (a startup question, such as a sign-in or an approval dialog); someone has to answer it there") ) </dev/null >/dev/null 2>&1 & )"$'\n'
+fi
 # a terminal can carry the session variables of a Claude session that has exited (ADE hands them to every sub-terminal):
 # with them the new session starts as a child of that dead session and no other session can list or message it
 SESS_UNSET="unset $(agent_session_vars)"   # the one list, bin/lib.sh
-L=$(mktemp "${TMPDIR:-/tmp}/agent-work.XXXXXX"); printf '#!/bin/bash\ntrap %s EXIT\n%s\n%s\n%s%s\n' "$(sq "$TRAP \"\$R\"")" "$reg" "$SESS_UNSET" "$sub" "$cmd" > "$L"; chmod +x "$L"
+L=$(mktemp "${TMPDIR:-/tmp}/agent-work.XXXXXX"); printf '#!/bin/bash\ntrap %s EXIT\n%s\n%s\n%s%s\n' "$(sq "$TRAP \"\$R\"")" "$reg" "$SESS_UNSET" "$watch$sub" "$cmd" > "$L"; chmod +x "$L"
 # WORK_NO_OPEN=1 (tests): write the launcher, print its path, open nothing (both files are kept for the caller)
 [ "${WORK_NO_OPEN:-}" = 1 ] && { echo "launcher: $L"; MS=""; L=""; exit 0; }
 if [ "$OPEN" = tmux ]; then
