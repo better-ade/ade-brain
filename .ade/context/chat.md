@@ -164,3 +164,39 @@
   cursor first, then the new log.
 - **Forward lock:** a lock with no pid yet is live for 10 s (its folder's mtime), then taken over.
 - **test and logs (story H1):** `bin/chat test [channel]` and `bin/chat logs [-n N]`; see `.ade/context/hub-interface.md`.
+
+## Sending an image or a file (`bin/chat send`)
+- **`bin/chat send [--document] <file>`**, the caption (optional) on stdin. Without `--document`: one image, PNG or
+  JPEG by its first bytes (never by its name), at most 10 MB, sent with the Bot API's `sendPhoto`. With `--document`:
+  any one file, at most 20 MB, sent with `sendDocument`. One multipart request over HTTPS from python3's standard
+  library (`chat.py file photo|document <path>`).
+- **Only to the locked owner:** it sends only when `lock_of` says the first channel is `locked` (the auto-mode rule:
+  `dmPolicy` `allowlist`, exactly one id, no groups), and to that one id. Not paired or not locked: exit 2, with
+  `lock_of`'s reason, nothing sent. `chat.py` reads the id again under the same rule.
+- **Files that are never sent** (exit 2): anything that is not a regular file (a link, a folder, a pipe; the file is
+  opened once without following a link and checked on the open file), an empty file, a file over its cap, a `.env`
+  (`.env`, `.env.*`, `*.env`), and any file whose real path is under the hub's state folder, `~/.agent-hub`, `~/.ssh`,
+  `~/.config`, `~/.aws`, `~/.gnupg`, `~/.claude`, `~/.kube`, `~/.docker` or `~/Library/Keychains`.
+  The opened file is the one judged: a file with more than one name (a hard link) is refused, the descriptor's own
+  real path (macOS `F_GETPATH`, Linux `/proc/self/fd/<n>`) is checked against the same folders and names, and a
+  `/dev/...` or `/proc/...` path (`/dev/fd/7`, `/dev/stdin`) is refused outright.
+- **Token:** read as `say` reads it (`bin/secret` to the helper's stdin, first line); it is in the request's address
+  only: never an argument, the environment of a child, a log, the journal or the output. A failure prints the Bot API's
+  own `description` (the token replaced if it were in it), never the address.
+- **The Bot API host is pinned** (for `send`, `say`, `forward`, `ask`: every request of `chat.py` that carries the
+  token): `https://api.telegram.org`. `AGENT_TELEGRAM_API` is honoured only when it is exactly
+  `http://127.0.0.1:<port>` or `http://localhost:<port>` (the tests' stand-in); any other value is refused with one
+  line, exit 1, and no request is made.
+- **Caption:** one line, control characters removed, keys and tokens hidden (`redact`), cut to 1024 characters. The
+  file's name in the request is its own name with anything but letters, digits, `.`, `_` and `-` replaced by `_`.
+- **Exit codes:** 0 sent (prints `sent <name> to the paired owner`; one journal line with the name and size); 1 not
+  sent (no token, the API failed or refused). Nothing is kept for a retry: the file stays where it was. 2 refused.
+- **Owner's Allow:** the hub root's `.claude/settings.json` and every focus folder's (`templates/folder-settings.json`)
+  hold `Bash(*bin/chat send*)`, `Bash(*ade chat send*)`, `Bash(*ade shot screen*)` and `Bash(*ade shot*--tg*)` in
+  `permissions.ask`: an agent's send, and `ade shot screen` (a capture of the whole screen, ade-cli story A20), run
+  only after the owner's own Allow. That prompt is the approval `ade shot screen --yes-screen` relies on.
+- **The ask rules match text, not meaning:** a spacing or quoting variant (`bin//chat send`, `ade shot 'screen'`) is
+  not prompted. They are a courtesy to the owner; the hub's own checks (the lock, the host pin, the refused files)
+  are the boundary.
+- **Fake channel (tests):** with `AGENT_CHAT_SEND`, the fake gets `{"chat_id", "kind", "file", "name", "bytes",
+  "caption"}` as JSON on stdin and no token is read.

@@ -310,6 +310,9 @@ A focus session can run Claude Code against DeepSeek instead of Anthropic. The C
   later lost while it runs, you are told in the chat, and changing the bot's access file always asks first.
   `HUB_CHAT_MODE=manual` in `hub.conf` turns auto off; `bin/chat status` shows the mode and why
   (`.ade/context/chat.md`).
+  `bin/chat send <file>` sends one image (PNG or JPEG, at most 10 MB; `--document`: any file, at most 20 MB) to you, with
+  a caption from stdin, only while the bot is locked to you; it never sends a link, a `.env`, or a file from the hub's
+  state folder or your key and sign-in folders, and an agent's send waits for your Allow.
 - **Crash recovery**: `bin/recover` runs at login (launchd), before each `bin/chat start`, and by hand. It removes locks
   whose owner is gone, journals agents that died (their ticket marked blocked, never Done; uncommitted work kept and
   listed), drops a torn event-log line, alerts once on a full disk, and tells the chat "restarted, N agents running, M
