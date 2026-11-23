@@ -36,6 +36,14 @@
 #   asked <ref>                   pending, approved or denied
 #   say <text>                    send one message to the paired owner (story R1); a failed send is kept in
 #                                 <state dir>/chat/pending/ and sent by the next forward. Exit 0 sent, 1 kept, 2 not paired
+#   send [--document] <file>      one image (PNG or JPEG by its first bytes, at most 10 MB) to the paired owner, as a photo;
+#                                 --document: any one file, at most 20 MB, as a document. Only when the channel is
+#                                 locked to the owner (lock_of). The caption, if any, on stdin (one line, keys hidden,
+#                                 cut to 1024). Never a link, a folder, a .env, or a file under the hub's state folder,
+#                                 ~/.agent-hub, ~/.ssh, ~/.config, ~/.aws, ~/.gnupg, ~/.claude, ~/.kube, ~/.docker or
+#                                 ~/Library/Keychains. Journaled. Behind permissions.ask: the owner's own Allow.
+#                                 Exit 0 sent, 1 not sent (nothing is kept for a retry), 2 refused (not paired, not
+#                                 locked, or such a file)
 # Story R1: start runs bin/recover first. A service start (AGENT_CHAT_SERVICE=1, the launchd job) that finds 3 service
 # starts in the last 10 minutes gives up: journal, "login expired: run `claude` once" to the chat, the job disabled.
 # --sender is the user_id of the inbound channel message: only a paired owner (access.json allowFrom) counts.
@@ -45,7 +53,7 @@
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; S="$(state_dir)"; PIDF="$S/chat/chat.pid"; LOCK="$S/chat/lock"
 LA="${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}"; LABEL="ai.agent-hub.$(hub_name).chat"
 NAME="${HUB_ORCHESTRATOR:-$(hub_name)}"
-usage() { echo "usage: bin/chat start | stop | status [--card] | setup [channel] | test [channel] | logs [-n N] | agents | to --sender <id> <agent> (text on stdin) | forward | ask (question on stdin) | answer --sender <id> (reply on stdin) | asked <ref> | say <text> (channels: $(channel_types))" >&2; exit 2; }
+usage() { echo "usage: bin/chat start | stop | status [--card] | setup [channel] | test [channel] | logs [-n N] | agents | to --sender <id> <agent> (text on stdin) | forward | ask (question on stdin) | answer --sender <id> (reply on stdin) | asked <ref> | say <text> | send [--document] <file> (caption on stdin) (channels: $(channel_types))" >&2; exit 2; }
 CHANNELS="${HUB_CHANNELS-telegram}"
 check_channels() {
   [ -n "${CHANNELS// /}" ] || { echo "chat: HUB_CHANNELS is empty (known channel types: $(channel_types))" >&2; exit 2; }
@@ -313,6 +321,17 @@ EOF
     # the owners it reached are recorded (<m>.done), so a retry never sends it to them again
     printf '%s\n' "$2" | chat_send --done "$m.done" && { rm -f "$m.done"; exit 0; }
     printf '%s\n' "$2" > "$m"; echo 1 > "$m.tries"; exit 1 ;;
+  send) shift; kind=photo; if [ "${1:-}" = --document ]; then kind=document; shift; fi
+    [ $# -eq 1 ] && [ -n "$1" ] || usage; c="$(first_channel)"
+    # only to the one owner the bot is locked to: a bot that is open to anyone else sends no file
+    w="$(lock_of "$c")"; [ "$w" = locked ] || { echo "chat: refused: $c is not locked to you ($w); nothing sent (bin/chat status)" >&2; exit 2; }
+    cap="$(read_text | redact)" || cap=""
+    # the token as say reads it: from the Keychain to the helper's stdin, never an argument or the environment
+    if [ -n "${AGENT_CHAT_SEND:-}" ]; then out="$(printf '%s' "$cap" | ACCESS="$(access_file)" STATE="$S" python3 -I "$PY_CHAT" file "$kind" "$1")"; rc=$?
+    else t="$("$H/bin/secret" "$(channel_secret "$c")" 2>/dev/null)" && [ -n "$t" ] || { echo "chat: no $c bot token (bin/keys set $c)" >&2; exit 1; }
+      out="$({ printf '%s\n' "$t"; printf '%s' "$cap"; } | ACCESS="$(access_file)" STATE="$S" python3 -I "$PY_CHAT" file "$kind" "$1")"; rc=$?; unset t; fi
+    [ "$rc" = 0 ] || exit "$rc"
+    "$H/bin/journal" . "chat: sent a $kind to the owner (${out% *}, ${out##* } bytes)"; echo "sent ${out% *} to the paired owner" ;;
   forward) [ $# -eq 1 ] || usage; mkdir -p "$S/chat" && chmod 700 "$S/chat" || exit 1; FL="$S/chat/forward.lock"
     # one forwarder at a time; a lock whose holder is gone is taken over
     # a lock with no pid yet belongs to a forwarder that is just starting: live for 10 s (the folder's mtime)

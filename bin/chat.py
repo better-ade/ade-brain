@@ -12,8 +12,11 @@ each payload as JSON on stdin), AGENT_TELEGRAM_API (default https://api.telegram
                                   Exit 0 sent to all, 1 not sent (not paired, or the channel failed)
   chat.py agents card|table TITLE the agents (bin/sessions output on stdin, newest events from LATEST) as the status
                                   card or the /agents table
+  chat.py file photo|document PATH   one file to the one owner the channel is locked to (bin/chat send). The bot token is
+                                  the first line of stdin (not with AGENT_CHAT_SEND), the rest the caption. Exit 0 sent,
+                                  1 not sent, 2 refused (not locked, or a file that is never sent)
   chat.py ref                     a new five-letter ask ref"""
-import json, os, secrets, sys, unicodedata, urllib.request
+import json, os, re, secrets, stat, sys, unicodedata, urllib.error, urllib.request
 
 STATE = {"busy": "● busy", "idle": "○ idle", "blocked": "⚠ blocked"}
 
@@ -79,6 +82,111 @@ def send(argv):
     return 3 if hits or got else 1
 
 
+PHOTO_MAX = 10 * 1024 * 1024
+DOC_MAX = 20 * 1024 * 1024
+# folders whose files are never sent, whatever asks: the hub's state (tokens, access.json, logs), every hub's state,
+# and the home folders that hold keys and sign-ins
+NEVER = ("~/.agent-hub", "~/.ssh", "~/.config", "~/.aws", "~/.gnupg", "~/.claude", "~/.kube", "~/.docker", "~/Library/Keychains")
+
+
+def refuse(why):
+    print("chat: refused: %s; nothing sent" % why, file=sys.stderr); return 2
+
+
+def locked_owner():
+    """the one id the channel is locked to, as bin/chat's lock_of reads access.json (which ran first); else None"""
+    try: d = json.load(open(os.environ.get("ACCESS", "")))
+    except Exception: return None
+    if not isinstance(d, dict) or d.get("dmPolicy") != "allowlist" or d.get("groups") not in (None, {}, []): return None
+    a = d.get("allowFrom")
+    if not isinstance(a, list) or len(a) != 1 or not isinstance(a[0], str) or not re.fullmatch("[1-9][0-9]{0,19}", a[0], re.ASCII): return None
+    return a[0]
+
+
+def under(path, folder):
+    return path == folder or path.startswith(folder.rstrip("/") + "/")
+
+
+def read_file(path, kind):
+    """(bytes, name, mime) of a file that may be sent, or a str saying why not. The file is opened once, without
+    following a link, and checked on the open file: a regular file, not empty, within the cap."""
+    if not path or "\0" in path: return "no file named"
+    real = os.path.realpath(path); name = os.path.basename(real)
+    if name == ".env" or name.startswith(".env.") or name.endswith(".env"): return "a .env file is never sent"
+    never = [os.path.realpath(os.path.expanduser(n)) for n in NEVER]
+    if os.environ.get("STATE"): never.append(os.path.realpath(os.environ["STATE"]))
+    if any(under(real, n) for n in never): return "a file in a folder of keys, sign-ins or the hub's state is never sent"
+    try: fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError: return "no such file"
+    except OSError: return "not a regular file (a link, a folder or something else)"
+    try:
+        st = os.fstat(fd); cap = PHOTO_MAX if kind == "photo" else DOC_MAX
+        if not stat.S_ISREG(st.st_mode): return "not a regular file (a link, a folder or something else)"
+        if st.st_size == 0: return "the file is empty"
+        if st.st_size > cap: return "the file is over %d MB" % (cap >> 20)
+        data = b""
+        while len(data) <= cap:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk: break
+            data += chunk
+    finally: os.close(fd)
+    if len(data) > cap: return "the file is over %d MB" % (cap >> 20)
+    mime = "application/octet-stream"
+    if kind == "photo":
+        if data[:8] == b"\x89PNG\r\n\x1a\n": mime = "image/png"
+        elif data[:3] == b"\xff\xd8\xff": mime = "image/jpeg"
+        else: return "not a PNG or JPEG image (bin/chat send --document sends another kind of file)"
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name, flags=re.ASCII)[-100:].lstrip(".") or "file"
+    return data, name, mime
+
+
+def send_file(kind, path):
+    fake = os.environ.get("AGENT_CHAT_SEND", "")
+    raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+    token = ""
+    if not fake:
+        token, _, raw = raw.partition("\n")
+        token = token.strip()
+        if not token: print("chat: no bot token", file=sys.stderr); return 1
+    caption = " ".join("".join(c if c.isprintable() else " " for c in raw).split())[:1024]
+    to = locked_owner()
+    if not to: return refuse("the channel is not locked to you")
+    got = read_file(path, kind)
+    if isinstance(got, str): return refuse(got)
+    data, name, mime = got
+    if fake:
+        import subprocess
+        body = json.dumps({"chat_id": to, "kind": kind, "file": os.path.realpath(path), "name": name, "bytes": len(data), "caption": caption}, ensure_ascii=False)
+        try: return 0 if subprocess.run([fake], input=body.encode(), timeout=30).returncode == 0 else 1
+        except Exception: return 1
+    api = os.environ.get("AGENT_TELEGRAM_API", "https://api.telegram.org").rstrip("/")
+    # the token and the file leave only over HTTPS; plain http is the tests' stand-in on this machine, nothing else
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?|http://(127\.0\.0\.1|localhost)(:[0-9]{1,5})?", api):
+        print("chat: AGENT_TELEGRAM_API is not an https address; nothing sent", file=sys.stderr); return 1
+    b = "ade" + secrets.token_hex(16); parts = []
+    fields = [("chat_id", to)] + ([("caption", caption)] if caption else [])
+    for k, v in fields:
+        parts.append(('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n' % (b, k, v)).encode("utf-8"))
+    parts.append(('--%s\r\nContent-Disposition: form-data; name="%s"; filename="%s"\r\nContent-Type: %s\r\n\r\n' % (b, kind, name, mime)).encode("utf-8"))
+    parts.append(data); parts.append(("\r\n--%s--\r\n" % b).encode("utf-8"))
+    method = "sendPhoto" if kind == "photo" else "sendDocument"
+    req = urllib.request.Request("%s/bot%s/%s" % (api, token, method), data=b"".join(parts),
+                                 headers={"Content-Type": "multipart/form-data; boundary=" + b})
+    why = ""
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r: ok = json.load(r).get("ok") is True
+    except urllib.error.HTTPError as e:
+        # the Bot API's own reason, never the URL (it holds the token)
+        ok = False
+        try: why = str(json.loads(e.read(65536).decode("utf-8", "replace")).get("description", ""))
+        except Exception: why = ""
+        why = "HTTP %d%s" % (e.code, ": " + " ".join(why.replace(token, "<hidden>").split())[:200] if why else "")
+    except Exception as e:
+        ok = False; why = e.__class__.__name__
+    if ok: print("%s %d" % (name, len(data))); return 0
+    print("chat: the file was not sent (%s)" % (why or "the Bot API did not say ok"), file=sys.stderr); return 1
+
+
 def mark(done, chat_id, sent):
     if done and sent:
         with open(done, "a") as f: f.write(chat_id + "\n")
@@ -121,6 +229,7 @@ def agents(kind, title):
 def main(a):
     if a[:1] == ["owner"] and len(a) == 2: return 0 if a[1] in owners() else 2
     if a[:1] == ["send"]: return send(a[1:])
+    if a[:1] == ["file"] and len(a) == 3 and a[1] in ("photo", "document"): return send_file(a[1], a[2])
     if a[:1] == ["agents"] and len(a) == 3 and a[1] in ("card", "table"): return agents(a[1], a[2])
     if a[:1] == ["ref"]:
         # AGENT_CHAT_REFS (tests): the refs to hand out, the Nth for attempt N
