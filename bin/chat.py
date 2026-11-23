@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """bin/chat's helpers for what it sends and whom it believes (story C7; contract in .ade/context/chat.md). Called by
 bin/chat, never by a person. Env: ACCESS (the channel's access.json), AGENT_CHAT_SEND (tests: a fake channel that gets
-each payload as JSON on stdin), AGENT_TELEGRAM_API (default https://api.telegram.org).
+each payload as JSON on stdin), AGENT_TELEGRAM_API (the tests' stand-in only: http://127.0.0.1:<port> or localhost;
+else https://api.telegram.org, see api_base).
 
   chat.py owner SENDER            exit 0 when SENDER is a paired owner (in access.json allowFrom), else 2
   chat.py send [--buttons REF] [--done FILE [--skip-first]]   the text on stdin to every paired owner, plain text (no
@@ -19,6 +20,17 @@ each payload as JSON on stdin), AGENT_TELEGRAM_API (default https://api.telegram
 import json, os, re, secrets, stat, sys, unicodedata, urllib.error, urllib.request
 
 STATE = {"busy": "● busy", "idle": "○ idle", "blocked": "⚠ blocked"}
+
+
+def api_base():
+    """the Bot API's address: https://api.telegram.org. AGENT_TELEGRAM_API is honoured only as the tests' stand-in on
+    this machine, http://127.0.0.1:<port> or http://localhost:<port>, written exactly so; anything else is refused
+    (None, one line), so the token and what is sent never go to another host."""
+    a = os.environ.get("AGENT_TELEGRAM_API")
+    if a is None or a == "": return "https://api.telegram.org"
+    if re.fullmatch(r"http://(127\.0\.0\.1|localhost):[0-9]{1,5}", a, re.ASCII): return a
+    print("chat: AGENT_TELEGRAM_API is only for the tests' stand-in (http://127.0.0.1:<port>); nothing sent", file=sys.stderr)
+    return None
 
 
 def owners():
@@ -51,7 +63,10 @@ def send(argv):
     if not text: return 0
     to = owners()
     if not to: print("chat: not paired (no allowFrom in access.json): nothing sent", file=sys.stderr); return 1
-    ok = True; hits = 0
+    ok = True; hits = 0; api = None
+    if not fake:
+        api = api_base()
+        if api is None: return 1
     for chat_id in to:
         if chat_id in got: continue   # it reached this owner on an earlier try
         p = {"chat_id": chat_id, "text": text[:4096]}
@@ -66,7 +81,6 @@ def send(argv):
             ok = one and ok; hits += one; mark(done, chat_id, one)
             if not one: print("chat: not delivered to %s" % chat_id, file=sys.stderr)
             continue
-        api = os.environ.get("AGENT_TELEGRAM_API", "https://api.telegram.org").rstrip("/")
         req = urllib.request.Request("%s/bot%s/sendMessage" % (api, token), data=body.encode(),
                                      headers={"Content-Type": "application/json"})
         try:
@@ -107,21 +121,49 @@ def under(path, folder):
     return path == folder or path.startswith(folder.rstrip("/") + "/")
 
 
-def read_file(path, kind):
-    """(bytes, name, mime) of a file that may be sent, or a str saying why not. The file is opened once, without
-    following a link, and checked on the open file: a regular file, not empty, within the cap."""
-    if not path or "\0" in path: return "no file named"
-    real = os.path.realpath(path); name = os.path.basename(real)
+def never_sent(real):
+    """why the file at this real path is never sent, or None"""
+    name = os.path.basename(real)
     if name == ".env" or name.startswith(".env.") or name.endswith(".env"): return "a .env file is never sent"
     never = [os.path.realpath(os.path.expanduser(n)) for n in NEVER]
     if os.environ.get("STATE"): never.append(os.path.realpath(os.environ["STATE"]))
     if any(under(real, n) for n in never): return "a file in a folder of keys, sign-ins or the hub's state is never sent"
+    return None
+
+
+def fd_path(fd):
+    """the real path of an open file, as the system knows it (macOS F_GETPATH, Linux /proc/self/fd), or None"""
+    try:
+        if sys.platform == "darwin":
+            import fcntl
+            return fcntl.fcntl(fd, 50, b"\0" * 1024).split(b"\0", 1)[0].decode("utf-8", "surrogateescape") or None
+        return os.readlink("/proc/self/fd/%d" % fd)
+    except Exception: return None
+
+
+def read_file(path, kind):
+    """(bytes, name, mime) of a file that may be sent, or a str saying why not. The file is opened once, without
+    following a link, and judged on the open file: a regular file with one name, not empty, within the cap, and its
+    real path (as the system reports it for the descriptor) outside the folders and names that are never sent."""
+    if not path: return "no file named"
+    first = os.path.abspath(path)
+    if under(first, "/dev") or under(first, "/proc"): return "a descriptor or device path (/dev, /proc) is never sent"
+    real = os.path.realpath(path)
+    if under(real, "/dev") or under(real, "/proc"): return "a descriptor or device path (/dev, /proc) is never sent"
+    why = never_sent(real)
+    if why: return why
     try: fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError: return "no such file"
     except OSError: return "not a regular file (a link, a folder or something else)"
     try:
         st = os.fstat(fd); cap = PHOTO_MAX if kind == "photo" else DOC_MAX
         if not stat.S_ISREG(st.st_mode): return "not a regular file (a link, a folder or something else)"
+        if st.st_nlink != 1: return "the file has more than one name (a hard link), so where it belongs cannot be told; it is never sent"
+        opened = fd_path(fd)
+        if opened is None: return "the opened file's path cannot be read, so it is never sent"
+        why = never_sent(os.path.realpath(opened))
+        if why: return why
+        name = os.path.basename(opened)
         if st.st_size == 0: return "the file is empty"
         if st.st_size > cap: return "the file is over %d MB" % (cap >> 20)
         data = b""
@@ -159,10 +201,8 @@ def send_file(kind, path):
         body = json.dumps({"chat_id": to, "kind": kind, "file": os.path.realpath(path), "name": name, "bytes": len(data), "caption": caption}, ensure_ascii=False)
         try: return 0 if subprocess.run([fake], input=body.encode(), timeout=30).returncode == 0 else 1
         except Exception: return 1
-    api = os.environ.get("AGENT_TELEGRAM_API", "https://api.telegram.org").rstrip("/")
-    # the token and the file leave only over HTTPS; plain http is the tests' stand-in on this machine, nothing else
-    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?|http://(127\.0\.0\.1|localhost)(:[0-9]{1,5})?", api):
-        print("chat: AGENT_TELEGRAM_API is not an https address; nothing sent", file=sys.stderr); return 1
+    api = api_base()
+    if api is None: return 1
     b = "ade" + secrets.token_hex(16); parts = []
     fields = [("chat_id", to)] + ([("caption", caption)] if caption else [])
     for k, v in fields:

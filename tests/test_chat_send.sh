@@ -148,13 +148,45 @@ PY
   reset; printf '200 {"ok":false}' > "$SRV/answer"; send "" "$W/shot.png"; assert_eq "$RC" 1 "an answer that is not ok"
   reset; AGENT_TELEGRAM_API=http://127.0.0.1:9 send "" "$W/shot.png"; assert_eq "$RC" 1 "the API is down"
   grep -qF "$K" "$W/err" "$W/out" && fail "the token was printed when the API was down"
-  reset; AGENT_TELEGRAM_API=http://192.0.2.1 send "" "$W/shot.png"; assert_eq "$RC" 1 "a plain http address is not used"
-  assert_contains "$W/err" "not an https address" "it says why"
   [ -z "$(ls "$AGENT_STATE/chat/pending" 2>/dev/null)" ] || fail "a failed file send was kept"
   grep -rqF "$K" "$AGENT_STATE/logs" journal 2>/dev/null && fail "the token reached a log or the journal"
   # no token stored: exit 1, nothing sent
   reset; mv "$STORE" "$STORE.kept"; : > "$STORE"; send "" "$W/shot.png"; assert_eq "$RC" 1 "no token"; assert_contains "$W/err" "no telegram bot token" "it says how"
   mv "$STORE.kept" "$STORE"; assert_eq "$(reqs)" 0 "nothing sent without a token"
+}
+
+# the Bot API host is pinned: the override is honoured only for the tests' stand-in on this machine. Each other value
+# (read from a file, one per line) is refused with one line, by send and by say, and no request is made anywhere.
+host_pinned() {
+  locked; local a port; port="$(cat "$SRV/port")"
+  printf '%s\n' "https://attacker.invalid" "https://api.telegram.org.evil" "http://127.0.0.1:1@evil" "http://127.0.0.1:$port@evil.invalid" \
+    "http://127.0.0.1:$port#@evil.invalid" "http://localhost:$port/#x" "http://127.0.0.1:$port/extra" "http://127.0.0.1" "https://127.0.0.1:$port" \
+    "http://192.0.2.1" "http://127.0.0.1.evil.invalid:$port" "http://LOCALHOST:$port" "https://api.telegram.org" "http://127.0.0.1:$port " > "$W/hosts"
+  while IFS= read -r a; do
+    reset; AGENT_TELEGRAM_API="$a" send "cap" "$W/shot.png"; assert_eq "$RC" 1 "send, override [$a]"
+    assert_contains "$W/err" "AGENT_TELEGRAM_API is only for the tests" "it says why [$a]"; assert_eq "$(wc -l < "$W/err" | tr -d ' ')" 1 "one line [$a]"
+    AGENT_TELEGRAM_API="$a" bin/chat say "hello" > "$W/out" 2> "$W/err"; assert_eq "$?" 1 "say, override [$a]"
+    assert_contains "$W/err" "AGENT_TELEGRAM_API is only for the tests" "say says why [$a]"
+    grep -qF "$K" "$W/err" "$W/out" && fail "the token was printed [$a]"; assert_eq "$(reqs)" 0 "no request [$a]"
+  done < "$W/hosts"
+  rm -rf "$AGENT_STATE/chat/pending"
+  # the stand-in itself, by either name, is honoured
+  reset; AGENT_TELEGRAM_API="http://localhost:$port" send "" "$W/shot.png"; assert_eq "$RC" 0 "localhost and the port [$(cat "$W/err")]"
+  reset; bin/chat say "hello" > /dev/null 2>&1 || fail "say through the stand-in"; assert_eq "$(head -1 "$SRV/req.1")" "/bot$K/sendMessage" "say reaches it"
+}
+
+# the file that is opened is the file that is judged: a second name for a refused file, or a descriptor, is refused
+opened_file_judged() {
+  locked; mkdir -p "$HOME/.ssh"; cp "$W/shot.png" "$HOME/.ssh/key.png"; cp "$W/shot.png" "$W/.env"
+  ln "$HOME/.ssh/key.png" "$W/hard.png" 2>/dev/null || cp "$W/shot.png" "$W/hard.png"
+  if [ "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_nlink)' "$W/hard.png")" -gt 1 ]; then
+    reset; send "" "$W/hard.png"; assert_eq "$RC" 2 "a hard link to a refused file"; assert_contains "$W/err" "more than one name" "it says why"
+    reset; send "" --document "$W/hard.png"; assert_eq "$RC" 2 "the same as a document"; assert_eq "$(reqs)" 0 "nothing sent"; fi
+  reset; bin/chat send --document /dev/fd/7 7< "$HOME/.ssh/key.png" > "$W/out" 2> "$W/err" < /dev/null; assert_eq "$?" 2 "/dev/fd/7 from a refused folder"
+  reset; bin/chat send /dev/fd/7 7< "$W/.env" > "$W/out" 2> "$W/err" < /dev/null; assert_eq "$?" 2 "/dev/fd/7 from .env"; assert_contains "$W/err" "never sent" "it says why"
+  reset; bin/chat send --document /dev/stdin < "$W/.env" > "$W/out" 2> "$W/err"; assert_eq "$?" 2 "/dev/stdin"
+  reset; send "" --document "/proc/self/environ"; assert_eq "$RC" 2 "/proc"; assert_eq "$(reqs)" 0 "nothing sent"
+  rm -f "$W/hard.png" "$W/.env"
 }
 
 caption_cleaned() {
@@ -195,14 +227,15 @@ PY
 }
 
 documented() {
-  for s in "bin/chat send" "sendPhoto" "sendDocument" "10 MB" "20 MB" "locked" ".env" "ade shot screen"; do
+  for s in "bin/chat send" "sendPhoto" "sendDocument" "10 MB" "20 MB" "locked" ".env" "ade shot screen" "bin//chat send" "the boundary"; do
     assert_contains .ade/context/chat.md "$s" "the contract"; done
   assert_contains README.md "bin/chat send" "the README"
+  assert_contains docs/stories/C8-chat-send.md "tests/test_chat_send.sh" "the story names its tests"
   bin/chat 2>&1 | grep -q 'send \[--document\] <file>' || fail "the usage names send"
 }
 
 # bash tests/test_chat_send.sh <check>: run one check
-ALL="send_photo_to_locked_owner send_document only_images_as_photos refused_unless_locked never_sent_files token_never_shown caption_cleaned fake_channel needs_owner_permission documented"
+ALL="send_photo_to_locked_owner send_document only_images_as_photos refused_unless_locked never_sent_files token_never_shown host_pinned opened_file_judged caption_cleaned fake_channel needs_owner_permission documented"
 if [ $# -gt 0 ]; then "$1"; echo ok; exit 0; fi
 for c in $ALL; do "$c"; done
 echo ok
