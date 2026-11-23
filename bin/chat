@@ -147,7 +147,9 @@ case "${1:-}" in
       echo "chat: another bin/chat start holds the lock $LOCK (pid $(cat "$LOCK/pid" 2>/dev/null)); if none runs, remove that folder" >&2; exit 1; }
     if p="$(running_pid)"; then refuse "already running (pid $p, since $(since)); bin/chat stop first"; fi
     command -v -- "$CL" >/dev/null 2>&1 || refuse "$CL not found"
-    command -v bun >/dev/null 2>&1 || refuse "bun not found (the Telegram plugin runs on it: https://bun.sh, then ~/.bun/bin on PATH)"
+    # bun's own place, ~/.bun/bin, counts even when a new terminal has not put it on PATH yet (ade installs it there)
+    command -v bun >/dev/null 2>&1 || ! [ -x "$HOME/.bun/bin/bun" ] || { PATH="$HOME/.bun/bin:$PATH"; export PATH; }
+    command -v bun >/dev/null 2>&1 || refuse "bun not found (the Telegram plugin runs on it): run ade setup --tools, which installs it"
     TTY=0; [ -t 0 ] && TTY=1
     for c in $CHANNELS; do unset "$(channel_token_env "$c")" "$(channel_state_env "$c")"
       # without a terminal nobody can watch a pairing: only an allowlist with no groups may run unattended
