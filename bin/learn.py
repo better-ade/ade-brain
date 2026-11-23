@@ -661,27 +661,34 @@ def cmd_pending(args):
         print("\n".join(quoted(lines, 10) if args == ["--quoted"] else lines))
 
 
+def log_lines():
+    """The log's well-formed entry lines ("- <stamp> ..."), oldest first; none for a missing or linked log."""
+    p = os.path.join(BASE, "log.md")
+    if not os.path.isfile(p) or os.path.islink(p):
+        return []
+    with open(p, encoding="utf-8", errors="replace") as f:
+        return [line for line in f.read().split("\n")
+                if len(line.split(" ", 2)) == 3 and line.startswith("- ") and STAMP.fullmatch(line.split(" ", 2)[1])]
+
+
 def cmd_recent(args):
     mark = os.path.join(STATE, "learn", f"briefed.{USER}")
     if args and args[0] == "--mark":
         if len(args) != 2 or not STAMP.fullmatch(args[1]):
             die("usage: bin/learn recent [--quoted | --mark YYYY-MM-DDTHH:MM:SSZ]", 2)
         os.makedirs(os.path.dirname(mark), exist_ok=True)
+        # the mark is a second, and log stamps are seconds: also keep the entries of that very second that exist now
+        # (the ones this briefing listed), so a later entry in the same second is still listed next time
+        same = [line for line in log_lines() if line.split(" ", 2)[1] == args[1]]
         with open(mark, "w") as f:
-            f.write(args[1] + "\n")
+            f.write("\n".join([args[1]] + same) + "\n")
         return
     if args not in ([], ["--quoted"]):
         die("usage: bin/learn recent [--quoted | --mark YYYY-MM-DDTHH:MM:SSZ]", 2)
-    since = open(mark).read().strip() if os.path.isfile(mark) else ""
-    p = os.path.join(BASE, "log.md")
-    if not os.path.isfile(p) or os.path.islink(p):
-        return
-    lines = []
-    with open(p, encoding="utf-8", errors="replace") as f:
-        for line in f.read().split("\n"):
-            parts = line.split(" ", 2)
-            if len(parts) == 3 and parts[0] == "-" and STAMP.fullmatch(parts[1]) and parts[1] >= since and not cheap(line):
-                lines.append(line)
+    marked = open(mark, encoding="utf-8", errors="replace").read().split("\n") if os.path.isfile(mark) else [""]
+    since, seen = marked[0].strip(), set(marked[1:])
+    lines = [line for line in log_lines()
+             if (line.split(" ", 2)[1] > since or (line.split(" ", 2)[1] == since and line not in seen)) and not cheap(line)]
     if lines:
         print("\n".join(quoted(lines, 20) if args else [line[:LINE] for line in lines[-20:]]))
 
