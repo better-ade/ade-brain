@@ -71,8 +71,12 @@ start_launches_channel_session() {
   # the plugin runs on bun: none on PATH refuses before launch
   NS="$(mktemp -d)"; for c in bash sh dirname basename sed grep awk tr cat python3 git ps date mkdir chmod rm wc id sleep stat script env cut head; do
     ln -s "$(command -v "$c")" "$NS/$c"; done; ln -s "$FAKE/bin/claude" "$NS/claude"; ln -s "$(dirname "$STORE")/security" "$NS/security"
-  reset_rec; out=$(PATH="$NS" bin/chat start </dev/null 2>&1); assert_eq "$?" "1" "no bun"
-  echo "$out" | grep -q bun || fail "the refusal names bun [$out]"; launched && fail "launched without bun"
+  NB="$(mktemp -d)"; reset_rec; out=$(HOME="$NB" PATH="$NS" bin/chat start </dev/null 2>&1); assert_eq "$?" "1" "no bun"; rm -rf "$NB"
+  echo "$out" | grep -q "ade setup --tools" || fail "the refusal says how to install bun [$out]"; launched && fail "launched without bun"
+  # bun in ~/.bun/bin but not on PATH (bun's own installer, before a new terminal): found there, as ade does
+  NB="$(mktemp -d)"; mkdir -p "$NB/.bun/bin"; cp "$FAKE/bin/bun" "$NB/.bun/bin/bun"
+  reset_rec; out=$(HOME="$NB" PATH="$NS" bin/chat start </dev/null 2>&1) || fail "bun in ~/.bun/bin only [$out]"
+  launched || fail "launched with bun from ~/.bun/bin"; rm -rf "$NB"
   # the session's own output never reaches the log without a terminal; bin/chat's own lines do
   reset_rec; bin/chat start </dev/null >"$FAKE/log" 2>&1 || fail "start, logged"
   grep -q SESSION-OUTPUT-MARKER "$FAKE/log" && fail "the session's output is in the log"; grep -q "^chat:" "$FAKE/log" || fail "bin/chat's line is in the log"
