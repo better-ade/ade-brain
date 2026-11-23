@@ -2,12 +2,16 @@
 # bin/chat start|stop|status|setup [channel]: the hub's orchestrator (its main session at the hub root) with its chat
 # channels attached, so the owner can reach it from Telegram (story C5, ADR 0006). Contract: .ade/context/chat.md.
 #   start   run claude at the hub root with --channels <plugin> for each HUB_CHANNELS type (default telegram), in
-#           HUB_CHAT_MODE (default manual: every permission prompt goes to the owner) with Remote Control named
-#           HUB_ORCHESTRATOR (default the hub name). One at a time. Without a terminal (launchd: bin/schedule install with
-#           HUB_CHAT=telegram) it starts only when each channel's policy is allowlist with no groups.
+#           HUB_CHAT_MODE with Remote Control named HUB_ORCHESTRATOR (default the hub name). With no HUB_CHAT_MODE the
+#           mode is auto only once every channel is locked to the owner (access.json: dmPolicy allowlist, exactly one
+#           numeric user id in allowFrom, no groups), so the orchestrator acts on the owner's messages without a
+#           question at the terminal; else manual (every permission prompt goes to the owner), with one line saying
+#           why. HUB_CHAT_MODE always wins, manual included. The first auto start tells the owner once, in the chat.
+#           One at a time. Without a terminal (launchd: bin/schedule install with HUB_CHAT=telegram) it starts only
+#           when each channel is locked the same way, whatever HUB_CHAT_MODE says.
 #   stop    end it, and disable and unload the launchd job, which would restart it (bin/schedule install enables it again)
-#   status  running or stopped, since when, whether the channel connected, and each channel's policy and group count
-#           (never ids or the token)
+#   status  running or stopped, since when, whether the channel connected, each channel's policy, group count and
+#           "locked to you" or "not locked", and "mode: <mode> (<why>)", the mode a start would use (never ids or the token)
 #   setup   the one-time steps: bot, token, plugin, pairing, allowlist, a test message
 #   test    (story H1) one test message to the paired owner (access.json allowFrom, exactly one id) through the Bot API, then
 #           wait for the owner's reply up to AGENT_CHAT_TEST_TIMEOUT s (default 120, at most 600): exit 0 replied, 1 not.
@@ -21,7 +25,9 @@
 #   agents                        the /agents table: name, folder, role, ticket, state
 #   to --sender <id> <agent>      the text on stdin: one bin/notify from main to that agent's folder ("sent to <folder>");
 #                                 unknown or ambiguous (as bin/notify): exit 2 with the agents listed
-#   forward                       send the agents' idle/ended/note events to main to the chat, tagged [<agent>], once
+#   forward                       (first: a running auto session whose lock no longer holds is told to the owner,
+#                                 once per change, and journaled)
+#                                 send the agents' idle/ended/note events to main to the chat, tagged [<agent>], once
 #                                 each (start runs it every AGENT_CHAT_FORWARD_EVERY s, default 15, 0 = never)
 #   ask                           the question on stdin: Approve/Deny buttons where the channel takes them, else "reply
 #                                 1 <ref> to approve, 2 <ref> to deny"; prints the ref. A secret-looking question: exit 2
@@ -56,14 +62,59 @@ since() { awk '{print $2; exit}' "$PIDF"; }
 # connected <channel>: the plugin wrote a bot.pid since this session started, and that process lives
 connected() { local b; b="$(channel_dir "$1")/bot.pid"; [ -f "$b" ] && [ ! "$PIDF" -nt "$b" ] || return 1
   b="$(awk '{print $1; exit}' "$b")"; case "$b" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$b" 2>/dev/null; }
-# access_of <channel>: "<policy> <groups>" from the plugin's access.json (policy only when a known name), else nothing
+# access_of <channel>: "<policy> <groups>" from the plugin's access.json, for status (dmPolicy only, as the plugin reads
+# it, and only when a known name), else nothing
 access_of() { local f; f="$(channel_dir "$1")/access.json"; [ -f "$f" ] || return 1
   python3 -I -c 'import json,sys
 try: d=json.load(open(sys.argv[1]))
 except Exception: d=None
 if not isinstance(d,dict): print("unknown unknown"); sys.exit(0)
-v=d.get("dmPolicy", d.get("policy")); g=d.get("groups") or {}
+v=d.get("dmPolicy"); g=d.get("groups") or {}
 print((v if v in ("pairing","allowlist","disabled") else "unknown"), (len(g) if isinstance(g,(dict,list)) else "unknown"))' "$f" 2>/dev/null; }
+# lock_of <channel>: "locked" when the channel's own access.json lets in the owner and nobody else, read as the plugin
+# reads it: dmPolicy allowlist (the older policy key does not count), exactly one id in allowFrom, a string of ASCII
+# digits with no leading zero (the plugin compares String(from.id); a JSON number or a negative id, a group, is not
+# one), and no groups. Else why not, in fixed words (never an id or anything read from the file). The file must be
+# JSON as JSON.parse takes it (no NaN or Infinity), a plain file of this user's that nobody else can write to (opened
+# without following a link, checked on the open file), in a folder of this user's that nobody else can write to.
+# Anything unreadable is not locked.
+lock_of() { python3 -I -c 'import json, os, re, stat, sys
+def no(c): raise ValueError(c)
+def why(d):
+    me = os.geteuid()
+    try:
+        ds = os.lstat(d)
+        if not stat.S_ISDIR(ds.st_mode) or ds.st_uid != me or ds.st_mode & 0o022: return "the state folder is not yours alone"
+        fd = os.open(os.path.join(d, "access.json"), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError: return "not paired yet"
+    except OSError: return "the access file is not a plain file of yours"
+    try:
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != me or st.st_size > 1 << 20: return "the access file is not a plain file of yours"
+            if st.st_mode & 0o022: return "the access file can be written by others"
+            a = json.loads(f.read().decode("utf-8"), parse_constant=no)
+    except Exception: return "the access file cannot be read"
+    if not isinstance(a, dict): return "the access file cannot be read"
+    p = a.get("dmPolicy")
+    if p != "allowlist": return "the policy is " + (p if p in ("pairing", "disabled") else "unknown")
+    if a.get("groups") not in (None, {}, []): return "it has groups"
+    ids = a.get("allowFrom")
+    if not isinstance(ids, list) or not ids: return "nobody is on the allowlist"
+    for i in ids:
+        if not isinstance(i, str) or not re.fullmatch("[1-9][0-9]{0,19}", i, re.ASCII): return "an id is not written as the plugin reads it"
+    if len(ids) != 1: return "more than one person is on the allowlist"
+    return "locked"
+print(why(sys.argv[1]))' "$(channel_dir "$1")" 2>/dev/null || echo "the access file cannot be read"; }
+# chat_mode: sets MODE and WHY, the permission mode a start uses. HUB_CHAT_MODE always wins (manual included); without
+# it, auto only when there is a channel and every channel is locked to the owner (lock_of), else manual. Never a mode
+# that skips permissions.
+chat_mode() { local c w n=0; MODE="${HUB_CHAT_MODE:-}"; WHY="HUB_CHAT_MODE"; [ -z "$MODE" ] || return 0
+  for c in $CHANNELS; do n=$((n + 1)); w="$(lock_of "$c")"; [ "$w" = locked ] || { MODE=manual; WHY="not locked: $c: $w"; return 0; }; done
+  [ "$n" -gt 0 ] || { MODE=manual; WHY="not locked: no channel"; return 0; }
+  MODE=auto; WHY="$(echo $CHANNELS | sed 's/ /, /g') is locked to you"; }
+# session_mode <pid>: the --permission-mode of that running session
+session_mode() { ps -p "$1" -o command= 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="--permission-mode") {print $(i+1); exit}}'; }
 refuse_skip() { echo "chat: refused: the orchestrator never skips permissions ($1)" >&2; exit 2; }
 skips() { case "$1" in *dangerously*|*bypassPermissions*) return 0 ;; esac; return 1; }
 # the start lock: a folder holding the holder's pid; a holder that is gone, or is neither bin/chat nor a session, is stale
@@ -114,8 +165,8 @@ case "${1:-}" in
     w="$(command -v -- "$CL" 2>/dev/null)"
     if [ -n "$w" ] && [ -f "$w" ] && [ "$(wc -c < "$w")" -lt 65536 ] && grep -qE 'dangerously|bypassPermissions' "$w" 2>/dev/null; then
       refuse_skip "the claude wrapper $CL"; fi
-    MODE="${HUB_CHAT_MODE:-manual}"
-    case "$MODE" in auto|manual|acceptEdits|plan) ;; *) echo "chat: mode must be auto|manual|acceptEdits|plan (HUB_CHAT_MODE)" >&2; exit 2 ;; esac
+    # an explicit mode is checked here; with none, the mode follows the channel's lock (chat_mode, below)
+    case "${HUB_CHAT_MODE:-auto}" in auto|manual|acceptEdits|plan) ;; *) echo "chat: mode must be auto|manual|acceptEdits|plan (HUB_CHAT_MODE)" >&2; exit 2 ;; esac
     [[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "chat: HUB_ORCHESTRATOR must start with a letter or digit (letters, digits, . _ -)" >&2; exit 2; }
     model_re='^[A-Za-z0-9][]A-Za-z0-9._:/[-]*$'   # ] first and - last in the bracket: a backslash is literal there
     [ -z "${HUB_MODEL:-}" ] || [[ "$HUB_MODEL" =~ $model_re ]] || { echo "chat: bad HUB_MODEL" >&2; exit 2; }
@@ -152,10 +203,17 @@ case "${1:-}" in
     command -v bun >/dev/null 2>&1 || refuse "bun not found (the Telegram plugin runs on it): run ade setup --tools, which installs it"
     TTY=0; [ -t 0 ] && TTY=1
     for c in $CHANNELS; do unset "$(channel_token_env "$c")" "$(channel_state_env "$c")"
-      # without a terminal nobody can watch a pairing: only an allowlist with no groups may run unattended
-      if [ "$TTY" = 0 ]; then a="$(access_of "$c")" || refuse "$c is not paired yet: run bin/chat start in a Terminal first (bin/chat setup $c)"
-        [ "$a" = "allowlist 0" ] || refuse "$c must be locked to an allowlist with no groups before it runs unattended (now: policy ${a% *}, groups ${a#* }): /telegram:access policy allowlist"; fi
+      # without a terminal nobody can watch a pairing: only a bot locked to the owner (lock_of, the rule the mode
+      # follows: what the plugin itself reads) may run unattended, whatever HUB_CHAT_MODE says
+      if [ "$TTY" = 0 ]; then a="$(lock_of "$c")"
+        [ "$a" != "not paired yet" ] || refuse "$c is not paired yet: run bin/chat start in a Terminal first (bin/chat setup $c)"
+        [ "$a" = locked ] || refuse "$c must be locked to you (an allowlist with only your account, no groups) before it runs unattended (now: $a): /telegram:access policy allowlist"; fi
       "$H/bin/secret" --has "$(channel_secret "$c")" || refuse "no $c bot token in the Keychain: run bin/keys set $c (bin/chat setup $c)"; done
+    # the mode, from the access state as found (before this start touches the channel's folder)
+    chat_mode; case "$MODE" in auto|manual|acceptEdits|plan) ;; *) refuse "mode must be auto|manual|acceptEdits|plan (HUB_CHAT_MODE)" 2 ;; esac
+    case "$WHY" in HUB_CHAT_MODE) echo "chat: $MODE mode (HUB_CHAT_MODE)" >&2 ;;
+      "not locked"*) echo "chat: manual mode: the bot is not locked to you yet; in the session: /telegram:access policy allowlist" >&2 ;;
+      *) echo "chat: auto mode: the bot is locked to you, so the orchestrator acts on your messages without asking at the terminal (HUB_CHAT_MODE=manual in hub.conf turns it off)" >&2 ;; esac
     cmd=("$CL"); for c in $CHANNELS; do cmd+=(--channels "$(channel_plugin "$c")"); done
     cmd+=(--permission-mode "$MODE" --remote-control "$NAME"); [ -z "${HUB_MODEL:-}" ] || cmd+=(--model "$HUB_MODEL")
     CD="$(claude_home)"; [ "$CD" = "$HOME/.claude" ] || export CLAUDE_CONFIG_DIR="$CD"
@@ -187,6 +245,12 @@ case "${1:-}" in
     # (started apart, not a child of script after the exec: util-linux script would wait for it)
     if [ "$fe" -gt 0 ]; then ( ( exec </dev/null >/dev/null 2>&1; w="$fe"; while kill -0 $$ 2>/dev/null; do sleep "$w"
       kill -0 $$ 2>/dev/null || break; "$H/bin/chat" forward; r=$?; [ "$r" = 1 ] && r=1 || r=0; w="$(chat_backoff "$w" "$r")"; done ) & ) fi
+    # the first start the rule puts in auto tells the owner once, through the chat (kept and sent by the forwarder when
+    # the channel is down); a mode the owner set is not announced
+    rm -f "$S/chat/lock-lost"
+    if [ "$MODE" = auto ] && [ "$WHY" != HUB_CHAT_MODE ] && [ ! -e "$S/chat/auto-told" ]; then : > "$S/chat/auto-told"
+      "$H/bin/journal" . "chat: the orchestrator now runs in auto mode (the bot is locked to the owner); HUB_CHAT_MODE=manual in hub.conf turns it off"
+      "$H/bin/chat" say "your chat now runs in auto mode: your bot is locked to you, so your main agent acts on your Telegram messages without asking at the terminal; Claude Code's auto mode still refuses risky actions. HUB_CHAT_MODE=manual in hub.conf turns it off" >/dev/null 2>&1; fi
     echo "$$ $(date -u +%Y-%m-%dT%H:%MZ)" > "$PIDF"; echo $$ > "$LOCK/pid"
     echo "chat: $NAME on $CHANNELS (pid $$, mode $MODE)" >&2
     # the lock stays with the session (same pid); it is stale once the session is gone
@@ -211,7 +275,15 @@ case "${1:-}" in
       if [ "$ok" = 1 ]; then echo "$NAME: running (pid $p, since $(since))"; else echo "$NAME: running, channel not connected (pid $p, since $(since))"; fi
     else echo "$NAME: stopped"; fi
     for c in $CHANNELS; do case " $(channel_types) " in *" $c "*) ;; *) echo "$c: unknown channel type"; continue ;; esac
-      if a="$(access_of "$c")"; then echo "$c: policy ${a% *}, groups: ${a#* }"; else echo "$c: not paired yet (bin/chat setup $c)"; fi; done ;;
+      if a="$(access_of "$c")"; then l="not locked"; [ "$(lock_of "$c")" != locked ] || l="locked to you"
+        echo "$c: policy ${a% *}, groups: ${a#* }, $l"; else echo "$c: not paired yet (bin/chat setup $c)"; fi; done
+    # the mode a start would use, and why; a running session keeps the mode it started in
+    chat_mode; case "$MODE" in auto|manual|acceptEdits|plan) ;; *) echo "mode: refused (HUB_CHAT_MODE must be auto|manual|acceptEdits|plan)"; exit 0 ;; esac
+    case "$WHY" in "not locked"*) WHY="$WHY; in the session: /telegram:access policy allowlist" ;; HUB_CHAT_MODE) ;;
+      *) WHY="$WHY; HUB_CHAT_MODE=manual in hub.conf turns it off" ;; esac
+    now=""; [ -z "${p:-}" ] || now="$(session_mode "$p")"
+    case "$now" in auto|manual|acceptEdits|plan) [ "$now" = "$MODE" ] || { echo "mode: $MODE ($WHY); the running session is in $now: bin/chat stop, then bin/chat start"; exit 0; } ;; esac
+    echo "mode: $MODE ($WHY)" ;;
   setup) [ $# -le 2 ] || usage; c="${2:-telegram}"
     case " $(channel_types) " in *" $c "*) ;; *) echo "chat: unknown channel type (known channel types: $(channel_types))" >&2; exit 2 ;; esac
     if "$H/bin/secret" --has "$(channel_secret "$c")" 2>/dev/null; then st="stored"; else st="missing"; fi
@@ -223,6 +295,9 @@ Telegram for this hub's orchestrator ($(hub_name)); token: $st. Do these once, i
 4. bin/chat start   (in a Terminal at the hub root, the first time, so you can answer its prompts)
 5. Message your bot in Telegram; it replies with a pairing code. In the session: /telegram:access pair <code>
 6. Lock it to you: /telegram:access policy allowlist   (no groups: an unattended start refuses otherwise)
+   Once it is locked, the next bin/chat start runs in auto mode: the orchestrator acts on your Telegram messages
+   without asking at the terminal (auto mode still refuses risky actions). HUB_CHAT_MODE=manual in hub.conf turns
+   that off; bin/chat status shows the mode.
 7. Send a test message from Telegram and check the session answers. Then quit it, set HUB_CHAT=telegram in hub.conf
    and run bin/schedule install, so launchd keeps it running. bin/chat status shows it.
 This orchestrator's channel state stays in $(channel_dir "$c"), never in the shared ~/.claude/channels/$c.
@@ -246,6 +321,17 @@ EOF
         *) kill -0 "$p" 2>/dev/null && exit 0 ;; esac
       rm -rf "${FL:?}"; mkdir "$FL" 2>/dev/null || exit 0; fi
     echo $$ > "$FL/pid"; trap 'rm -rf "${FL:?}"' EXIT
+    # a running session the rule put in auto, whose lock no longer holds (the plugin reads access.json at every
+    # message): the owner is told once per change and it is journaled. The session is not stopped: that would end
+    # work in progress with nobody asked, and the notice says how to restart it (the next start is manual).
+    LL="$S/chat/lock-lost"
+    if [ -z "${HUB_CHAT_MODE:-}" ] && p="$(running_pid)" && [ "$(session_mode "$p")" = auto ]; then w="no channel"
+      for c in $CHANNELS; do w="$(lock_of "$c")"; [ "$w" = locked ] || break; done
+      if [ "$w" = locked ]; then rm -f "$LL"
+      elif [ "$(cat "$LL" 2>/dev/null)" != "$w" ]; then echo "$w" > "$LL"
+        "$H/bin/journal" . "chat: the bot is no longer locked to the owner ($w); the session stays in auto until it is restarted (bin/chat stop, then bin/chat start)"
+        "$H/bin/chat" say "your bot is no longer locked to you ($w); the chat stays in auto until you restart it: bin/chat stop, then bin/chat start" >/dev/null 2>&1; fi
+    else rm -f "$LL"; fi
     # messages kept while the channel was down go first, oldest first, each removed once every owner got it. One that
     # keeps failing never holds back the rest; after MAXTRY tries (or a day) it is dropped and journaled.
     MAXTRY=10; rc=0

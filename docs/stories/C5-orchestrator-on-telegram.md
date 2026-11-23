@@ -44,5 +44,12 @@ in; permission prompts are relayed to the owner; nothing skips permissions.
 | 11 | A start takes a lock before checking; a start without a terminal needs the allowlist policy and no groups; status shows groups and "channel not connected" when the bot is not up | `start_lock_and_access` |
 | 12 | A second hub with the same name is refused (start exit 2, no chat job) until it sets `HUB_NAME` | `same_folder_name` |
 
+## Later change (2026-11-23): auto mode once the bot is locked
+Owner's words: "i think if telegram is on, auto mode should be on?", then yes to: auto only once the bot is locked to
+an allowlist. Risk: high (who can act through the owner's agent without a question). With no `HUB_CHAT_MODE`, `start`
+runs in `auto` when `access.json` reads `dmPolicy` `allowlist`, a non-empty `allowFrom` of numeric ids and no groups;
+else `manual`, with one line saying why. Design note: `docs/notes/chat-auto-mode.md`; contract: `.ade/context/chat.md`
+("Who may act unasked"); test: `mode_follows_lock` in `tests/test_chat.sh`.
+
 ## Out of scope
 Other chat apps; group chats; permission relay internals (the plugin's); building our own bot.

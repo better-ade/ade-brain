@@ -303,8 +303,13 @@ A focus session can run Claude Code against DeepSeek instead of Anthropic. The C
   role, its report under `reports/monitor/`); and `bin/sync --auto` every 30 minutes; with `HUB_CHAT=telegram`, the chat job.
 - **Chat (Telegram)**: `bin/chat setup` lists the one-time steps (a bot from @BotFather, `bin/keys set telegram`, the
   `telegram@claude-plugins-official` plugin, pairing, `/telegram:access policy allowlist`). `bin/chat start|stop|status`
-  runs the hub's main session with the channel attached, in `manual` mode (`HUB_CHAT_MODE`), never skipping permissions;
-  only your paired account gets in (`.ade/context/chat.md`).
+  runs the hub's main session with the channel attached, never skipping permissions; only your paired account gets in.
+  Once the bot is locked to you (policy `allowlist`, only your account in it, no groups) it runs in `auto` mode: your
+  main agent acts on your Telegram messages without asking at the terminal, and Claude Code's auto mode still refuses
+  risky actions. Until then it runs in `manual` mode. The first auto start tells you once in the chat; if the lock is
+  later lost while it runs, you are told in the chat, and changing the bot's access file always asks first.
+  `HUB_CHAT_MODE=manual` in `hub.conf` turns auto off; `bin/chat status` shows the mode and why
+  (`.ade/context/chat.md`).
 - **Crash recovery**: `bin/recover` runs at login (launchd), before each `bin/chat start`, and by hand. It removes locks
   whose owner is gone, journals agents that died (their ticket marked blocked, never Done; uncommitted work kept and
   listed), drops a torn event-log line, alerts once on a full disk, and tells the chat "restarted, N agents running, M

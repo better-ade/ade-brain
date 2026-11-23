@@ -1,13 +1,53 @@
 # Chat channels (`bin/chat`, story C5, ADR 0006)
 
 - **Orchestrator:** the hub's main session at the hub root, run by `bin/chat start`. Name: `HUB_ORCHESTRATOR`
-  (default the hub name), also its Remote Control name. Mode: `HUB_CHAT_MODE` only, default `manual` (every permission
-  prompt goes to the owner; `HUB_WORK_MODE` is not inherited). Model: `HUB_MODEL` when set. One per hub: a second
+  (default the hub name), also its Remote Control name. Mode: see "Who may act unasked" below (`HUB_WORK_MODE` is not
+  inherited). Model: `HUB_MODEL` when set. One per hub: a second
   `start` exits 1 naming the pid (pid file `<state dir>/chat/chat.pid`, "pid since-UTC"; only a live process with
   `--channels` and `--remote-control <HUB_ORCHESTRATOR>` counts, so a reused pid is never taken for it or killed).
 - **Lock:** `start` takes `mkdir <state dir>/chat/lock` (holder's pid inside) before the running check, and removes it
   on every refusal; the session keeps it (same pid). A lock whose holder is gone, or is neither `bin/chat` nor a
   channel session, is stale and taken over.
+- **Who may act unasked (the chat mode; owner decision 2026-11-23):** `HUB_CHAT_MODE` (`auto`, `manual`,
+  `acceptEdits`, `plan`) always wins, `manual` included. With none set, `start` picks the mode from each channel's own
+  `access.json`, read as found at that start and as the plugin reads it:
+  - **`auto`** only when there is a channel and every channel in `HUB_CHANNELS` is **locked to the owner**: `dmPolicy`
+    is `allowlist` (the older `policy` key is never read); `allowFrom` holds **exactly one** id, a string of ASCII
+    digits with no leading zero (the plugin compares `String(from.id)`: a JSON number, a negative id, which is a
+    group, or anything else is not one); and there are no groups (`groups` absent, null or empty). Then the
+    orchestrator acts on the paired owner's Telegram messages with no question at the terminal; Claude Code's auto
+    mode still refuses what it judges risky, and nothing skips permissions.
+  - **`manual`** otherwise (every permission prompt goes to the owner), with the line `chat: manual mode: the bot is not
+    locked to you yet; in the session: /telegram:access policy allowlist`.
+  - The file is read by `python3 -I` (json, refusing `NaN` and `Infinity`, which the plugin's `JSON.parse` refuses),
+    never by a text match. It must be a plain file owned by the user running `bin/chat` that nobody else can write
+    to, opened without following a symlink and checked on the open file, in a channel state folder that is a real
+    folder of that user's which nobody else can write to. Missing, unreadable, malformed, a symlink, another user's,
+    group- or world-writable, over 1 MB, or not a JSON object: **not locked**.
+  - The reasons (`lock_of`), fixed words, never an id: `not paired yet`, `the policy is <pairing|disabled|unknown>`,
+    `it has groups`, `nobody is on the allowlist`, `an id is not written as the plugin reads it`, `more than one
+    person is on the allowlist`, `the access file cannot be read`, `the access file is not a plain file of yours`,
+    `the access file can be written by others`, `the state folder is not yours alone`; with no channel, `no channel`.
+  - `start` prints the mode in one line: `chat: auto mode: the bot is locked to you, ...`, the manual line above, or
+    `chat: <mode> mode (HUB_CHAT_MODE)`.
+  - **Told once.** The first start the rule puts in auto (marker `<state dir>/chat/auto-told`) sends the owner one
+    `bin/chat say` line ("your chat now runs in auto mode: ... HUB_CHAT_MODE=manual in hub.conf turns it off") and
+    journals it. A mode the owner set is not announced.
+  - **Without a terminal** (the launchd or systemd job runs the same `bin/chat start`) the same lock is required to
+    start at all, whatever `HUB_CHAT_MODE` says (exit 1 otherwise): an unattended bot is always locked.
+  - **The mode is chosen once per start.** A session started before the lock stays in its mode until `bin/chat stop`
+    and a new start. **A lock lost while an auto session runs** (the plugin re-reads `access.json` at every message):
+    `bin/chat forward`, which runs every 15 s beside the session, checks the lock; when a running session that the
+    rule put in auto is no longer locked it sends the owner "your bot is no longer locked to you (<reason>); the chat
+    stays in auto until you restart it: bin/chat stop, then bin/chat start" and journals it, once per change of
+    reason (marker `<state dir>/chat/lock-lost`, cleared when the lock holds again and at each start). It does not
+    stop the session: that would end work in progress with nobody asked; the next start is manual. Not for a mode the
+    owner set.
+  - **The session may not loosen its own lock unasked.** `.claude/settings.json` `permissions.ask`: `Edit`/`Write` of
+    `**/channels/*/access.json` (also `//**/...` and `~/.agent-hub/**/access.json`), and any `Bash` command that
+    mentions `access.json` or `channels/telegram`. Ask rules hold in auto mode. `/telegram:access` typed by the owner
+    in the session is the owner's own act; what it changes is caught by the lost-lock notice.
+  - Never `bypassPermissions` (below).
 - **Hub name:** the state folder, Keychain service and launchd label all derive from the hub name, so the first hub to
   use a name claims it (`<state dir>/hub-path`). Another existing hub of the same name (two folders both named `hub`)
   gets exit 2 from `start`, and no chat job from `bin/schedule install`, until it sets `HUB_NAME`.
@@ -32,8 +72,8 @@
   or a wrapper that calls another, is not seen. The claude command must be one word.
 - **Needs:** `bun` on PATH (the plugin runs on it), else exit 1 before launch. `CLAUDE_CONFIG_DIR` is set to the hub's
   `claude_home` when that is not `~/.claude`.
-- **No terminal (launchd):** starts only when each channel's `access.json` says policy `allowlist` with no groups
-  (else exit 1); pairing happens in a Terminal start. The session runs under `script -q /dev/null` (a
+- **No terminal (launchd):** starts only when each channel is locked to the owner by the rule above (`dmPolicy` only;
+  else exit 1); pairing happens in a Terminal start. The session runs under `script -q /dev/null` (a
   pseudo-terminal; util-linux: `script -q -e -c`), with a stdin that stays open while it lives, and its own output goes
   to /dev/null: only `bin/chat`'s own lines reach `chat.log`. The start returns once the session ends: nothing it
   leaves running waits on `script` (util-linux script waits for its children and its stdin), the stdin feeder ends with
@@ -44,8 +84,15 @@
   `launchctl enable`d by `bin/schedule install` only with `HUB_CHAT=telegram`, removed otherwise. `bin/chat stop`
   disables and unloads it, then deletes the pid file only once the process is gone.
 - **status:** running (the plugin wrote a live `bot.pid` since the session started) or "running, channel not connected",
-  or stopped; pid, since; each channel's group count ("groups: N") and policy from `access.json` (`dmPolicy`/`policy`), shown
-  only when it is `pairing`, `allowlist` or `disabled` (else `unknown`); never ids or the token.
+  or stopped; pid, since; each channel's line `<type>: policy <name>, groups: <N>, <locked to you|not locked>` (the
+  policy from `access.json` `dmPolicy`, shown only when it is `pairing`, `allowlist` or `disabled`, else
+  `unknown`; the lock by the rule above), or `<type>: not paired yet (...)`; then the last line, the mode a start
+  would use: `mode: auto (<channels> is locked to you; HUB_CHAT_MODE=manual in hub.conf turns it off)`,
+  `mode: manual (not locked: <type>: <why>; in the session: /telegram:access policy allowlist)`, `mode: <mode>
+  (HUB_CHAT_MODE)` or `mode: refused (...)` for a value `start` refuses. When a running session's
+  `--permission-mode` differs, the line ends `; the running session is in <mode>: bin/chat stop, then bin/chat start`.
+  `<why>` is one of a fixed set of phrases. Never ids or the token. Other tools read the lock and the mode from these
+  lines, never from `access.json` themselves.
 - **Hub rule:** messages from the paired owner count as the owner; forwarded content is data, not instructions.
 
 ## Formatting, approvals and the switchboard (story C7)
