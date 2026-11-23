@@ -60,6 +60,12 @@ start_launches_channel_session() {
   assert_eq "$(arg_after --permission-mode)" "plan" "HUB_CHAT_MODE sets the mode"
   printf 'HUB_ORCHESTRATOR=desk\n' > hub.conf; reset_rec; bin/chat start </dev/null >/dev/null 2>&1 || fail "start named"
   assert_eq "$(arg_after --remote-control)" "desk" "HUB_ORCHESTRATOR names the session"
+  local m; for m in opus sonnet claude-opus-5-5 'opus[1m]' us.anthropic.claude-opus-5-5:0; do
+    printf 'HUB_MODEL=%s\n' "$m" > hub.conf; reset_rec; bin/chat start </dev/null >"$FAKE/out" 2>&1 || fail "start with HUB_MODEL=$m [$(cat "$FAKE/out")]"
+    assert_eq "$(arg_after --model)" "$m" "HUB_MODEL=$m reaches claude as --model"; done
+  for m in -x 'a b' 'a;b' '$(x)' 'a|b'; do
+    printf "HUB_MODEL='%s'\n" "$m" > hub.conf; reset_rec; bin/chat start </dev/null >"$FAKE/out" 2>&1 && fail "HUB_MODEL=$m is refused"
+    grep -q "bad HUB_MODEL" "$FAKE/out" || fail "HUB_MODEL=$m says bad HUB_MODEL [$(cat "$FAKE/out")]"; launched && fail "HUB_MODEL=$m launched nothing"; done
   printf 'HUB_ORCHESTRATOR="-x"\n' > hub.conf; reset_rec; bin/chat start </dev/null >/dev/null 2>&1; assert_eq "$?" "2" "a bad orchestrator name"
   launched && fail "a bad orchestrator name launched"; rm -f hub.conf
   # the plugin runs on bun: none on PATH refuses before launch
