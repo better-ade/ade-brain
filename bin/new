@@ -31,5 +31,6 @@ fi
 put CLAUDE.md "$F/CLAUDE.md"; put ACCESS.md "$F/ACCESS.md"; put STATE.md "$F/STATE.md"
 put MEMORY.md "$F/memory/MEMORY.md"; put folder-settings.json "$F/.claude/settings.json"; put folder-mcp.json "$F/.mcp.json"
 put agent.md ".claude/agents/$AGENT.md"
+focus_hub_sync "$F" >/dev/null   # the hub's rules as copies inside the folder (.ade/context/focus-folders.md)
 [ -x "$H/bin/setup" ] && "$H/bin/setup" >/dev/null
 exit 0

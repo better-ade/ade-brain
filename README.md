@@ -286,6 +286,10 @@ A focus session can run Claude Code against DeepSeek instead of Anthropic. The C
   printed, deploys and messages only on the owner's word, client decisions recorded with who and when.
 - **One folder per work area** (`projects/<name>`, `ops/<name>`): `CLAUDE.md`, `ACCESS.md` (names and locations, never
   values), `STATE.md` (Live, Staged, Open, Waiting on, Next session starts with), `memory/`, and a named agent.
+  `.claude/hub/` holds copies of the hub root's `CLAUDE.md` and the files it imports, refreshed by `bin/work` on every
+  start and never committed: the folder's `CLAUDE.md` imports them, so a session in the folder starts without Claude
+  Code's external-imports question. A start nobody watches that does not get going in 90 s (`HUB_WORK_START_WAIT`) is
+  reported to the main session, and to Telegram when chat is on.
 - **The journal** (`journal/<UTC date>.md`): the shared timeline every agent and hook appends to.
 - **Hooks**: SessionStart prints the state; UserPromptSubmit, in every terminal (hub root and deep work), reports what
   other terminals changed since the last prompt (STATE.md updates, new journal entries with their text, new or updated

@@ -1,4 +1,7 @@
 {
+  "claudeMdExcludes": [
+    "{{HUB}}/CLAUDE.md"
+  ],
   "permissions": {
     "ask": [
       "Bash(*bin/dispatch --approve*)",

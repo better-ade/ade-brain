@@ -1,7 +1,7 @@
 #!/bin/bash
 # bin/sessions [--mine | --parent PID]: the focus sessions bin/work started that are still running, one per line:
-# NAME FOLDER CLAUDE_PID PARENT STARTED ROLE STATUS LAST ENGINE. STATUS is busy (a prompt is being worked) or idle (the turn ended), LAST
-# the UTC time of its last prompt or turn end; both are - until the first prompt (the folder hooks write them). ROLE is the bin/work --role it was started with (- when none). A turn that
+# NAME FOLDER CLAUDE_PID PARENT STARTED ROLE STATUS LAST ENGINE. STATUS is ready (started, no prompt yet: its SessionStart hook ran), busy (a prompt is being worked) or idle (the turn ended), LAST
+# the UTC time of that; both are - until the session's first hook runs (a session still at a startup question, such as a sign-in or an approval dialog, shows -). ROLE is the bin/work --role it was started with (- when none). A turn that
 # is interrupted runs no Stop hook, so busy with an old LAST means interrupted or waiting on a permission prompt. PARENT is the Claude session that ran bin/work (- when none); --mine keeps the
 # children of the calling session ($CLAUDE_PID), --parent PID those of another. ENGINE is claude or gemini (story E1;
 # an entry from before E1 shows claude). CLAUDE_PID is the engine's pid. Entries whose launcher is gone are pruned (moved to
