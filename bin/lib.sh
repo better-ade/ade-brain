@@ -32,6 +32,8 @@ state_dir() { echo "${AGENT_STATE:-$HOME/.agent-hub/$(hub_name)}"; }
 # bin/recover's restart line, story R1) a focus session started by bin/work notes its status and the time in its own
 # registry entry ($(state_dir)/sessions/<name>.<launcher pid>, name = its --name or the folder name; the launcher is an ancestor of the hook that calls this).
 # Called outside a focus session (the hub root, a plain terminal) it finds no entry and does nothing. Never fails.
+# <ready> (the SessionStart hook, bin/context --rules) is written only while the entry has no status: the session got
+# past its startup questions; a later SessionStart (compaction, /clear) never replaces busy or idle with it.
 # launcher_alive <pid> [start]: a live bin/work launcher (its command holds "-work.") that started at <start> (as
 # proc_start prints it; an empty or "-" start is judged by the pid alone). A pid reused by another launcher is not alive.
 launcher_alive() { [[ "$1" =~ ^[0-9]+$ ]] && ps -o command= -p "$1" 2>/dev/null | grep -q -- '-work\.' || return 1
@@ -44,6 +46,7 @@ session_mark() {
     # the entry is <name>.<launcher pid>; name is the folder's or the session's --name, so match the pid and the folder
     e=""; for c in "$sd"/*."$p"; do [ -f "$c" ] && [ "$(sed -n 's/^folder=//p' "$c" | head -1)" = "$1" ] && { e="$c"; break; }; done
     [ -n "$e" ] || { [ -f "$sd/$n.$p" ] && e="$sd/$n.$p"; } || continue
+    [ "$2" != ready ] || ! grep -q '^status=' "$e" 2>/dev/null || return 0   # ready is only ever the first status
     { if [ -n "${3:-}" ]; then grep -v -e '^status=' -e '^last=' -e '^session_id=' "$e"; printf 'session_id=%s\n' "$3"
       else grep -v -e '^status=' -e '^last=' "$e"; fi
       printf 'status=%s\nlast=%s\n' "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$sd/.mark.$$" 2>/dev/null &&
@@ -364,6 +367,8 @@ channel_state_env() { case "$1" in telegram) echo "TELEGRAM_STATE_DIR" ;; *) ret
 # Allow / Deny buttons on Claude Code's permission prompts itself; its reply tool sends none, so bin/chat ask uses
 # numbered replies). "all" lets bin/chat ask send Approve / Deny buttons.
 channel_buttons() { case "$1" in telegram) echo "permission" ;; *) return 1 ;; esac; }
+# chat_running: the hub's chat session is on (a live pid in <state dir>/chat/chat.pid, .ade/context/chat.md)
+chat_running() { local p; p="$(awk 'NR==1{print $1}' "$(state_dir)/chat/chat.pid" 2>/dev/null)"; [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; }
 # chat_backoff <seconds> <failed 0|1>: the forwarder's next wait (story R1): doubled after a failed send, up to 8 times
 # AGENT_CHAT_FORWARD_EVERY (default 15), back to it after a run that worked
 chat_backoff() { local b="${AGENT_CHAT_FORWARD_EVERY:-15}" n; case "$b" in ''|*[!0-9]*|0) b=15 ;; esac
@@ -728,4 +733,132 @@ git_config_own() {
   top="$(cd "$top" && pwd -P)"; gdir="$(cd "$(git -C "$1" rev-parse --absolute-git-dir)" && pwd -P)"
   cdir="$(cd "$1" && cd "$(git rev-parse --git-common-dir)" && pwd -P)"
   [ "$top" = "$(cd "$1" && pwd -P)" ] && [ "$gdir" = "$cdir" ]
+}
+# focus_hub_sync <folder>: a focus session never meets Claude Code's "Allow external CLAUDE.md file imports?" question
+# (.ade/context/focus-folders.md). A session whose working directory is the folder loads the hub root's CLAUDE.md as an
+# ancestor, and that file's imports (ACCESS.md, memory/MEMORY.md, .ade/rules.md) resolve outside the folder. So:
+# - <folder>/.claude/hub/ holds byte-for-byte copies of the hub root's CLAUDE.md and every hub file it imports, at the
+#   same relative paths (the copy's own imports then resolve inside the folder). Each is written to a temp file beside
+#   it and renamed over it; a symlink at a copy's path, or at a folder on the way, is removed and never followed; a copy
+#   the hub no longer has is removed. Its .gitignore marks the folder generated and ignores all of it.
+# - the folder's .claude/settings.json excludes the hub root's CLAUDE.md (claudeMdExcludes), so it is not loaded twice;
+# - the folder's CLAUDE.md imports .claude/hub/CLAUDE.md, and an import there of a hub file from outside the folder is
+#   rewritten to its copy; every other line is kept.
+# Prints one line when it changed the folder's CLAUDE.md or settings (a folder from before this); warnings on stderr.
+# Never writes Claude Code's own trust or approval settings. Returns 0 unless the folder is missing.
+focus_hub_sync() {
+  python3 -I - "$(hub_root)" "$1" <<'PY'
+import json, os, re, shutil, stat, sys, tempfile
+hub, folder = sys.argv[1], sys.argv[2]
+fdir = os.path.join(hub, folder); hubreal = os.path.realpath(hub); freal = os.path.realpath(fdir)
+if not os.path.isdir(fdir): sys.exit(1)
+MIRROR = os.path.join(".claude", "hub")
+IMPORT = re.compile(r"(?:^|(?<=\s))@((?:\\ |[^\s\\])+)")
+def warn(m): sys.stderr.write("work: %s: %s\n" % (folder, m))
+def inside(p, root): return p == root or p.startswith(root + os.sep)
+def resolve(raw, base):
+    p = os.path.expanduser(raw.replace("\\ ", " "))
+    return os.path.realpath(p if os.path.isabs(p) else os.path.join(base, p))
+def plain_parts(text):
+    """(is_plain, chunk) pieces: fenced blocks and code spans are not plain (Claude Code skips imports there)."""
+    fence = False
+    for line in text.splitlines(True):
+        if re.match(r"\s*(```|~~~)", line): fence = not fence; yield False, line; continue
+        if fence: yield False, line; continue
+        for i, part in enumerate(re.split(r"(`[^`]*`)", line)): yield i % 2 == 0, part
+def imports(text): return [m.group(1) for ok, part in plain_parts(text) if ok for m in IMPORT.finditer(part)]
+def read(p):
+    with open(p, "rb") as f: return f.read()
+# the hub root's CLAUDE.md and the hub files it imports (followed five deep, as far as Claude Code's own limit goes)
+copies = {}   # real path in the hub -> path relative to the hub root
+root_md = os.path.join(hubreal, "CLAUDE.md"); todo = [(root_md, 0)] if os.path.isfile(root_md) else []
+while todo:
+    p, depth = todo.pop(0)
+    if p in copies: continue
+    copies[p] = os.path.relpath(p, hubreal)
+    if depth >= 5: continue
+    for raw in imports(read(p).decode("utf-8", "replace")):
+        q = resolve(raw, os.path.dirname(p))
+        if not os.path.isfile(q): continue   # a mention such as @name, not a file
+        if inside(q, hubreal): todo.append((q, depth + 1))
+        else: warn("the hub's %s imports %s, outside the hub: a session here is still asked about it" % (copies[p], raw))
+def real_dir(d):
+    """d as a real directory: a symlink or a file in its place is removed, never followed."""
+    try: st = os.lstat(d)
+    except FileNotFoundError: os.mkdir(d); return
+    if stat.S_ISDIR(st.st_mode): return
+    os.unlink(d); os.mkdir(d)
+def put(dst, data, mode=0o644):
+    """dst holds data: written to a temp file beside it and renamed over whatever is there (a symlink is replaced)."""
+    try:
+        st = os.lstat(dst)
+        if stat.S_ISDIR(st.st_mode): shutil.rmtree(dst)
+        elif stat.S_ISREG(st.st_mode) and read(dst) == data: return False
+    except FileNotFoundError: pass
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=os.path.dirname(dst))
+    try:
+        with os.fdopen(fd, "wb") as f: f.write(data)
+        os.chmod(tmp, mode); os.replace(tmp, dst)
+    except BaseException:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+    return True
+dot = os.path.join(fdir, ".claude")
+if os.path.islink(dot): warn(".claude is a symlink: the hub's rules are not copied there"); sys.exit(0)
+try:
+    real_dir(dot); mirror = os.path.join(fdir, MIRROR); real_dir(mirror)
+    keep = {".gitignore"}
+    put(os.path.join(mirror, ".gitignore"),
+        b"# Generated by bin/work: copies of the hub root's CLAUDE.md and the files it imports, refreshed on every start.\n"
+        b"# Do not edit them; edit the originals in the hub root. Nothing here is committed.\n*\n")
+    for src, rel in sorted(copies.items(), key=lambda kv: kv[1]):
+        d = mirror
+        for part in rel.split(os.sep)[:-1]: d = os.path.join(d, part); real_dir(d)
+        put(os.path.join(mirror, rel), read(src), stat.S_IMODE(os.stat(src).st_mode) & 0o644 | 0o400); keep.add(rel)
+    for d, dirs, files in os.walk(mirror, topdown=False):   # what the hub no longer has (os.walk follows no symlink)
+        for n in files + dirs:
+            p = os.path.join(d, n); rel = os.path.relpath(p, mirror)
+            if os.path.islink(p) or not os.path.isdir(p):
+                if rel not in keep: os.unlink(p)
+            elif not os.listdir(p): os.rmdir(p)
+except OSError as e:
+    warn("could not copy the hub's rules into %s: %s" % (MIRROR, e)); sys.exit(0)
+changed = False
+# the folder's settings: the hub root's CLAUDE.md is not loaded as an ancestor (its copy is imported instead)
+sp = os.path.join(dot, "settings.json")
+try:
+    s = json.loads(read(sp).decode("utf-8")) if os.path.isfile(sp) and not os.path.islink(sp) else None
+except ValueError: s = None
+if not isinstance(s, dict): warn(".claude/settings.json is missing or not JSON: the hub root's CLAUDE.md is not excluded (bin/new --settings %s)" % folder)
+else:
+    ex = s.get("claudeMdExcludes"); ex = ex if isinstance(ex, list) else []
+    want = [p for p in dict.fromkeys([os.path.join(hub, "CLAUDE.md"), root_md]) if p not in ex]
+    if want:
+        s["claudeMdExcludes"] = ex + want
+        put(sp, (json.dumps(s, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), stat.S_IMODE(os.stat(sp).st_mode)); changed = True
+# the folder's CLAUDE.md: hub files come from the copies; every other line stays as it is
+cp = os.path.join(fdir, "CLAUDE.md")
+if os.path.isfile(cp) and not os.path.islink(cp):
+    text = read(cp).decode("utf-8", "surrogateescape"); has_root = [False]
+    def swap(m):
+        q = resolve(m.group(1), freal)
+        if q == os.path.join(freal, MIRROR, "CLAUDE.md"): has_root[0] = True
+        if q not in copies or inside(q, freal): return m.group(0)
+        if q == root_md: has_root[0] = True
+        return "@" + os.path.join(MIRROR, copies[q]).replace(" ", "\\ ")
+    new = "".join(IMPORT.sub(swap, part) if ok else part for ok, part in plain_parts(text))
+    if not has_root[0] and copies:
+        block = ("The hub's rules: copies of the hub root's CLAUDE.md and the files it imports, kept in `.claude/hub/` and\n"
+                 "refreshed by `bin/work` on every start (edit the originals in the hub root, never the copies).\n\n"
+                 "@.claude/hub/CLAUDE.md\n")
+        lines = new.splitlines(True)
+        if lines and lines[0].startswith("# "): new = lines[0] + "\n" + block + ("" if len(lines) > 1 and not lines[1].strip() else "\n") + "".join(lines[1:])
+        else: new = block + "\n" + new
+    if new != text:
+        put(cp, new.encode("utf-8", "surrogateescape"), stat.S_IMODE(os.stat(cp).st_mode)); changed = True
+elif os.path.islink(cp): warn("CLAUDE.md is a symlink: left as it is")
+if changed:
+    print("work: %s: CLAUDE.md now imports the hub's rules from %s/ (copies bin/work refreshes), so a session there starts without the external-imports question" % (folder, MIRROR))
+PY
 }

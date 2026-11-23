@@ -114,6 +114,8 @@ Focus sessions (`bin/work`, one per folder) and the main session at the hub root
    in a sub-terminal under this one inside ADE, a Terminal window otherwise.
 7. Focus sessions report here as messages (`bin/sessions` lists them). Answer their questions, relay {{OWNER}}'s go as
    the Coordination rules say, and include their results in your report to {{OWNER}}.
+   A note that a folder "has not started ...: it is waiting at its terminal" means its session is stopped at a startup
+   question nobody is there to answer: tell {{OWNER}} at once, with the folder name, on the channel they are on.
 8. This session stays on Anthropic. For read-only work that suits another model, name a role:
    `bin/agent --role <role> --folder <folder> < task-file` (`bin/roles` shows what each role runs on). It reads and
    reports only; code changes stay with folder agents and focus sessions. It can take minutes: run it in the background.

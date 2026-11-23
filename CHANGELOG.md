@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Focus agents start without the external-imports question:** a session in a hub folder used to stop at Claude Code's "Allow external CLAUDE.md file imports?" (the hub root's `CLAUDE.md` is loaded from the folder, and its imports are outside it). The hub's rules now reach a folder as copies in `<folder>/.claude/hub/`, refreshed by `bin/work` on every start; the folder's settings exclude the hub root's `CLAUDE.md`. Existing folders are migrated on their next `bin/work`.
+- **A stuck start is reported:** a focus session started by the orchestrator, or with chat on, that has not got going after 90 s (`HUB_WORK_START_WAIT`) sends one note to the main session, which the chat forwarder passes to the owner. `bin/sessions` shows `ready` for a session that started and has had no prompt.
+
 ## 1.0.0
 
 The core: a hub whose agents work by role, hand work to each other, survive a crash, and can be reached from Telegram, on macOS and on an Ubuntu server.
