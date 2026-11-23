@@ -432,6 +432,10 @@ learn_indexed_and_briefed() {
   AGENT_CLAUDE="$S/fc" bin/briefing >/dev/null
   assert_eq "$(waiting | grep -c '^"')" 11 "at most 10 waiting lines plus a count line"
   learned | grep -q flamegraphs && fail "learned listed again after a briefing"
+  # the mark and an entry in the same second (a fast machine): the entry was listed by that briefing, never again
+  st="$(grep -o '^- [0-9TZ:-]* .*flamegraphs' "$U/log.md" | head -1 | cut -d' ' -f2)"; [ -n "$st" ] || fail "the entry's stamp"
+  bin/learn recent --mark "$st" || fail "mark at the entry's own second"
+  bin/learn recent | grep -q flamegraphs && fail "an entry in the mark's own second is listed again"
   confirm_all; bin/learn profile "Likes the briefing short" >/dev/null
   AGENT_CLAUDE="$S/fc" bin/briefing >/dev/null; learned | grep -qF "Likes the briefing short" || fail "a new capture is listed"
   # a failed briefing does not move the mark: the next one lists it again
