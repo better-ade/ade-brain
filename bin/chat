@@ -117,7 +117,8 @@ case "${1:-}" in
     MODE="${HUB_CHAT_MODE:-manual}"
     case "$MODE" in auto|manual|acceptEdits|plan) ;; *) echo "chat: mode must be auto|manual|acceptEdits|plan (HUB_CHAT_MODE)" >&2; exit 2 ;; esac
     [[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "chat: HUB_ORCHESTRATOR must start with a letter or digit (letters, digits, . _ -)" >&2; exit 2; }
-    [ -z "${HUB_MODEL:-}" ] || [[ "$HUB_MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]*$ ]] || { echo "chat: bad HUB_MODEL" >&2; exit 2; }
+    model_re='^[A-Za-z0-9][]A-Za-z0-9._:/[-]*$'   # ] first and - last in the bracket: a backslash is literal there
+    [ -z "${HUB_MODEL:-}" ] || [[ "$HUB_MODEL" =~ $model_re ]] || { echo "chat: bad HUB_MODEL" >&2; exit 2; }
     check_channels
     other="$(hub_name_claim)" || { echo "chat: the hub name $(hub_name) is already used by the hub at $other (same state folder, Keychain service and launchd label): set HUB_NAME in hub.conf" >&2; exit 2; }
     # only once the state folder is this hub's own: recover what a crash left
