@@ -272,6 +272,10 @@ def transcript(a):
     return max(c, key=os.path.getmtime) if c else None
 
 
+LINE = 300          # characters of a log line shown, cut only after redact (a key across the cut would survive it)
+WHOLE = 1 << 16     # a line's characters read at most; far past LINE, so a key across this cut is never shown
+
+
 def log_lines(path):
     with open(path, "rb") as f:
         f.seek(0, 2); n = f.tell(); f.seek(max(0, n - (4 << 20))); raw = f.read().decode("utf-8", "replace")
@@ -279,7 +283,7 @@ def log_lines(path):
     def emit(ts, who, text):
         for l in str(text).splitlines():
             l = " ".join("".join(c if c.isprintable() else " " for c in l).split())
-            if l: out.append(("%s %s: %s" % (ts, who, l))[:300])
+            if l: out.append(("%s %s: %s" % (ts, who, l[:WHOLE])))
     for ln in raw.splitlines():
         try: e = json.loads(ln)
         except Exception: continue
@@ -295,7 +299,7 @@ def log_lines(path):
                 emit(ts, "tool", ("%s %s" % (b.get("name", ""), arg.splitlines()[0] if arg else "")).strip())
             elif b.get("type") == "tool_result":
                 r = b.get("content"); r = r if isinstance(r, str) else " ".join(x.get("text", "") for x in r if isinstance(x, dict)) if isinstance(r, list) else ""
-                if r: emit(ts, "result", r.splitlines()[0][:200])
+                if r: emit(ts, "result", r.splitlines()[0])
     return out
 
 
@@ -304,7 +308,8 @@ def do_log(to, a, n, reply_to):
     if not p: return say(to, "no log for %s: no transcript the hub can read" % a["name"], reply_to)
     lines = log_lines(p)[-n:]
     if not lines: return say(to, "no log for %s yet" % a["name"], reply_to)
-    body = redact("\n".join(lines) + "\n").rstrip("\n")
+    # redact the whole lines, then cut each one: a cut first could leave a piece of a key that no pattern matches
+    body = "\n".join(l[:LINE] for l in redact("\n".join(lines) + "\n").splitlines())
     head = "log of %s (%s), last %d line%s" % (a["name"], a["folder"], len(lines), "" if len(lines) == 1 else "s")
     if len(head) + 1 + len(body) <= 4096: return say(to, head + "\n" + body, reply_to)
     return document(to, norm(a["name"]) + "-log.txt", (body + "\n").encode("utf-8"), redact(head).strip(), reply_to)
@@ -369,8 +374,22 @@ def keyboard(*labels):
 
 
 def do_stop(to, a, reply_to):
-    private_dir(STOPS); n = "%04d" % secrets.randbelow(10000); c = "/stop_%s_%s" % (norm(a["name"]), n)
-    write_private(os.path.join(STOPS, n), json.dumps({"name": a["name"], "folder": a["folder"], "time": int(time.time())}))
+    private_dir(STOPS); now = int(time.time())
+    for f in os.listdir(STOPS):   # expired confirmations go first, so their numbers can be handed out again
+        try:
+            if now - int(load(os.path.join(STOPS, f), {}).get("time", 0)) > STOP_TTL: os.unlink(os.path.join(STOPS, f))
+        except (OSError, ValueError, TypeError): pass
+    # a fresh number: created only if no pending confirmation has it (O_EXCL), so one never replaces another
+    body = json.dumps({"name": a["name"], "folder": a["folder"], "link": norm(a["name"]), "time": now}).encode()
+    first = secrets.randbelow(10000)
+    for i in range(10000):   # from a random number on, the first one free
+        n = "%04d" % ((first + i) % 10000)
+        try: fd = os.open(os.path.join(STOPS, n), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError: continue
+        with os.fdopen(fd, "wb") as fh: fh.write(body)
+        break
+    else: return say(to, "too many stops are waiting; /cancel first", reply_to)
+    c = "/stop_%s_%s" % (norm(a["name"]), n)
     return say(to, "Stop %s (%s)? Tap %s within 2 minutes, or /cancel." % (a["name"], a["folder"], c), reply_to,
                markup=keyboard(c, "/cancel"))
 
@@ -381,7 +400,9 @@ def confirm_stop(to, q, nonce, reply_to):
         with open(f) as fh: s = json.load(fh)
         os.unlink(f)   # single use, whatever happens next
     except Exception: s = None
-    if not isinstance(s, dict) or norm(str(s.get("name", ""))) != q or int(time.time()) - int(s.get("time", 0)) > STOP_TTL:
+    # bound to the agent it was made for: the link part in the confirmation must be that agent's
+    if not isinstance(s, dict) or s.get("link") != q or norm(str(s.get("name", ""))) != q \
+            or int(time.time()) - int(s.get("time", 0)) > STOP_TTL:
         return say(to, "that confirmation has expired or was used; send /stop_%s again" % q, reply_to, markup=gone)
     a = next((x for x in agents() if x["name"] == s["name"] and x["folder"] == s["folder"]), None)
     if not a or not re.fullmatch(r"[0-9]+", a["pid"]) or int(a["pid"]) <= 1:
@@ -448,35 +469,44 @@ def shots():
     if not to: return 2
     rc = 0
     with Locked("shots.lock"):
+        # per folder a mark, [mtime_ns, name]: every file at or before it (by mtime, then name) was posted or judged.
+        # It moves only past what was sent (or refused), so a backlog over the run's cap waits for the next run and is
+        # never dropped, and no list of seen files can grow or be cut. A file written again gets a newer mtime.
         seen = load(SHOTS, {}); live = agents(); folders = {}
         for a in live: folders.setdefault(a["folder"], a)
         for folder, a in sorted(folders.items()):
-            d, names = images(folder); start = epoch(a["started"]) or 0
-            mine = [x for x in seen.get(folder, []) if isinstance(x, str)]; new = []
+            d, names = images(folder); start = (epoch(a["started"]) or 0) * 10**9
+            m = seen.get(folder); mark = (m[0], m[1]) if isinstance(m, list) and len(m) == 2 and isinstance(m[0], int) and isinstance(m[1], str) else (0, "")
+            mark = max(mark, (start, ""))
+            todo = []
             for n in names:
-                p = os.path.join(d, n)
-                try: st = os.lstat(p)
+                try: st = os.lstat(os.path.join(d, n))
                 except OSError: continue
-                key = "%s %d" % (n, st.st_mtime_ns)
-                if key in mine or st.st_mtime < start: continue
-                mine.append(key)
-                got = chat.read_file(p, "photo")
-                if isinstance(got, str): log("a screenshot of %s was not posted (%s)" % (folder, got)); continue
-                new.append((st.st_mtime_ns, n, (got[0], safe_name(got[1]), got[2])))
-            seen[folder] = mine[-500:]
-            new.sort()
-            for i in range(0, min(len(new), 30), 10):
-                chunk = new[i:i + 10]
-                if len(chunk) == 1:
-                    data, name, mime = chunk[0][2]; p = {"chat_id": to, "caption": caption(a, [os.path.splitext(chunk[0][1])[0]])}
+                if (st.st_mtime_ns, n) > mark: todo.append((st.st_mtime_ns, n))
+            todo.sort(); chunks = [[]]; count = 0   # each chunk: up to 10 photos, with the refused files before them
+            for k in todo:
+                got = chat.read_file(os.path.join(d, k[1]), "photo")
+                if isinstance(got, str):
+                    log("a screenshot of %s was not posted (%s)" % (folder, got)); chunks[-1].append((k, None)); continue
+                if count == 30: break
+                if sum(1 for x in chunks[-1] if x[1]) == 10: chunks.append([])
+                chunks[-1].append((k, (got[0], safe_name(got[1]), got[2]))); count += 1
+            for chunk in chunks:
+                photos = [(k, g) for k, g in chunk if g]
+                if len(photos) == 1:
+                    k, (data, name, mime) = photos[0]; p = {"chat_id": to, "caption": caption(a, [os.path.splitext(k[1])[0]])}
                     p.update(thread(to, thread_of(folder))); r = call("sendPhoto", p, [("photo", name, mime, data)])
-                else:
-                    media = [{"type": "photo", "media": "attach://p%d" % j} for j in range(len(chunk))]
-                    media[0]["caption"] = caption(a, [os.path.splitext(c[1])[0] for c in chunk])
+                elif photos:
+                    media = [{"type": "photo", "media": "attach://p%d" % j} for j in range(len(photos))]
+                    media[0]["caption"] = caption(a, [os.path.splitext(k[1])[0] for k, _ in photos])
                     p = {"chat_id": to, "media": media}; p.update(thread(to, thread_of(folder)))
-                    r = call("sendMediaGroup", p, [("p%d" % j, c[2][1], c[2][2], c[2][0]) for j, c in enumerate(chunk)])
-                if not r.get("ok"): print("chat: screenshots not sent (%s)" % r.get("description", ""), file=sys.stderr); rc = 1
-                else: log("posted %d screenshot%s from %s" % (len(chunk), "" if len(chunk) == 1 else "s", folder))
+                    r = call("sendMediaGroup", p, [("p%d" % j, g[1], g[2], g[0]) for j, (_, g) in enumerate(photos)])
+                else: r = {"ok": True}
+                if not r.get("ok"):   # the mark stays before this chunk: the next run sends it again
+                    print("chat: screenshots not sent (%s)" % r.get("description", ""), file=sys.stderr); rc = 1; break
+                if chunk: mark = chunk[-1][0]
+                if photos: log("posted %d screenshot%s from %s" % (len(photos), "" if len(photos) == 1 else "s", folder))
+            seen[folder] = list(mark)
         write_private(SHOTS, json.dumps(seen, ensure_ascii=False))
     return rc
 

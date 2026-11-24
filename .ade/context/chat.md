@@ -220,7 +220,7 @@ presses, so every action is a command link the owner taps (or types); `bin/conso
 - **Commands** (a trailing `@<bot>` is ignored): `/agents` (the table, as a code block); `/update_<agent>` or
   `/update <agent>` (one `bin/notify --from main` asking for a two-line status through `bin/notify main`; the answer
   comes back through the forwarder as `[<folder>, claimed] note: ...`); `/log_<agent> [N]` or `/log <agent> [N]` (the
-  last N lines of the agent's Claude Code transcript, default 50, at most 500, as `HH:MM who: text`, through `redact`;
+  last N lines of the agent's Claude Code transcript, default 50, at most 500, as `HH:MM who: text`, through `redact`, then each line cut to 300 characters (never cut before `redact`);
   over 4096 characters as `<agent>-log.txt`); `/shot_<agent>` (its newest image that `read_file` allows);
   `/diff_<agent>` (`git diff --stat HEAD` and untracked files of its checkout, as `<agent>-diff.txt`); `/stop_<agent>`
   (a one-time reply keyboard `/stop_<agent>_<nonce>` and `/cancel`); `/cancel`. A bare `/update`, `/log`, `/shot` or
@@ -228,8 +228,9 @@ presses, so every action is a command link the owner taps (or types); `bin/conso
 - **Link naming (`/log_<agent>`):** the agent's name lowercased, every character outside `a-z0-9` turned into `_`, cut to
   25 characters, so `/update_<agent>` fits Telegram's 32. A link resolves by that form, the name, the folder or the
   folder's last part; more than one agent: the listing.
-- **Stop:** the nonce is 4 digits, a 0600 file `<state dir>/chat/stops/<nonce>` (`{"name","folder","time"}`), single use,
-  120 s. Confirmed: SIGTERM to the agent's engine pid (`bin/sessions`), the keyboard removed, one journal line
+- **Stop:** the nonce is 4 digits, a 0600 file `<state dir>/chat/stops/<nonce>` (`{"name","folder","link","time"}`),
+  created only when no pending stop has that number, single use, 120 s, and good only with its own agent's link
+  (`/stop_<link>_<nonce>`). Confirmed: SIGTERM to the agent's engine pid (`bin/sessions`), the keyboard removed, one journal line
   ("stopped <name>"), the board edited. `/cancel` drops every pending stop.
 - **The board** (`bin/chat board`, run by the start's forwarder loop after `forward`, at most every 15 s): one message, `Agents · N running`,
   a row `<● busy | ○ idle | ⚠ blocked> <name> · <folder> · <role> · <ticket> · <age>` and the agent's links
@@ -242,7 +243,8 @@ presses, so every action is a command link the owner taps (or types); `bin/conso
   `<folder>/reports/browser`, newer than the agent's start and allowed by C8's `read_file` (no links, `.env` names,
   hard links or key folders). One new file: `sendPhoto` captioned `[<name>] <file stem>`; 2 to 10 from one scan: one
   album (`sendMediaGroup`, the caption on the first). Captions go through `redact`. Seen files:
-  `<state dir>/chat/shots.json`; each is posted once.
+  `<state dir>/chat/shots.json`, one mark per folder (`[mtime_ns, name]`): everything at or before it was posted or
+  refused, so each file is posted once. At most 30 a run; the rest wait for the next run, never dropped.
 - **Menu:** `bin/chat menu` (`setMyCommands`, run by each `bin/chat start`): `agents`, `update`, `log`, `shot`, `to`,
   scope `{"type":"chat","chat_id":<owner>}`; never `start`, `help`, `status` (the plugin's own).
 - **Task threads:** `bin/chat thread <agent> <message id>` records the owner's request that started the agent's task

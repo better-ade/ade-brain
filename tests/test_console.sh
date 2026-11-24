@@ -201,6 +201,16 @@ PY
   file_bytes "$(req_of sendDocument)" document > "$W/doc"; assert_eq "$(grep -c ': line [0-9]* and some' "$W/doc")" 49 "50 lines"
   grep -qF "$KEY" "$W/doc" && fail "the key in the document"; grep -qF "$K" "$W/doc" && fail "the token in the document"
   assert_eq "$(part "$(req_of sendDocument)" reply_parameters | python3 -c 'import json,sys; print(json.load(sys.stdin)["message_id"])')" 821 "threaded"
+  # a key across the 300-character cut of a line: redact runs first, so no piece of it survives (review, fix round)
+  local KEY40; KEY40="$(printf 'w%.0s' $(seq 40))"
+  python3 - "$d/sid-api.jsonl" "$KEY40" <<'PY2'
+import json, sys
+p, key = sys.argv[1:]; text = "word " * 52 + "ab " + key + " and the rest of the line"
+open(p, "a").write(json.dumps({"type": "assistant", "timestamp": "2026-11-24T11:00:00Z", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}) + "\n")
+PY2
+  reset; act "$OWNER" 823 "/log api 1"; assert_eq "$RC" 0 "/log api 1 [$(cat "$W/err")]"; field "$(req_of sendMessage)" 'd["text"]' > "$W/log"
+  grep -q 'wwwww' "$W/log" && fail "a piece of a key across the cut reached the chat [$(tail -c 60 "$W/log")]"
+  grep -q "word word" "$W/log" || fail "the line is shown"
   agent web projects/web - idle; reset; act "$OWNER" 822 "/log web"; assert_eq "$RC" 0 "an agent with no transcript [$(cat "$W/err")]"
   field "$(req_of sendMessage)" 'd["text"]' | grep -q "no log" || fail "it says so"; ended web
 }
@@ -226,6 +236,21 @@ assert m[0]["caption"] == "[api] step-1, step-2, step-3" and all("caption" not i
   reset; bin/chat shots; assert_eq "$(reqs)" 0 "refused files are never posted"
   # a key-shaped file name never reaches a caption
   png "$B/$KEY.png"; reset; bin/chat shots || fail "shots, key name"; part "$(req_of sendPhoto)" caption | grep -qF "$KEY" && fail "a key in a caption"
+  # a backlog: 520 new files, at most 30 a run, every one posted exactly once, then nothing (review, fix round)
+  rm -rf "$B"; mkdir -p "$B"; python3 - "$B" <<'PY2'
+import os, sys, time
+b = sys.argv[1]; t = time.time_ns() + 10**9
+for i in range(520):
+    p = os.path.join(b, "s%03d.png" % i); open(p, "wb").write(b"\x89PNG\r\n\x1a\n" + b"px" * 50); os.utime(p, ns=(t + i * 10**6, t + i * 10**6))
+PY2
+  : > "$W/posted"; local runs=0
+  while :; do reset; bin/chat shots 2> "$W/err" || fail "shots, backlog [$(cat "$W/err")]"; [ "$(reqs)" -gt 0 ] || break
+    runs=$((runs + 1)); [ "$runs" -le 20 ] || fail "the backlog never ends"
+    for i in $(ls "$SRV" | sed -n 's/^req\.//p'); do grep -ao 'filename="s[0-9]*\.png"' "$SRV/req.$i"; done >> "$W/posted"
+    [ "$(grep -c . "$W/posted")" -le $((runs * 30)) ] || fail "over 30 in one run"; done
+  assert_eq "$(sort -u "$W/posted" | grep -c .)" 520 "every file of the backlog posted"
+  assert_eq "$(grep -c . "$W/posted")" 520 "each exactly once"
+  reset; bin/chat shots; assert_eq "$(reqs)" 0 "a later run posts nothing old"
   rm -rf "$B"
 }
 
@@ -250,6 +275,20 @@ stop_needs_confirmation() {   # AC6
   field "$(req_of editMessageText)" 'd["text"]' | grep -q "^✓ doomed · projects/web · done" || fail "the board shows it stopped [$(field "$(req_of editMessageText)" 'd["text"]')]"
   grep -q "stopped doomed" journal/*.md || fail "the stop is journaled"
   agent doomed projects/web - busy; p="$(pid_of doomed)"; reset; act "$OWNER" 836 "$n"; kill -0 "$p" || fail "a used nonce stopped it again"
+  # a nonce made for one agent never stops another (review, fix round)
+  agent other projects/api - busy; local q; q="$(pid_of other)"; reset; act "$OWNER" 839 "/stop_other"
+  n="$(field "$(req_of sendMessage)" 'd["reply_markup"]["keyboard"][0][0]["text"]')"
+  act "$OWNER" 840 "/stop_doomed_${n##*_}"; kill -0 "$p" || fail "another agent's nonce stopped doomed"; kill -0 "$q" || fail "a nonce under another name stopped its agent"
+  ended other
+  # a new nonce never replaces a pending one: with all but one number taken, the free one is handed out
+  rm -rf "$S/chat/stops"; mkdir -p "$S/chat/stops"; python3 - "$S/chat/stops" <<'PY2'
+import json, os, sys, time
+for i in range(10000):
+    if i != 4321: open(os.path.join(sys.argv[1], "%04d" % i), "w").write(json.dumps({"name": "x", "folder": "projects/x", "link": "x", "time": int(time.time())}))
+PY2
+  reset; act "$OWNER" 841 "/stop_doomed"; assert_eq "$(field "$(req_of sendMessage)" 'd["reply_markup"]["keyboard"][0][0]["text"]')" /stop_doomed_4321 "the one free number"
+  assert_eq "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["link"])' "$S/chat/stops/0000")" x "a pending stop is kept"
+  rm -rf "$S/chat/stops"
   reset; act "$OWNER" 837 "/stop_doomed"; act "$OWNER" 838 "/cancel"; assert_eq "$(ls "$S/chat/stops" | grep -c .)" 0 "/cancel drops the pending stop"
   assert_eq "$(field "$(req_of sendMessage)" 'd["reply_markup"]["remove_keyboard"]')" true "and removes the keyboard"
   ended doomed
