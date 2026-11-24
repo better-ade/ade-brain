@@ -42,9 +42,11 @@ def owners():
 
 
 def send(argv):
-    ref = done = None; skip = 0; i = 0
+    ref = done = reply = None; skip = 0; i = 0
     while i < len(argv):
         if argv[i] == "--buttons" and i + 1 < len(argv): ref = argv[i + 1]; i += 2
+        elif argv[i] == "--reply-to" and i + 1 < len(argv) and re.fullmatch(r"[1-9][0-9]{0,15}", argv[i + 1], re.ASCII):
+            reply = int(argv[i + 1]); i += 2   # story C9: a reply in the owner's task thread
         elif argv[i] == "--done" and i + 1 < len(argv): done = argv[i + 1]; i += 2
         elif argv[i] == "--skip-first": skip = 1; i += 1
         else: return 2
@@ -70,6 +72,7 @@ def send(argv):
     for chat_id in to:
         if chat_id in got: continue   # it reached this owner on an earlier try
         p = {"chat_id": chat_id, "text": text[:4096]}
+        if reply: p["reply_parameters"] = {"message_id": reply, "allow_sending_without_reply": True}
         if ref:
             p["reply_markup"] = {"inline_keyboard": [[{"text": "Approve", "callback_data": "ask:approve:" + ref},
                                                        {"text": "Deny", "callback_data": "ask:deny:" + ref}]]}
