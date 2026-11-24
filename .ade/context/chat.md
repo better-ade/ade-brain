@@ -120,6 +120,11 @@
   starts at 0; a cursor past the end is reset to the end. One forwarder at a time (`<state dir>/chat/forward.lock`,
   pid inside; a dead holder's lock is taken over). `bin/chat start` runs it every `AGENT_CHAT_FORWARD_EVERY` s
   (default 15, 0 = off) while the session lives.
+- **Done is the last message (story P2):** `bin/chat done <text>` runs `bin/chat forward --wait` (the queued agent
+  events, every folder's, and the pending `say` messages; a running forwarder is waited for up to
+  `AGENT_CHAT_DONE_WAIT` s, default 10, then exit 1), then sends the text as `say` does (same exits). Events not sent
+  by then: one stderr line `chat: some agent events were not sent before the Done; ...`, the text still goes, and they
+  follow on the next forward. The hub rule: the orchestrator sends a task's Done or Not done with it, not the reply tool.
 - **Approvals:** `channel_buttons <type>` in `bin/lib.sh`: telegram = `permission` (the plugin's own Allow / Deny /
   See more buttons on permission prompts; its reply tool sends no buttons), so `bin/chat ask` sends "<question>\nreply
   1 to approve, 2 to deny (ref <ref>)". A channel with `all` gets Approve / Deny buttons with callback data

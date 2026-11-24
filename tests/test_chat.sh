@@ -409,6 +409,7 @@ c7_setup() {
   cat > "$FAKE/bin/send" <<'STUB'
 #!/bin/bash
 p="$(cat)"; [ -z "${FAKE_SEND_FAIL:-}" ] || exit 1
+[ -z "${FAKE_FAIL_MATCH:-}" ] || case "$p" in *"$FAKE_FAIL_MATCH"*) exit 1 ;; esac
 [ -z "${FAKE_FAIL_FOR:-}" ] || case "$p" in *"\"chat_id\": \"$FAKE_FAIL_FOR\""*) exit 1 ;; esac
 printf '%s\n' "$p" >> "$FAKE/sent"
 STUB
@@ -589,6 +590,62 @@ forward_lock() {   # one forwarder at a time; a lock without a pid yet is live f
   rm -rf "$AGENT_STATE/chat/forward.lock"; c7_done
 }
 
+# ---- story P2: a task's Done is the last message. bin/chat done sends the agents' queued notes first, then the Done.
+done_after_queued_notes() {   # AC1: every note queued before the Done reaches the chat before it, also past a running forwarder
+  c7_setup
+  ev --from projects/api --to main --kind note --text "frontend: index.html written"
+  ev --from projects/api --to main --kind note --text "reviewer: green"
+  sleep 1 & live=$!; mkdir -p "$AGENT_STATE/chat/forward.lock"; echo "$live" > "$AGENT_STATE/chat/forward.lock/pid"
+  bin/chat done "Done: build a website" >/dev/null 2>&1 || fail "done"
+  want='[projects/api, claimed] note: "frontend: index.html written"
+[projects/api, claimed] note: "reviewer: green"
+Done: build a website'
+  assert_eq "$(sent_texts)" "$want" "the queued notes first, the Done last"
+  : > "$FAKE/sent"; bin/chat forward >/dev/null 2>&1; [ -s "$FAKE/sent" ] && fail "a flushed note was sent again"
+  assert_contains templates/hub/CLAUDE.md 'bin/chat done' "the hub rule sends Done with bin/chat done"
+  wait "$live" 2>/dev/null; rm -rf "$AGENT_STATE/chat/forward.lock"; c7_done
+}
+
+done_without_waiting_when_nothing_queued() {   # AC2: nothing queued: the Done goes at once, not after the interval
+  c7_setup; s=$(date +%s)
+  AGENT_CHAT_FORWARD_EVERY=15 bin/chat done "Done: nothing queued" >/dev/null 2>&1 || fail "done"
+  [ $(( $(date +%s) - s )) -le 2 ] || fail "the Done waited with nothing queued"
+  assert_eq "$(sent_texts)" "Done: nothing queued" "only the Done"
+  c7_done
+}
+
+done_holds_back_no_other_notes() {   # AC3: other folders' notes go too, and a note after the Done goes on the next run
+  c7_setup
+  ev --from projects/web --to main --kind note --text "web: other task"
+  ev --from projects/api --to main --kind note --text "api: this task"
+  bin/chat done "Done: api task" >/dev/null 2>&1 || fail "done"
+  want='[projects/web, claimed] note: "web: other task"
+[projects/api, claimed] note: "api: this task"
+Done: api task'
+  assert_eq "$(sent_texts)" "$want" "no note held back for the Done"
+  ev --from projects/web --to main --kind note --text "web: later"
+  : > "$FAKE/sent"; bin/chat forward >/dev/null 2>&1 || fail "forward after the Done"
+  assert_eq "$(sent_texts)" '[projects/web, claimed] note: "web: later"' "a later note goes on the next run"
+  c7_done
+}
+
+done_after_a_failed_note() {   # AC4: a note that fails, or a forwarder that never lets go, does not block the Done
+  c7_setup; ev --from projects/api --to main --kind note --text "stuck note"
+  err="$(FAKE_FAIL_MATCH="stuck note" bin/chat done "Done: despite a failure" 2>&1 >/dev/null)" || fail "done after a failed note"
+  assert_eq "$(sent_texts)" "Done: despite a failure" "the Done is sent"
+  assert_eq "$(printf '%s\n' "$err" | grep -c .)" "1" "one line [$err]"
+  case "$err" in "chat: "*"not sent before the Done"*) ;; *) fail "the line says what happened [$err]" ;; esac
+  : > "$FAKE/sent"; bin/chat forward >/dev/null 2>&1
+  assert_eq "$(sent_texts)" '[projects/api, claimed] note: "stuck note"' "the failed note is retried later"
+  sleep 30 & live=$!; mkdir -p "$AGENT_STATE/chat/forward.lock"; echo "$live" > "$AGENT_STATE/chat/forward.lock/pid"
+  ev --from projects/api --to main --kind note --text "held by the lock"; : > "$FAKE/sent"; s=$(date +%s)
+  err="$(AGENT_CHAT_DONE_WAIT=1 bin/chat done "Done: past a stuck forwarder" 2>&1 >/dev/null)" || fail "done past a busy lock"
+  [ $(( $(date +%s) - s )) -le 4 ] || fail "the Done waited too long for the lock"
+  assert_eq "$(sent_texts)" "Done: past a stuck forwarder" "the Done is sent past a stuck forwarder"
+  assert_eq "$(printf '%s\n' "$err" | grep -c .)" "1" "one line [$err]"
+  kill "$live"; wait "$live" 2>/dev/null; rm -rf "$AGENT_STATE/chat/forward.lock"; c7_done
+}
+
 start_runs_forwarder() {   # bin/chat start runs the forward loop beside the session
   c7_setup; reset_rec
   AGENT_CHAT_FORWARD_EVERY=1 FAKE_SLEEP=8 bin/chat start </dev/null >/dev/null 2>&1 & bg=$!
@@ -720,10 +777,11 @@ PY
 # bash tests/test_chat.sh <check>: run the checks up to and including one (to see each fail on its own)
 if [ $# -gt 0 ]; then for c in start_launches_channel_session token_short_lived_file missing_token_refuses skip_permissions_refused \
   single_instance stop_and_status start_lock_and_access mode_follows_lock no_terminal_session_ends same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator \
-  telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder auto_notice_once lost_lock_noticed approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api; do
+  telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder auto_notice_once lost_lock_noticed approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api done_after_queued_notes done_without_waiting_when_nothing_queued done_holds_back_no_other_notes done_after_a_failed_note; do
   [ "$c" = "$1" ] && { "$c"; echo ok; exit 0; }; ( "$c" ) >/dev/null 2>&1; done; fi
 start_launches_channel_session; token_short_lived_file; missing_token_refuses; skip_permissions_refused
 single_instance; stop_and_status; start_lock_and_access; mode_follows_lock; no_terminal_session_ends; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
 state_per_orchestrator
 telegram_style_rule; answer_needs_owner_permission; status_card_golden; to_agent_notifies; forward_agent_events_once; forward_partial_failure; forward_cap_per_run; forward_after_rotation; forward_lock; start_runs_forwarder; auto_notice_once; lost_lock_noticed; approvals_buttons_or_numbered; agents_list; bot_send_token_on_stdin_only; no_terminal_stand_in_api
+done_after_queued_notes; done_without_waiting_when_nothing_queued; done_holds_back_no_other_notes; done_after_a_failed_note
 echo ok
