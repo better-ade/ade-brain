@@ -47,6 +47,16 @@
 #                                 ~/Library/Keychains. Journaled. Behind permissions.ask: the owner's own Allow.
 #                                 Exit 0 sent, 1 not sent (nothing is kept for a retry), 2 refused (not paired, not
 #                                 locked, or such a file)
+# Story C9 (Telegram as the console for the focus agents, ADR 0007; the board, links and threads in .ade/context/chat.md):
+#   act --from <id> [--reply-to <message id>]   one owner command, the text on stdin (/agents, /update_<agent>,
+#                                 /log_<agent> [N], /shot_<agent>, /diff_<agent>, /stop_<agent>, /cancel), answered in
+#                                 the chat as a reply to the request. Only the one owner the channel is locked to; anyone
+#                                 else: exit 2, nothing sent, one line in chat.log. Ambiguous or unknown agent: exit 2
+#   board                         post and pin the "Agents" board once, then edit it in place (<state dir>/chat/board.json)
+#   shots                         the agents' new screenshots (<folder>/reports/browser): one photo, or one album a step
+#   menu                          the bot's command menu for the owner's chat (start sets it; board and shots run with forward)
+#   thread <agent> <message id>   the owner's request that started the agent's task: its events and its Done reply to it
+#   say|done --reply-to <id>      a reply to that message; done --agent <agent>: the agent's thread and links, then cleared
 # Story R1: start runs bin/recover first. A service start (AGENT_CHAT_SERVICE=1, the launchd job) that finds 3 service
 # starts in the last 10 minutes gives up: journal, "login expired: run `claude` once" to the chat, the job disabled.
 # --sender is the user_id of the inbound channel message: only a paired owner (access.json allowFrom) counts.
@@ -56,7 +66,7 @@
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; S="$(state_dir)"; PIDF="$S/chat/chat.pid"; LOCK="$S/chat/lock"
 LA="${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}"; LABEL="ai.agent-hub.$(hub_name).chat"
 NAME="${HUB_ORCHESTRATOR:-$(hub_name)}"
-usage() { echo "usage: bin/chat start | stop | status [--card] | setup [channel] | test [channel] | logs [-n N] | agents | to --sender <id> <agent> (text on stdin) | forward | ask (question on stdin) | answer --sender <id> (reply on stdin) | asked <ref> | say <text> | done <text> | send [--document] <file> (caption on stdin) (channels: $(channel_types))" >&2; exit 2; }
+usage() { echo "usage: bin/chat start | stop | status [--card] | setup [channel] | test [channel] | logs [-n N] | agents | to --sender <id> <agent> (text on stdin) | forward | ask (question on stdin) | answer --sender <id> (reply on stdin) | asked <ref> | say [--reply-to <id>] <text> | done [--agent <agent>] [--reply-to <id>] <text> | act --from <id> [--reply-to <id>] (command on stdin) | board | shots | menu | thread <agent> <message id> | send [--document] <file> (caption on stdin) (channels: $(channel_types))" >&2; exit 2; }
 CHANNELS="${HUB_CHANNELS-telegram}"
 check_channels() {
   [ -n "${CHANNELS// /}" ] || { echo "chat: HUB_CHANNELS is empty (known channel types: $(channel_types))" >&2; exit 2; }
@@ -148,6 +158,16 @@ chat_send() { local c t rc; c="$(first_channel)"
   t="$("$H/bin/secret" "$(channel_secret "$c")" 2>/dev/null)" && [ -n "$t" ] || { echo "chat: no $c bot token (bin/keys set $c)" >&2; return 1; }
   { printf '%s\n' "$t"; cat; } | ACCESS="$(access_file)" python3 -I "$PY_CHAT" send "$@"; rc=$?; unset t; return $rc; }
 ev_py() { H="$H" ST="$S" python3 -I "$PY_EV" "$@"; }
+# console <args>: bin/console.py (story C9) with the token first on its stdin (never an argument or the environment), only
+# when the channel is locked to the owner; con_py: its calls that send nothing (norm, thread, thread-of)
+PY_CON="$(dirname "$0")/console.py"
+con_py() { H="$H" S="$S" python3 -I "$PY_CON" "$@"; }
+console() { local c t w rc; c="$(first_channel)"
+  w="$(lock_of "$c")"; [ "$w" = locked ] || { echo "chat: refused: $c is not locked to you ($w); nothing sent (bin/chat status)" >&2; return 2; }
+  t="$("$H/bin/secret" "$(channel_secret "$c")" 2>/dev/null)" && [ -n "$t" ] || { echo "chat: no $c bot token (bin/keys set $c)" >&2; return 1; }
+  { printf '%s\n' "$t"; cat; } | H="$H" S="$S" STATE="$S" ACCESS="$(access_file)" CLAUDE_DIR="$(claude_home)" python3 -I "$PY_CON" "$@"; rc=$?; unset t; return $rc; }
+# agent_name <folder>: the running agent's name in that folder (its links use it)
+agent_name() { "$H/bin/sessions" 2>/dev/null | awk -v f="$1" 'NR>1 && $2==f {print $1; exit}'; }
 agents_view() { local s; s="$("$H/bin/sessions" 2>/dev/null)" || { echo "chat: bin/sessions failed" >&2; return 1; }
   printf '%s\n' "$s" | LATEST="$(ev_py latest 2>/dev/null)" python3 -I "$PY_CHAT" agents "$1" "$2"; }
 # resolve <agent>: the one folder among the running agents that the name names (agent name, folder, or folder name)
@@ -255,7 +275,10 @@ case "${1:-}" in
     fe="${AGENT_CHAT_FORWARD_EVERY:-15}"; case "$fe" in ''|*[!0-9]*) fe=15 ;; esac
     # (started apart, not a child of script after the exec: util-linux script would wait for it)
     if [ "$fe" -gt 0 ]; then ( ( exec </dev/null >/dev/null 2>&1; w="$fe"; while kill -0 $$ 2>/dev/null; do sleep "$w"
-      kill -0 $$ 2>/dev/null || break; "$H/bin/chat" forward; r=$?; [ "$r" = 1 ] && r=1 || r=0; w="$(chat_backoff "$w" "$r")"; done ) & ) fi
+      kill -0 $$ 2>/dev/null || break; "$H/bin/chat" forward; r=$?; [ "$r" = 1 ] && r=1 || r=0
+      "$H/bin/chat" board; "$H/bin/chat" shots; w="$(chat_backoff "$w" "$r")"; done ) & ) fi
+    # the bot's command menu for the owner's chat (story C9; only when locked to the owner), started apart
+    ( ( exec </dev/null >/dev/null 2>&1; "$H/bin/chat" menu ) & )
     # the first start the rule puts in auto tells the owner once, through the chat (kept and sent by the forwarder when
     # the channel is down); a mode the owner set is not announced
     rm -f "$S/chat/lock-lost"
@@ -315,17 +338,36 @@ This orchestrator's channel state stays in $(channel_dir "$c"), never in the sha
 EOF
     ;;
   agents) [ $# -eq 1 ] || usage; agents_view table "" ;;
+  act) shift; from=""; rt=""; got=0
+    while [ $# -gt 0 ]; do case "$1" in --from) [ $# -ge 2 ] || usage; from="$2"; got=1; shift 2 ;;
+      --reply-to) [ $# -ge 2 ] || usage; rt="$2"; shift 2 ;; *) usage ;; esac; done
+    [ "$got" = 1 ] || usage; [ ! -t 0 ] || { echo "chat: the command comes on stdin (bin/chat act --from <id> <<'EOF' ... EOF)" >&2; exit 2; }
+    [ -z "$rt" ] || [[ "$rt" =~ ^[1-9][0-9]{0,15}$ ]] || rt=""
+    # the sender goes to the helper by the environment, never another process's argument
+    FROM="$from" console act $rt ;;
+  board|shots|menu) [ $# -eq 1 ] || usage; console "$1" </dev/null ;;
+  thread) [ $# -eq 3 ] || usage; [[ "$3" =~ ^[1-9][0-9]{0,15}$ ]] || { echo "chat: thread <agent> <message id>: the id is digits" >&2; exit 2; }
+    f="$(resolve "$2")" || { echo "chat: no single agent named '$2'" >&2; exit 2; }; con_py thread "$f" "$3" ;;
   to) [ "${2:-}" = --sender ] && [ $# -eq 4 ] || usage; is_owner "$3" || exit 2
     text="$(read_text)" || { echo "chat: the message comes on stdin (bin/chat to --sender <id> <agent> <<'EOF' ... EOF)" >&2; exit 2; }
     if ! f="$(resolve "$4")"; then echo "chat: no single agent named '$4'; the agents:" >&2; agents_view table "" >&2; exit 2; fi
     "$H/bin/notify" --from main "$f" "$text" && echo "sent to $f" ;;
-  "done") [ $# -eq 2 ] && [ -n "$2" ] || usage; [ -f "$(access_file)" ] || exit 2
+  "done") shift; rt=""; ag=""
+    while [ $# -gt 1 ]; do case "$1" in --reply-to) rt="$2"; shift 2 ;; --agent) ag="$2"; shift 2 ;; *) break ;; esac; done
+    [ $# -eq 1 ] && [ -n "$1" ] || usage; [ -f "$(access_file)" ] || exit 2; text="$1"
+    [ -z "$rt" ] || [[ "$rt" =~ ^[1-9][0-9]{0,15}$ ]] || { echo "chat: --reply-to takes a message id (digits)" >&2; exit 2; }
+    if [ -n "$ag" ]; then f="$(resolve "$ag")" || { echo "chat: no single agent named '$ag'" >&2; exit 2; }; fi
     "$H/bin/chat" forward --wait >/dev/null 2>&1 || echo "chat: some agent events were not sent before the Done; they follow when the channel takes them" >&2
-    exec "$H/bin/chat" say "$2" ;;
-  say) [ $# -eq 2 ] && [ -n "$2" ] || usage; [ -f "$(access_file)" ] || exit 2
+    # story C9: the Done of an agent's task replies to the owner's request (its thread, then cleared) with its links
+    if [ -n "$ag" ]; then [ -n "$rt" ] || rt="$(con_py thread-of "$f")"; con_py thread "$f" - || true
+      n="$(con_py norm "$(agent_name "$f")")"; [ -z "$n" ] || text="$text"$'\n'"/log_$n /shot_$n /diff_$n"; fi
+    exec "$H/bin/chat" say ${rt:+--reply-to "$rt"} "$text" ;;
+  say) rt=""; [ "${2:-}" = --reply-to ] && [ $# -eq 4 ] && { rt="$3"; set -- "$1" "$4"; }
+    [ -z "$rt" ] || [[ "$rt" =~ ^[1-9][0-9]{0,15}$ ]] || usage
+    [ $# -eq 2 ] && [ -n "$2" ] || usage; [ -f "$(access_file)" ] || exit 2
     mkdir -p "$S/chat/pending" && chmod 700 "$S/chat" || exit 1; m="$S/chat/pending/$(date +%s).$$.txt"
     # the owners it reached are recorded (<m>.done), so a retry never sends it to them again
-    printf '%s\n' "$2" | chat_send --done "$m.done" && { rm -f "$m.done"; exit 0; }
+    printf '%s\n' "$2" | chat_send --done "$m.done" ${rt:+--reply-to "$rt"} && { rm -f "$m.done"; exit 0; }
     printf '%s\n' "$2" > "$m"; echo 1 > "$m.tries"; exit 1 ;;
   send) shift; kind=photo; if [ "${1:-}" = --document ]; then kind=document; shift; fi
     [ $# -eq 1 ] && [ -n "$1" ] || usage; c="$(first_channel)"
@@ -380,7 +422,9 @@ EOF
     while IFS="$(printf '\t')" read -r cur text; do [ -n "$cur" ] || continue
       n=$((n + 1)); if [ "$n" -gt "$CAP" ]; then last="$cur"; continue; fi
       [ "$(head -1 "$FD" 2>/dev/null)" = "$cur" ] || { echo "$cur" > "$FD"; echo "$cur 0" > "$FT"; }
-      printf '%s\n' "$text" | chat_send --done "$FD" --skip-first 2>>"$SL"; r=$?
+      # story C9: an agent with a task thread (bin/chat thread) replies in it
+      fo="$(printf '%s\n' "$text" | sed -n '1s/^\[\([a-z]*\/[A-Za-z0-9._-]*\), [a-z]*\].*/\1/p')"; rt=""; [ -z "$fo" ] || rt="$(con_py thread-of "$fo")"
+      printf '%s\n' "$text" | chat_send --done "$FD" --skip-first ${rt:+--reply-to "$rt"} 2>>"$SL"; r=$?
       if [ "$r" = 0 ] || [ "$r" = 3 ]; then ev_py ack $cur || exit 1; rm -f "$FD" "$FT"; continue; fi
       t="$(awk '{print $3}' "$FT" 2>/dev/null)"; case "$t" in ''|*[!0-9]*) t=0 ;; esac; t=$((t + 1)); echo "$cur $t" > "$FT"
       [ "$t" -ge "$MAXTRY" ] || exit 1

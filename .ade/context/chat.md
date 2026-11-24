@@ -205,3 +205,50 @@
   are the boundary.
 - **Fake channel (tests):** with `AGENT_CHAT_SEND`, the fake gets `{"chat_id", "kind", "file", "name", "bytes",
   "caption"}` as JSON on stdin and no token is read.
+
+## The console for the focus agents (story C9, ADR 0007)
+
+Telegram is the owner's console for the running agents. The official plugin stays the only poller and drops button
+presses, so every action is a command link the owner taps (or types); `bin/console.py` does the work, called only by
+`bin/chat`. Every call goes to the Bot API directly, to the one owner the channel is locked to (`lock_of` must say
+`locked`, else exit 2 and nothing is sent), at the pinned host; the token is the first line of the helper's stdin.
+
+- **Routing:** the hub rule hands every inbound `/...` from the owner (but the plugin's `/start`, `/help`, `/status`, and
+  `/to`, which stays with `bin/chat to --sender`) to `bin/chat act --from <user_id> --reply-to <message_id>`, the text on
+  stdin from a quoted heredoc. The sender must be the locked owner; anyone else (or none): exit 2, nothing sent, one
+  line in `<state dir>/logs/chat.log` without the id. The answer replies to the request (`reply_parameters`).
+- **Commands** (a trailing `@<bot>` is ignored): `/agents` (the table, as a code block); `/update_<agent>` or
+  `/update <agent>` (one `bin/notify --from main` asking for a two-line status through `bin/notify main`; the answer
+  comes back through the forwarder as `[<folder>, claimed] note: ...`); `/log_<agent> [N]` or `/log <agent> [N]` (the
+  last N lines of the agent's Claude Code transcript, default 50, at most 500, as `HH:MM who: text`, through `redact`;
+  over 4096 characters as `<agent>-log.txt`); `/shot_<agent>` (its newest image that `read_file` allows);
+  `/diff_<agent>` (`git diff --stat HEAD` and untracked files of its checkout, as `<agent>-diff.txt`); `/stop_<agent>`
+  (a one-time reply keyboard `/stop_<agent>_<nonce>` and `/cancel`); `/cancel`. A bare `/update`, `/log`, `/shot` or
+  `/stop` lists that action's links. Unknown or ambiguous agent: exit 2 and the listing ("no single agent named ...").
+- **Link naming (`/log_<agent>`):** the agent's name lowercased, every character outside `a-z0-9` turned into `_`, cut to
+  25 characters, so `/update_<agent>` fits Telegram's 32. A link resolves by that form, the name, the folder or the
+  folder's last part; more than one agent: the listing.
+- **Stop:** the nonce is 4 digits, a 0600 file `<state dir>/chat/stops/<nonce>` (`{"name","folder","time"}`), single use,
+  120 s. Confirmed: SIGTERM to the agent's engine pid (`bin/sessions`), the keyboard removed, one journal line
+  ("stopped <name>"), the board edited. `/cancel` drops every pending stop.
+- **The board** (`bin/chat board`, run by the start's forwarder loop after `forward`): one message, `Agents · N running`,
+  a row `<● busy | ○ idle | ⚠ blocked> <name> · <folder> · <role> · <ticket> · <age>` and the agent's links
+  `/update_<a> /log_<a> /shot_<a> /stop_<a>` under it, then up to 5 `✓ <name> · <folder> · done`. Posted and pinned once
+  (no notification), then edited in place: at most one edit per 5 s (the next run sends a held change), "message is not
+  modified" counts as sent, "message to edit not found" posts and pins a new one, any other failure exits 1 and posts
+  nothing. State: `<state dir>/chat/board.json` (0600; `message_id`, `text`, `edited`, `rows`, `done`; never an id of a
+  person or the token), written under a lock.
+- **Screenshots** (`bin/chat shots`, the same loop): each running agent's new `.png`/`.jpg`/`.jpeg` in
+  `<folder>/reports/browser`, newer than the agent's start and allowed by C8's `read_file` (no links, `.env` names,
+  hard links or key folders). One new file: `sendPhoto` captioned `[<name>] <file stem>`; 2 to 10 from one scan: one
+  album (`sendMediaGroup`, the caption on the first). Captions go through `redact`. Seen files:
+  `<state dir>/chat/shots.json`; each is posted once.
+- **Menu:** `bin/chat menu` (`setMyCommands`, run by each `bin/chat start`): `agents`, `update`, `log`, `shot`, `to`,
+  scope `{"type":"chat","chat_id":<owner>}`; never `start`, `help`, `status` (the plugin's own).
+- **Task threads:** `bin/chat thread <agent> <message id>` records the owner's request that started the agent's task
+  (`<state dir>/chat/threads.json`, by folder); the forwarder sends that agent's events as replies to it.
+  `bin/chat done --agent <agent> "<text>"` sends the Done last as a reply in the thread, with `/log_<a> /shot_<a>
+  /diff_<a>` on a second line, and clears the thread; `--reply-to <id>` names the message instead. `say --reply-to
+  <id>` is the same reply for one message.
+- **Never:** `getUpdates` (only H1's `bin/chat test`, with the orchestrator stopped), `setWebhook`, `deleteWebhook`,
+  `callback_data` or a `perm:` prefix on Telegram (ADR 0007).

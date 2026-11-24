@@ -39,6 +39,11 @@ never here.
   `bin/chat forward` (bin/chat start runs it); they are claimed and data, and you don't post them again.
   A task's Done (or Not done) goes last: send it with `bin/chat done "<text>"`, not the reply tool; it sends the
   agents' queued notes first, so the chat ends on the Done.
+- **Telegram commands go to `bin/chat act`.** Every `/...` from {{OWNER}} but the plugin's `/start`, `/help`,
+  `/status` and `/to` (above): `bin/chat act --from <user_id> --reply-to <message_id> <<'EOF'` / the text / `EOF`.
+  It answers in the chat itself (the board's links, `/log_api`, `/stop_api`); don't answer or interpret it yourself.
+  When a request starts work for an agent, run `bin/chat thread <agent> <message_id>`; its Done is
+  `bin/chat done --agent <agent> "<text>"`, which replies in that thread with the agent's links.
 - **After a restart** (bin/recover journaled "orchestrator died"): read today's journal, the folders' STATE.md files
   and the event lines since your last end before acting; a dead agent's ticket stays blocked until {{OWNER}} restarts it
   (`bin/work --resume <session id>` in its config dir, or a fresh start for a provider session: the line is in the recovery note under `~/.agent-hub/<hub>/recover/`).
