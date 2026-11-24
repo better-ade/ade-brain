@@ -56,3 +56,19 @@ not inline buttons, and pins, edits with state, albums and the menu go through t
 All ten checks are in `tests/test_console.sh` (with `documented`, which checks this story, ADR 0007, the contract in
 `.ade/context/chat.md` and the hub rule). Where the build differs from this draft (the text on stdin, the reply tag,
 `/to`), ADR 0007 says so under "As built".
+
+## Verification
+Reviewer gate (2026-11-24, b1338e8, after one fix round; merged as 35cc798):
+- `bash tests/run.sh`, run alone: 44 `ok`, no `FAIL`, exit 0. Tail: `ok test_chat.sh`, `ok test_console.sh`,
+  `ok test_focus_imports.sh`, `ok test_staged_change.sh`, `ok test_sync.sh`, `ok test_work.sh`, `EXIT 0`.
+- CI: ci / verify pass (18m15s), ci-linux / verify pass (13m1s).
+- Revert checks (first pass, dd5a134): breaking AC2 (owner check; sender id in the log), AC4 (redact; size),
+  AC6 (expiry; single use; no confirmation), AC9 (`callback_data`; `getUpdates`) and AC10 (token in board.json, in an
+  argument; id in chat.log) each made `tests/test_console.sh` fail.
+- Adversarial pass found two material flaws, fixed in b1338e8: log lines cut before redact (a piece of a key reached
+  the chat) and screenshots over the 30-a-run cap dropped, then re-posted every 15 s past 500 files. Fix checks:
+  undoing each fix fails its new check ("a piece of a key across the cut reached the chat"; "every file of the backlog
+  posted: got [30] want [520]"; "never posted twice"; "a nonce under another name stopped its agent"; "the one free
+  number"). The key repro now shows `<hidden>`; the 520-file simulation posts each file once (30 a run, then 10, then 0).
+- Residual risk accepted: a local process of the owner's user can run `act --from <owner id>` and read a pending stop
+  nonce in the state folder; every answer goes only to the locked owner (ADR 0007, "As built").
