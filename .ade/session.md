@@ -45,3 +45,4 @@
 - 2026-11-21: sharded R1 (crash-proof continuity, 12 ACs, high) and C7 (Telegram formatting, buttons, talking to focus agents through the orchestrator, 6 ACs, high).
 - 2026-11-24: PR #79 Done: bin/work and bin/dispatch read a "(no remote)" Code row with a checkout path as a repo (ade project add, ade-cli 0.2.8); a gone checkout is refused, never cloned; bash tests/run.sh green, both new tests fail without the fix.
 - 2026-11-24: P1 Done: bring an existing project (bin/new --repo, shared repo_row in bin/lib.sh, HUB_REPOS edit, 8 ACs, medium); bash tests/run.sh green, no FAIL.
+- 2026-11-24: C9 Done: Telegram as the console for the focus agents (board, command links, /log /shot /diff /stop, albums, threads; ADR 0007; 10 ACs, high); one fix round (redact before cut, screenshot backlog, nonce binding); bash tests/run.sh green, CI green.
