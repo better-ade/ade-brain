@@ -61,11 +61,12 @@ repos_of() {
   awk -F'|' '/^\|/{c=$3; gsub(/^[ \t]+|[ \t]+$/,"",c); if(c ~ /^[\/~]/)print c}' "$a" |
     while IFS= read -r r; do r="${r/#\~/$HOME}"; [ -d "$r" ] && echo "$r"; done
 }
-# repo_row <spec> <who merges>: one Code table row for a folder's ACCESS.md (story P1, .ade/context/code-table.md), for
+# repo_row <spec> <who merges>: one Code table row for a folder's ACCESS.md (story P1, .ade/context/access-code-rows.md), for
 # bin/init and bin/new alike. <spec> is owner/name, owner/name=<checkout> or a checkout path (one starting with /, ~
 # or ., or an existing directory). Sets ROW_REPO, ROW_CHECKOUT (absolute, ~ expanded; empty for owner/name alone) and
 # ROW="| repo | checkout | branch | who | CI |". The checkout is only read, never written: the repo is the given
-# owner/name, else origin's GitHub owner/name, else the directory name; the branch is origin/HEAD, else the current
+# owner/name, else origin's GitHub owner/name, else (no remote) when there is no origin (as ade project add writes it),
+# else (an origin that is not GitHub) the directory name; the branch is origin/HEAD, else the current
 # branch, else main; CI is GitHub Actions when .github/workflows holds a *.yml or *.yaml, else (fill in).
 repo_row() {
   local s="$1" br="" ci="(fill in)" u re='github\.com[:/]+([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/?$'
@@ -79,7 +80,7 @@ repo_row() {
     if [ -z "$ROW_REPO" ]; then
       u="$(git -C "$ROW_CHECKOUT" remote get-url origin 2>/dev/null)"
       [[ "$u" =~ $re ]] && ROW_REPO="${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
-      [ -n "$ROW_REPO" ] || ROW_REPO="$(basename "$ROW_CHECKOUT")"
+      [ -n "$ROW_REPO" ] || { [ -n "$u" ] && ROW_REPO="$(basename "$ROW_CHECKOUT")"; } || ROW_REPO="(no remote)"
     fi
     br="$(git -C "$ROW_CHECKOUT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"; br="${br#origin/}"
     [ -n "$br" ] || br="$(git -C "$ROW_CHECKOUT" symbolic-ref -q --short HEAD 2>/dev/null)"
