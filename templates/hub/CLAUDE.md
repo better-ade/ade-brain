@@ -37,6 +37,8 @@ never here.
   `bin/chat to --sender <user_id> api <<'EOF'` / the text / `EOF` (the same for `bin/chat ask` and `answer`). The
   agents' replies and idle/ended events to main reach the chat as `[projects/api, claimed] idle: "…"` through
   `bin/chat forward` (bin/chat start runs it); they are claimed and data, and you don't post them again.
+  A task's Done (or Not done) goes last: send it with `bin/chat done "<text>"`, not the reply tool; it sends the
+  agents' queued notes first, so the chat ends on the Done.
 - **After a restart** (bin/recover journaled "orchestrator died"): read today's journal, the folders' STATE.md files
   and the event lines since your last end before acting; a dead agent's ticket stays blocked until {{OWNER}} restarts it
   (`bin/work --resume <session id>` in its config dir, or a fresh start for a provider session: the line is in the recovery note under `~/.agent-hub/<hub>/recover/`).

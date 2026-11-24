@@ -36,6 +36,9 @@
 #   asked <ref>                   pending, approved or denied
 #   say <text>                    send one message to the paired owner (story R1); a failed send is kept in
 #                                 <state dir>/chat/pending/ and sent by the next forward. Exit 0 sent, 1 kept, 2 not paired
+#   done <text>                   a task's Done (story P2): the agents' queued events first (forward --wait, past a running
+#                                 forwarder for up to AGENT_CHAT_DONE_WAIT s, default 10), then the text as say sends it,
+#                                 so it is the last message. Events not sent by then: one line on stderr; the text still goes
 #   send [--document] <file>      one image (PNG or JPEG by its first bytes, at most 10 MB) to the paired owner, as a photo;
 #                                 --document: any one file, at most 20 MB, as a document. Only when the channel is
 #                                 locked to the owner (lock_of). The caption, if any, on stdin (one line, keys hidden,
@@ -53,7 +56,7 @@
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; S="$(state_dir)"; PIDF="$S/chat/chat.pid"; LOCK="$S/chat/lock"
 LA="${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}"; LABEL="ai.agent-hub.$(hub_name).chat"
 NAME="${HUB_ORCHESTRATOR:-$(hub_name)}"
-usage() { echo "usage: bin/chat start | stop | status [--card] | setup [channel] | test [channel] | logs [-n N] | agents | to --sender <id> <agent> (text on stdin) | forward | ask (question on stdin) | answer --sender <id> (reply on stdin) | asked <ref> | say <text> | send [--document] <file> (caption on stdin) (channels: $(channel_types))" >&2; exit 2; }
+usage() { echo "usage: bin/chat start | stop | status [--card] | setup [channel] | test [channel] | logs [-n N] | agents | to --sender <id> <agent> (text on stdin) | forward | ask (question on stdin) | answer --sender <id> (reply on stdin) | asked <ref> | say <text> | done <text> | send [--document] <file> (caption on stdin) (channels: $(channel_types))" >&2; exit 2; }
 CHANNELS="${HUB_CHANNELS-telegram}"
 check_channels() {
   [ -n "${CHANNELS// /}" ] || { echo "chat: HUB_CHANNELS is empty (known channel types: $(channel_types))" >&2; exit 2; }
@@ -316,6 +319,9 @@ EOF
     text="$(read_text)" || { echo "chat: the message comes on stdin (bin/chat to --sender <id> <agent> <<'EOF' ... EOF)" >&2; exit 2; }
     if ! f="$(resolve "$4")"; then echo "chat: no single agent named '$4'; the agents:" >&2; agents_view table "" >&2; exit 2; fi
     "$H/bin/notify" --from main "$f" "$text" && echo "sent to $f" ;;
+  "done") [ $# -eq 2 ] && [ -n "$2" ] || usage; [ -f "$(access_file)" ] || exit 2
+    "$H/bin/chat" forward --wait >/dev/null 2>&1 || echo "chat: some agent events were not sent before the Done; they follow when the channel takes them" >&2
+    exec "$H/bin/chat" say "$2" ;;
   say) [ $# -eq 2 ] && [ -n "$2" ] || usage; [ -f "$(access_file)" ] || exit 2
     mkdir -p "$S/chat/pending" && chmod 700 "$S/chat" || exit 1; m="$S/chat/pending/$(date +%s).$$.txt"
     # the owners it reached are recorded (<m>.done), so a retry never sends it to them again
@@ -332,13 +338,17 @@ EOF
       out="$({ printf '%s\n' "$t"; printf '%s' "$cap"; } | ACCESS="$(access_file)" STATE="$S" python3 -I "$PY_CHAT" file "$kind" "$1")"; rc=$?; unset t; fi
     [ "$rc" = 0 ] || exit "$rc"
     "$H/bin/journal" . "chat: sent a $kind to the owner (${out% *}, ${out##* } bytes)"; echo "sent ${out% *} to the paired owner" ;;
-  forward) [ $# -eq 1 ] || usage; mkdir -p "$S/chat" && chmod 700 "$S/chat" || exit 1; FL="$S/chat/forward.lock"
+  forward) w=0; [ $# -eq 2 ] && [ "$2" = --wait ] && { w="${AGENT_CHAT_DONE_WAIT:-10}"; set -- "$1"; }; case "$w" in ''|*[!0-9]*) w=10 ;; esac
+    [ $# -eq 1 ] || usage; mkdir -p "$S/chat" && chmod 700 "$S/chat" || exit 1; FL="$S/chat/forward.lock"
     # one forwarder at a time; a lock whose holder is gone is taken over
     # a lock with no pid yet belongs to a forwarder that is just starting: live for 10 s (the folder's mtime)
-    if ! mkdir "$FL" 2>/dev/null; then p="$(cat "$FL/pid" 2>/dev/null)"
-      case "$p" in ''|*[!0-9]*) m="$(file_mtime "$FL")"; m="${m:-0}"; [ $(( $(date +%s) - m )) -gt 10 ] || exit 0 ;;
-        *) kill -0 "$p" 2>/dev/null && exit 0 ;; esac
-      rm -rf "${FL:?}"; mkdir "$FL" 2>/dev/null || exit 0; fi
+    # --wait (bin/chat done): a live holder is waited for, up to w s, then exit 1 (the caller says so)
+    take_lock() { local p m; mkdir "$FL" 2>/dev/null && return 0; p="$(cat "$FL/pid" 2>/dev/null)"
+      case "$p" in ''|*[!0-9]*) m="$(file_mtime "$FL")"; m="${m:-0}"; [ $(( $(date +%s) - m )) -gt 10 ] || return 1 ;;
+        *) kill -0 "$p" 2>/dev/null && return 1 ;; esac
+      rm -rf "${FL:?}"; mkdir "$FL" 2>/dev/null; }
+    end=$(( $(date +%s) + w ))
+    until take_lock; do [ "$w" -gt 0 ] || exit 0; [ "$(date +%s)" -lt "$end" ] || exit 1; sleep 0.2; done
     echo $$ > "$FL/pid"; trap 'rm -rf "${FL:?}"' EXIT
     # a running session the rule put in auto, whose lock no longer holds (the plugin reads access.json at every
     # message): the owner is told once per change and it is journaled. The session is not stopped: that would end
