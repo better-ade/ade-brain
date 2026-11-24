@@ -1,14 +1,36 @@
 #!/bin/bash
-# bin/new <projects|ops>/<name>: a folder from templates/, plus its named agent. Never overwrites.
+# bin/new <projects|ops>/<name> [--repo <checkout> | --repo owner/name[=<checkout>]]...: a folder from templates/, plus
+# its named agent. Never overwrites. On a folder that exists it keeps every file and only adds what is missing.
+# --repo (story P1, .ade/context/code-table.md): one row in the folder's ACCESS.md Code table, read from the checkout
+# (bin/lib.sh repo_row: owner/name from origin, else the directory name; origin/HEAD's branch; GitHub Actions CI). The
+# checkout is never written. Refused (exit 2, nothing written): a repo already in that Code table, a checkout that is
+# not a directory. A new owner/name joins HUB_REPOS in hub.conf (bin/doctor checks it); commit hub.conf after.
 # bin/new --settings <folder>: re-renders only that existing folder's .claude/settings.json and .mcp.json from the
 # templates (hooks and permissions added since the folder was made, story C6; the browser override, story V3), after
 # copying each old file to <file>.bak.
 # .mcp.json: the folder's `playwright` MCP server, <hub>/bin/browser run <folder> (its browser profile and output folder).
-set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; F="${1:-}"; SETTINGS=0
-if [ "$F" = --settings ]; then SETTINGS=1; F="${2:-}"; fi
-[[ "$F" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || { echo "usage: bin/new projects/<name>|ops/<name> (a-z 0-9 -) | bin/new --settings <folder>" >&2; exit 2; }
+set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; F="${1:-}"; SETTINGS=0; REPOS=()
+usage() { echo "usage: bin/new projects/<name>|ops/<name> (a-z 0-9 -) [--repo <checkout>|owner/name[=<checkout>]]... | bin/new --settings <folder>" >&2; exit 2; }
+[ $# = 0 ] || shift
+if [ "$F" = --settings ]; then SETTINGS=1; F="${1:-}"; [ $# = 0 ] || shift; fi
+while [ $# -gt 0 ]; do [ "$1" = --repo ] && [ "$SETTINGS" = 0 ] && [ -n "${2:-}" ] || usage; REPOS+=("$2"); shift 2; done
+[[ "$F" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || usage
 [ "$SETTINGS" = 0 ] || [ -d "$H/$F" ] || { echo "new: no folder $F" >&2; exit 2; }
 NAME="${F#*/}"; AGENT="$(agent_name "$F")"
+# --repo rows, every one checked before anything is written
+A="$H/$F/ACCESS.md"; ROWS=""; NEW_REPOS=""; SEEN=" "
+in_code() { [ -f "$A" ] && awk -F'|' -v r="$1" '/^## /{c=($0 ~ /^## Code/)} c && /^\|/ {x=$2; gsub(/^[ \t]+|[ \t]+$/, "", x); if (x == r) f=1} END {exit !f}' "$A"; }
+for r in ${REPOS[@]+"${REPOS[@]}"}; do
+  [[ "$r" != *=* ]] || [[ "${r%%=*}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "new: --repo must be <checkout> or owner/name[=<checkout>]" >&2; exit 2; }
+  repo_row "$r" "$(hub_owner)"
+  [ -z "$ROW_CHECKOUT" ] || [ -d "$ROW_CHECKOUT" ] || { echo "new: checkout $ROW_CHECKOUT is not a directory" >&2; exit 2; }
+  case "$ROW_REPO$ROW_CHECKOUT" in *"|"*|*$'\n'*) echo "new: a repo or checkout with | or a newline cannot go in the Code table" >&2; exit 2 ;; esac
+  case "$SEEN" in *" $ROW_REPO "*) echo "new: $ROW_REPO is given twice" >&2; exit 2 ;; esac; SEEN="$SEEN$ROW_REPO "
+  ! in_code "$ROW_REPO" || { echo "new: $ROW_REPO is already in $F/ACCESS.md" >&2; exit 2; }
+  ROWS="$ROWS$ROW"$'\n'
+  [[ "$ROW_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || continue
+  case " ${HUB_REPOS:-}$NEW_REPOS " in *" $ROW_REPO "*) ;; *) NEW_REPOS="$NEW_REPOS $ROW_REPO" ;; esac
+done
 put() {  # template destination
   local dst="$H/$2"; if [ -e "$dst" ]; then echo "kept $2"; return; fi
   mkdir -p "$(dirname "$dst")"
@@ -31,6 +53,20 @@ fi
 put CLAUDE.md "$F/CLAUDE.md"; put ACCESS.md "$F/ACCESS.md"; put STATE.md "$F/STATE.md"
 put MEMORY.md "$F/memory/MEMORY.md"; put folder-settings.json "$F/.claude/settings.json"; put folder-mcp.json "$F/.mcp.json"
 put agent.md ".claude/agents/$AGENT.md"
+if [ -n "$ROWS" ]; then
+  # the rows go at the end of the Code table (after its last | line), every other line as it was
+  ROWS="$ROWS" awk 'c && t && !/^\|/ {printf "%s", ENVIRON["ROWS"]; c = t = 0; ok = 1}
+    /^## Code/ && !d {c = d = 1} c && /^\|---/ {t = 1} {print}
+    END {if (t) {printf "%s", ENVIRON["ROWS"]; ok = 1}; exit !ok}' "$A" > "$A.tmp" && mv "$A.tmp" "$A" ||
+    { rm -f "$A.tmp"; echo "new: no Code table in $F/ACCESS.md to add the repos to" >&2; exit 1; }
+  printf '%s' "$ROWS" | while IFS='|' read -r _ repo _; do echo "added ${repo// /} to $F/ACCESS.md"; done
+fi
+if [ -n "$NEW_REPOS" ] && [ -f "$H/hub.conf" ]; then
+  L="HUB_REPOS=$(printf '%q' "$(echo ${HUB_REPOS:-}$NEW_REPOS)")"
+  L="$L" awk '/^HUB_REPOS=/ {if (!d) print ENVIRON["L"]; d = 1; next} {print} END {if (!d) print ENVIRON["L"]}' "$H/hub.conf" > "$H/hub.conf.tmp" &&
+    mv "$H/hub.conf.tmp" "$H/hub.conf" || { rm -f "$H/hub.conf.tmp"; echo "new: could not write HUB_REPOS in hub.conf" >&2; exit 1; }
+  echo "added$NEW_REPOS to HUB_REPOS in hub.conf: commit hub.conf (bin/sync leaves it out)"
+fi
 focus_hub_sync "$F" >/dev/null   # the hub's rules as copies inside the folder (.ade/context/focus-folders.md)
 [ -x "$H/bin/setup" ] && "$H/bin/setup" >/dev/null
 exit 0

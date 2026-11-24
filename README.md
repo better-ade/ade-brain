@@ -80,6 +80,20 @@ no secret names to check. `push -u` also sets the upstream auto sync needs. Comm
 
 Or locally, without GitHub: `bin/init ... --dest ~/Project/acme-sre` copies the template to a new folder first.
 
+### Bring an existing project
+
+```bash
+bin/new projects/shop --repo ~/code/shop            # a checkout: owner/name from its origin, its default branch, CI
+bin/new projects/shop --repo acme/shop-api          # owner/name alone: bin/work clones it later
+git add hub.conf && git commit -m "Add the shop repos"   # a new owner/name joins HUB_REPOS (bin/doctor checks it)
+```
+
+`--repo` (repeatable) adds one row to the folder's Code table in `ACCESS.md`: the repo (`owner/name` from a GitHub
+`origin`, else the directory name), the absolute checkout, `origin/HEAD`'s branch (else the current one), the hub owner
+as who merges, and `GitHub Actions` when `.github/workflows/` holds a workflow. It works on a folder that exists and
+keeps its files; it refuses a repo already in that table and a checkout that is not a directory; it never writes inside
+the checkout. `bin/init --repo` builds its rows the same way.
+
 On a terminal, `bin/init` asks for a missing persona (its number, slug or title; case, spaces, `-`, `_` and `/` do not
 matter), client or owner; at an end of input it prints the command that continues. A run that stopped part way leaves
 `.init-pending` in the copy: `bin/init` there (or the same command) finishes it without asking again.
