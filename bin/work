@@ -185,10 +185,9 @@ elif [ "$(platform)" != macos ]; then
   echo "work: AGENT_TERMINAL=${AGENT_TERMINAL}: Terminal and iTerm windows are macOS only; on $(platform) sessions open in tmux" >&2; exit 2
 fi
 A="$H/$F/ACCESS.md"
-# Code table rows (or rows appended later with an absolute checkout) as "<repo>|<checkout>" (first = default); a "(...)"
-# repo is a placeholder unless its checkout is a path ("(no remote)", as ade project add writes a repo with no remote)
+# Code table rows (or rows appended later with an absolute checkout) as "<repo>|<checkout>" (first = default)
 rows=$(awk -F'|' '/^## /{c=($0=="## Code")} /^\|/{n=$2; k=$3; gsub(/^[ \t]+|[ \t]+$/,"",n); gsub(/^[ \t]+|[ \t]+$/,"",k);
-  if((c || k ~ /^[\/~]/) && n!="" && n!="Repo" && n !~ /^-+$/ && (n !~ /^\(/ || k ~ /^[\/~]/)) print n "|" k}' "$A")   # "(none ...)" = no repo
+  if((c || k ~ /^[\/~]/) && n!="" && n!="Repo" && n !~ /^-+$/ && n !~ /^\(/) print n "|" k}' "$A")   # "(none ...)" = no repo
 if [ -z "$rows" ]; then
   # a folder with no code repo of its own works in the hub folder itself
   [ -z "$WANT" ] || { echo "work: no repo '$WANT' in $F/ACCESS.md" >&2; exit 2; }
@@ -200,7 +199,6 @@ else
   repo="${row%%|*}"; name="${repo##*/}"; dir="${row#*|}"; dir="${dir/#\~/$HOME}"
   own=$(grep -F "| $repo |" "$A" | grep -o 'checkout owned by [^ |]*' | head -1)
   if [ -z "${dir// /}" ] && [ -n "$own" ]; then echo "work: $repo: $own; run bin/work ${own#checkout owned by }" >&2; exit 2; fi
-  if [ ! -d "$dir" ] && [ "${repo#(}" != "$repo" ]; then echo "work: $F: the checkout $dir is gone and its row names no remote to clone ($repo)" >&2; exit 2; fi
   if [ ! -d "$dir" ]; then
     dir="${AGENT_CODE_DIR:-$HOME/Project}/$name"; slug="$repo"; if [ "$slug" = "$name" ]; then [ -n "$(code_owner)" ] || { echo "work: $repo has no owner (write owner/name in ACCESS.md or set HUB_CODE_OWNER)" >&2; exit 2; }; slug="$(code_owner)/$name"; fi
     if [ ! -d "$dir" ]; then

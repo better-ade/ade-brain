@@ -59,7 +59,7 @@ fi
 # the checkout: exactly one Code repo (the one bin/work opens by default) with an existing checkout
 A="$H/$F/ACCESS.md"
 nrows=$(awk -F'|' '/^## /{c=($0=="## Code")} /^\|/{n=$2; k=$3; gsub(/^[ \t]+|[ \t]+$/,"",n); gsub(/^[ \t]+|[ \t]+$/,"",k);
-  if((c || k ~ /^[\/~]/) && n!="" && n!="Repo" && n !~ /^-+$/ && (n !~ /^\(/ || k ~ /^[\/~]/)) print n}' "$A" 2>/dev/null | grep -c .)
+  if((c || k ~ /^[\/~]/) && n!="" && n!="Repo" && n !~ /^-+$/ && n !~ /^\(/) print n}' "$A" 2>/dev/null | grep -c .)
 CK="$(repos_of "$F")"
 [ "$nrows" -eq 1 ] && [ -n "$CK" ] && [ "$(printf '%s\n' "$CK" | grep -c .)" -eq 1 ] ||
   { echo "dispatch: $F needs exactly one Code repo with an existing checkout in ACCESS.md (repos: $nrows); nothing started" >&2; exit "$XS"; }
