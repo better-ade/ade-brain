@@ -61,6 +61,34 @@ repos_of() {
   awk -F'|' '/^\|/{c=$3; gsub(/^[ \t]+|[ \t]+$/,"",c); if(c ~ /^[\/~]/)print c}' "$a" |
     while IFS= read -r r; do r="${r/#\~/$HOME}"; [ -d "$r" ] && echo "$r"; done
 }
+# repo_row <spec> <who merges>: one Code table row for a folder's ACCESS.md (story P1, .ade/context/code-table.md), for
+# bin/init and bin/new alike. <spec> is owner/name, owner/name=<checkout> or a checkout path (one starting with /, ~
+# or ., or an existing directory). Sets ROW_REPO, ROW_CHECKOUT (absolute, ~ expanded; empty for owner/name alone) and
+# ROW="| repo | checkout | branch | who | CI |". The checkout is only read, never written: the repo is the given
+# owner/name, else origin's GitHub owner/name, else the directory name; the branch is origin/HEAD, else the current
+# branch, else main; CI is GitHub Actions when .github/workflows holds a *.yml or *.yaml, else (fill in).
+repo_row() {
+  local s="$1" br="" ci="(fill in)" u re='github\.com[:/]+([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/?$'
+  ROW_REPO=""; ROW_CHECKOUT=""
+  if [[ "$s" == *=* ]]; then ROW_REPO="${s%%=*}"; ROW_CHECKOUT="${s#*=}"
+  elif [[ "$s" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$ ]] && [ ! -d "$s" ]; then ROW_REPO="$s"
+  else ROW_CHECKOUT="$s"; fi
+  case "$ROW_CHECKOUT" in "~"|"~/"*) ROW_CHECKOUT="$HOME${ROW_CHECKOUT#\~}" ;; esac
+  if [ -n "$ROW_CHECKOUT" ] && [ -d "$ROW_CHECKOUT" ]; then
+    ROW_CHECKOUT="$(cd "$ROW_CHECKOUT" && pwd)"
+    if [ -z "$ROW_REPO" ]; then
+      u="$(git -C "$ROW_CHECKOUT" remote get-url origin 2>/dev/null)"
+      [[ "$u" =~ $re ]] && ROW_REPO="${BASH_REMATCH[1]}/${BASH_REMATCH[2]%.git}"
+      [ -n "$ROW_REPO" ] || ROW_REPO="$(basename "$ROW_CHECKOUT")"
+    fi
+    br="$(git -C "$ROW_CHECKOUT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"; br="${br#origin/}"
+    [ -n "$br" ] || br="$(git -C "$ROW_CHECKOUT" symbolic-ref -q --short HEAD 2>/dev/null)"
+    for u in "$ROW_CHECKOUT"/.github/workflows/*.yml "$ROW_CHECKOUT"/.github/workflows/*.yaml; do
+      [ -f "$u" ] && { ci="GitHub Actions"; break; }; done
+  fi
+  [ -n "$ROW_REPO" ] || ROW_REPO="$(basename "$ROW_CHECKOUT")"
+  ROW="| $ROW_REPO | $ROW_CHECKOUT | ${br:-main} | $2 | $ci |"
+}
 # stale_repos <folder>: repos whose HEAD commit is newer than STATE.md's mtime, as "<repo> <hash>" lines
 stale_repos() {
   local s m r ct; s="$(hub_root)/$1/STATE.md"; [ -f "$s" ] || return 0; m=$(file_mtime "$s")

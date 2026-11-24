@@ -210,10 +210,10 @@ PY
 REMOTE_TXT="none configured"; [ -n "$RHOST" ] && REMOTE_TXT="${RUSER:+$RUSER@}$RHOST port $RPORT${RKEY:+, key \`$RKEY\`}${RDIR:+, dir \`$RDIR\`}"
 SECRETS_TXT="${SECRETS[*]+${SECRETS[*]}}"; [ -n "$SECRETS_TXT" ] || SECRETS_TXT="none yet"
 REPO_ROWS=""; REPO_NAMES=""; FIRST_REPO_ROW=""
+# each row from the checkout itself (bin/lib.sh repo_row, as bin/new --repo): its default branch and CI
 for r in ${REPOS[@]+"${REPOS[@]}"}; do
-  slug="${r%%=*}"; co=""; [ "$slug" != "$r" ] && co="${r#*=}"
-  row="| $slug | $co | main | $OWNER | (fill in) |"; REPO_ROWS="$REPO_ROWS$row"$'\n'; REPO_NAMES="$REPO_NAMES $slug"
-  [ -n "$FIRST_REPO_ROW" ] || FIRST_REPO_ROW="$row"
+  repo_row "$r" "$OWNER"; REPO_ROWS="$REPO_ROWS$ROW"$'\n'; REPO_NAMES="$REPO_NAMES $ROW_REPO"
+  [ -n "$FIRST_REPO_ROW" ] || FIRST_REPO_ROW="$ROW"
 done
 FOLDER_LIST=""; for f in $FOLDERS; do FOLDER_LIST="$FOLDER_LIST- \`$f\`"$'\n'; done
 q() { printf '%q' "$1"; }

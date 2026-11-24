@@ -232,5 +232,15 @@ init_client_needs_a_letter() {
   . "$W/ck/hub.conf"; assert_eq "$HUB_CLIENT|$HUB_NAME" "株式会社|kk-lead" "client kept, name from --name"
 }
 
-init_persona_forgives; init_persona_flag; init_asks_again; init_resume_line; init_runs_again; init_no_terminal; init_existing_repo; init_client_needs_a_letter
+# story P1 AC8: --repo rows come from bin/lib.sh's repo_row, so a checkout whose default branch is master writes master
+init_repo_branch() {
+  local W M; W="$(mktemp -d)"; M="$W/legacy"
+  git init -q -b master "$M" && echo x > "$M/README" && git -C "$M" add -A && git -C "$M" -c user.name=t -c user.email=t@t commit -qm init
+  bin/init --persona tech-lead --client "Acme Corp" --owner "Sam Lee" --dest "$W/hub" --repo acme/legacy="$M" >/dev/null 2>&1 </dev/null ||
+    fail "init --repo on a master checkout"
+  grep -rqF "| acme/legacy | $M | master | Sam Lee | (fill in) |" "$W/hub/projects" "$W/hub/ops" 2>/dev/null ||
+    fail "init writes the checkout's master branch, not main: $(grep -rh 'acme/legacy' "$W/hub/projects" "$W/hub/ops" 2>/dev/null)"
+}
+
+init_persona_forgives; init_persona_flag; init_asks_again; init_resume_line; init_runs_again; init_no_terminal; init_existing_repo; init_client_needs_a_letter; init_repo_branch
 echo ok
