@@ -43,4 +43,5 @@
 - 2026-11-21: owner: no GPT and no Codex; E2 removed. Focus agents: Claude Code, Gemini (E1), DeepSeek, GLM, Muse.
 - 2026-11-21: C5 Done: the orchestrator with channels (Telegram first): bin/chat, short-lived 0600 token file, manual mode, lock, allowlist-only without a terminal, launchd service; one adversarial fix round.
 - 2026-11-21: sharded R1 (crash-proof continuity, 12 ACs, high) and C7 (Telegram formatting, buttons, talking to focus agents through the orchestrator, 6 ACs, high).
+- 2026-11-24: PR #79 Done: bin/work and bin/dispatch read a "(no remote)" Code row with a checkout path as a repo (ade project add, ade-cli 0.2.8); a gone checkout is refused, never cloned; bash tests/run.sh green, both new tests fail without the fix.
 - 2026-11-24: P1 Done: bring an existing project (bin/new --repo, shared repo_row in bin/lib.sh, HUB_REPOS edit, 8 ACs, medium); bash tests/run.sh green, no FAIL.

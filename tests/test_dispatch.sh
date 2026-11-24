@@ -181,6 +181,14 @@ bad_tree_starts_nothing() {
   grep '^dispatch' "$J" | tail -1 | grep -q '; bin/work failed for 1.1$' || fail "the failure is journaled: $(cat "$J" 2>/dev/null)"
 }
 
+no_remote_row_dispatches() {
+  # ade project add writes a checkout with no remote as "(no remote)": it is the folder's one Code repo
+  reset; tickets "$(row 1.1 low)"; bin/new projects/local >/dev/null; NR="$(mktemp -d)/local-code"; mkdir -p "$NR/_bmad"
+  : > "$NR/_bmad/ade-runtime.mjs"; printf '| (no remote) | %s | main | (owner) | none found |\n' "$NR" >> projects/local/ACCESS.md
+  out=$(bin/dispatch projects/local 2>&1) || fail "a no-remote Code row dispatches: $out"
+  assert_eq "$(calls)" 1 "one start for the no-remote checkout"
+}
+
 run_journaled() {
   reset; tickets "$(row 1.1 low),$(row 2.1 high)"
   bin/dispatch projects/demo >/dev/null || fail "dispatch for the journal"
@@ -204,5 +212,5 @@ for r in ("Bash(*bin/dispatch --approve*)", "Bash(*ade dispatch --approve*)", "B
     fail "$f asks before --approve and script"
 done
 starts_one_by_default; max_capped_at_two; running_ticket_not_restarted; high_risk_waits
-approve_starts_one; only_ready_started; bad_tree_starts_nothing; run_journaled
+approve_starts_one; only_ready_started; bad_tree_starts_nothing; no_remote_row_dispatches; run_journaled
 echo ok
