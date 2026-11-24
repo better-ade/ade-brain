@@ -42,8 +42,11 @@ start_within() { local i=0 p; bin/chat start </dev/null >/dev/null 2>&1 & p=$!
   wait "$p"; }
 PIDF="$AGENT_STATE/chat/chat.pid"
 
+# the state no check makes for itself: the bot token, stored as the owner stores it (story T1: a check run on its own)
+store_token() { printf '%s\n' "$K" | bin/keys set telegram >/dev/null 2>&1; }
+
 start_launches_channel_session() {
-  printf '%s\n' "$K" | bin/keys set telegram >/dev/null 2>&1 || fail "bin/keys set telegram"
+  store_token || fail "bin/keys set telegram"
   bin/secret --has telegram-bot-token || fail "the token is stored as telegram-bot-token"
   bin/keys | grep -E '^telegram ' | grep -q stored || fail "bin/keys lists telegram as stored [$(bin/keys)]"
   reset_rec; bin/chat start </dev/null >"$FAKE/out" 2>&1 || fail "start [$(cat "$FAKE/out")]"
@@ -774,14 +777,45 @@ if why: sys.exit("; ".join(why))
 PY
 }
 
-# bash tests/test_chat.sh <check>: run the checks up to and including one (to see each fail on its own)
-if [ $# -gt 0 ]; then for c in start_launches_channel_session token_short_lived_file missing_token_refuses skip_permissions_refused \
+# one check on its own (story T1): bash tests/test_chat.sh <check> runs that check after the setup it needs, never every
+# check before it (that path outgrew no_terminal_stand_in_api's 120 s on the macOS CI runner, run 45397612643)
+one_check_runs_alone() {
+  local ran rc t; ran="$(mktemp)"; t=$SECONDS
+  out=$(CHAT_CHECK_RAN="$ran" bash "$REPO/tests/test_chat.sh" bot_send_token_on_stdin_only </dev/null 2>&1) || fail "the bot check on its own [$out]"
+  # run on its own it takes a few seconds; the checks before it take over 70 s (over 120 s on the macOS CI runner)
+  [ $((SECONDS - t)) -lt 45 ] || fail "the bot check on its own took $((SECONDS - t)) s: other checks ran first"
+  assert_eq "$(tail -n 1 <<<"$out")" "ok" "the bot check passes on its own"
+  assert_eq "$(tr '\n' ' ' <"$ran")" "bot_send_token_on_stdin_only " "only the named check ran"
+  : > "$ran"; out=$(CHAT_CHECK_RAN="$ran" bash "$REPO/tests/test_chat.sh" stop_and_status </dev/null 2>&1) || fail "stop_and_status on its own [$out]"
+  assert_eq "$(tr '\n' ' ' <"$ran")" "single_instance stop_and_status " "stop_and_status runs after the check it continues"
+  out=$(bash "$REPO/tests/test_chat.sh" no_such_check </dev/null 2>&1); rc=$?
+  assert_eq "$rc" "2" "an unknown check exits 2 [$out]"
+  out=$(bash "$REPO/tests/test_chat.sh" "single_instance stop_and_status" </dev/null 2>&1); rc=$?
+  assert_eq "$rc" "2" "two names in one argument are not a check [$out]"; rm -f "$ran"
+}
+
+# bash tests/test_chat.sh <check>: run one check on its own (story T1), after the state no check makes for itself and,
+# for stop_and_status, the check whose session it reads; --each runs every check that way. CHAT_CHECK_RAN=<file> lists
+# each check run (one_check_runs_alone reads it).
+CHECKS="start_launches_channel_session token_short_lived_file missing_token_refuses skip_permissions_refused \
   single_instance stop_and_status start_lock_and_access mode_follows_lock no_terminal_session_ends same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator \
-  telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder auto_notice_once lost_lock_noticed approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api done_after_queued_notes done_without_waiting_when_nothing_queued done_holds_back_no_other_notes done_after_a_failed_note; do
-  [ "$c" = "$1" ] && { "$c"; echo ok; exit 0; }; ( "$c" ) >/dev/null 2>&1; done; fi
+  telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder auto_notice_once lost_lock_noticed approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api one_check_runs_alone done_after_queued_notes done_without_waiting_when_nothing_queued done_holds_back_no_other_notes done_after_a_failed_note"
+run_check() { [ -z "${CHAT_CHECK_RAN:-}" ] || echo "$1" >> "$CHAT_CHECK_RAN"; "$1"; }
+if [ "${1:-}" = --each ]; then
+  for c in $CHECKS; do
+    if o=$(bash "$REPO/tests/test_chat.sh" "$c" </dev/null 2>&1); then echo "ok    $c"; else echo "FAIL  $c"; tail -n 5 <<<"$o"; bad=1; fi
+  done; exit "${bad:-0}"
+fi
+if [ $# -gt 0 ]; then
+  known=; for c in $CHECKS; do [ "$c" = "$1" ] && known=1; done
+  [ -n "$known" ] || { echo "test_chat.sh: no check named $1 (bash tests/test_chat.sh --each runs them all)" >&2; exit 2; }
+  store_token || fail "bin/keys set telegram"
+  [ "$1" != stop_and_status ] || o=$( ( run_check single_instance ) 2>&1 ) || fail "the setup check single_instance [$o]"
+  run_check "$1" || fail "$1 returned non-zero"; echo ok; exit 0
+fi
 start_launches_channel_session; token_short_lived_file; missing_token_refuses; skip_permissions_refused
 single_instance; stop_and_status; start_lock_and_access; mode_follows_lock; no_terminal_session_ends; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
 state_per_orchestrator
-telegram_style_rule; answer_needs_owner_permission; status_card_golden; to_agent_notifies; forward_agent_events_once; forward_partial_failure; forward_cap_per_run; forward_after_rotation; forward_lock; start_runs_forwarder; auto_notice_once; lost_lock_noticed; approvals_buttons_or_numbered; agents_list; bot_send_token_on_stdin_only; no_terminal_stand_in_api
+telegram_style_rule; answer_needs_owner_permission; status_card_golden; to_agent_notifies; forward_agent_events_once; forward_partial_failure; forward_cap_per_run; forward_after_rotation; forward_lock; start_runs_forwarder; auto_notice_once; lost_lock_noticed; approvals_buttons_or_numbered; agents_list; bot_send_token_on_stdin_only; no_terminal_stand_in_api; one_check_runs_alone
 done_after_queued_notes; done_without_waiting_when_nothing_queued; done_holds_back_no_other_notes; done_after_a_failed_note
 echo ok
