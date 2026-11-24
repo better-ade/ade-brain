@@ -231,7 +231,7 @@ presses, so every action is a command link the owner taps (or types); `bin/conso
 - **Stop:** the nonce is 4 digits, a 0600 file `<state dir>/chat/stops/<nonce>` (`{"name","folder","time"}`), single use,
   120 s. Confirmed: SIGTERM to the agent's engine pid (`bin/sessions`), the keyboard removed, one journal line
   ("stopped <name>"), the board edited. `/cancel` drops every pending stop.
-- **The board** (`bin/chat board`, run by the start's forwarder loop after `forward`): one message, `Agents · N running`,
+- **The board** (`bin/chat board`, run by the start's forwarder loop after `forward`, at most every 15 s): one message, `Agents · N running`,
   a row `<● busy | ○ idle | ⚠ blocked> <name> · <folder> · <role> · <ticket> · <age>` and the agent's links
   `/update_<a> /log_<a> /shot_<a> /stop_<a>` under it, then up to 5 `✓ <name> · <folder> · done`. Posted and pinned once
   (no notification), then edited in place: at most one edit per 5 s (the next run sends a held change), "message is not

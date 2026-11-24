@@ -274,9 +274,11 @@ case "${1:-}" in
     # the forwarder: the agents' events to main reach the chat while the session lives (story C7)
     fe="${AGENT_CHAT_FORWARD_EVERY:-15}"; case "$fe" in ''|*[!0-9]*) fe=15 ;; esac
     # (started apart, not a child of script after the exec: util-linux script would wait for it)
-    if [ "$fe" -gt 0 ]; then ( ( exec </dev/null >/dev/null 2>&1; w="$fe"; while kill -0 $$ 2>/dev/null; do sleep "$w"
+    # the board and the screenshots (story C9) follow it, at most every 15 s (the board edits at most every 5 s anyway)
+    if [ "$fe" -gt 0 ]; then ( ( exec </dev/null >/dev/null 2>&1; w="$fe"; lb=0; while kill -0 $$ 2>/dev/null; do sleep "$w"
       kill -0 $$ 2>/dev/null || break; "$H/bin/chat" forward; r=$?; [ "$r" = 1 ] && r=1 || r=0
-      "$H/bin/chat" board; "$H/bin/chat" shots; w="$(chat_backoff "$w" "$r")"; done ) & ) fi
+      if [ $(( $(date +%s) - lb )) -ge 15 ]; then "$H/bin/chat" board; "$H/bin/chat" shots; lb="$(date +%s)"; fi
+      w="$(chat_backoff "$w" "$r")"; done ) & ) fi
     # the bot's command menu for the owner's chat (story C9; only when locked to the owner), started apart
     ( ( exec </dev/null >/dev/null 2>&1; "$H/bin/chat" menu ) & )
     # the first start the rule puts in auto tells the owner once, through the chat (kept and sent by the forwarder when
