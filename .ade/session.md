@@ -42,3 +42,4 @@
 - 2026-11-21: sharded E2 (Codex CLI for GPT builders/focus agents, 9 ACs, high), mirrors E1; owner lifted the GPT pause for focus agents.
 - 2026-11-21: owner: no GPT and no Codex; E2 removed. Focus agents: Claude Code, Gemini (E1), DeepSeek, GLM, Muse.
 - 2026-11-21: sharded R1 (crash-proof continuity, 12 ACs, high) and C7 (Telegram formatting, buttons, talking to focus agents through the orchestrator, 6 ACs, high).
+- 2026-11-24: A16 (ade-cli #42, `ade connect`, high) Done at 4a8394a after the one fix round: `bash tests/run.sh` green (21 of 21 test files ok, rc 0; an earlier run under load had a test_web timing failure, which passed alone twice and on the rerun), `tests/lint.sh` ok, CI green on every check; each adversarial finding held, checked by reverting its fix in a scratch copy; main 0.2.8 (A18-A21) intact. Gap, not blocking: the "no projectPath counts nowhere" check (tests/test_connect.sh:419-420) passes even with that fix reverted.
