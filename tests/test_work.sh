@@ -42,6 +42,17 @@ G="$(mktemp -d)"; printf '#!/bin/bash\necho called > "%s/gh.called"; exit 1\n' "
 out=$(PATH="$G:$PATH" WORK_DRY=1 bin/work ops/watch 2>&1); assert_eq "$?" "0" "placeholder row opens"
 [ ! -e "$G/gh.called" ] || fail "placeholder row never clones"
 echo "$out" | grep -q "^cd '$HUB/ops/watch' && " || fail "placeholder row starts in the hub folder"
+# a checkout with no remote, as ade project add writes it ("(no remote)", the checkout under ~): work starts in the
+# checkout, never in the hub folder; gone, it is refused and never cloned
+TH="$(cd "$(mktemp -d)" && pwd -P)"; N="$TH/Project/local-code"; mkdir -p "$N" && git -C "$N" init -q
+bin/new projects/local >/dev/null
+printf '| (no remote) | ~/Project/local-code | main | (owner) | none found |\n' >> projects/local/ACCESS.md
+out=$(HOME="$TH" PATH="$G:$PATH" WORK_DRY=1 bin/work projects/local 2>&1); assert_eq "$?" "0" "no-remote row opens"
+echo "$out" | grep -q "^cd '$N' && " || fail "no-remote row starts in its checkout: $out"
+rm -rf "$N"
+out=$(HOME="$TH" PATH="$G:$PATH" WORK_DRY=1 bin/work projects/local 2>&1); assert_eq "$?" "2" "no-remote row whose checkout is gone is refused"
+echo "$out" | grep -q "no remote to clone" || fail "the refusal says there is no remote to clone: $out"
+[ ! -e "$G/gh.called" ] && [ ! -e "$TH/Project/(no remote)" ] || fail "no-remote row never clones"
 # a missing checkout is cloned to AGENT_CODE_DIR (gh stubbed) and recorded in ACCESS.md
 S="$(mktemp -d)"; C="$(mktemp -d)"
 printf '#!/bin/bash\necho "$@" > "%s/gh.args"; mkdir -p "$4"\n' "$S" > "$S/gh"; chmod +x "$S/gh"
