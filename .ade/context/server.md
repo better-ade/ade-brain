@@ -25,7 +25,8 @@ elsewhere); never as root (exit 2); needs `sudo` (`sudo -v`, exit 2 without).
    `curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify` (the last four for the browser
    sign-in view, V3); `server_extras` for ade's file viewer: `bat glow
    poppler-utils chafa yazi`, each only where the archive has it (`apt-cache show`; otherwise `<pkg>: not packaged for this
-   system; skipped`). Only the missing ones (`dpkg-query`), in one `sudo apt-get install -y -q --no-install-recommends`.
+   system; skipped`); `server_docker` (`docker.io docker-compose-v2 docker-buildx`, see Docker below) the same optional
+   way. Only the missing ones (`dpkg-query`), in one `sudo apt-get install -y -q --no-install-recommends`.
    `nodejs` is skipped when `node` is on PATH, `npm` when `npm` is (or when that `node` is not the distribution's).
    Ubuntu names bat's command `batcat`.
 3. **Tools**, only when missing (any version present is left alone), pinned by `server_pin` (gitleaks `8.30.1`, bun
@@ -38,16 +39,50 @@ elsewhere); never as root (exit 2); needs `sudo` (`sudo -v`, exit 2 without).
    `npx -y @playwright/mcp@0.0.84 install-browser --with-deps chromium` (the MCP's own Playwright, `browser_mcp_pkg`;
    story V3, `.ade/context/browser.md`). Each tool must be found afterwards, or the install exits 1 (never "done"). No piped
    installer script. Another arch exits 1 before anything changes. Tests (AGENT_PLATFORM_TEST=1 only) may replace the
-   pins with `AGENT_SERVER_SHA_FILE` (`<tool>-<arch> <sha256>` lines).
+   pins with `AGENT_SERVER_SHA_FILE` (`<tool>-<arch> <sha256>` lines). Then Docker's daemon.json and service (below).
 4. **Hub**: the code folder `${AGENT_CODE_DIR:-~/Project}` (bin/work clones each checkout there on first use) and
    `bin/schedule install` when any job is absent (`bin/schedule status`, which lists only the jobs install would install,
    so `HUB_AUTO_SYNC=0` reruns change nothing).
-5. Prints the one manual step: `claude` (the Pro or Max login, over SSH), then `bin/keys set telegram`.
+5. Prints the one manual step: `claude` (the Pro or Max login, over SSH), then `bin/keys set telegram`; with Docker
+   (below), the optional group command.
 
 A rerun on a set-up host changes nothing. Nothing listens on a public port: Telegram, Remote Control and git connect out.
+With Docker it adds: `Docker publishes ports on 127.0.0.1 (<etc>/daemon.json "ip") unless you change it; ports it
+publishes elsewhere bypass ufw.`
 `--dry-run` prints each changing command as `+ <command>` and changes nothing; it runs the read-only checks (the rows,
 `bin/schedule status`) and exits as the install would (1 on an unsafe host or an arch with no pinned build, after printing
 the whole plan).
+
+## Docker (story V4): recommended, never needed
+For isolated system integration tests run locally, in containers. Nothing about Docker ever fails an install.
+- **Packages**: `server_docker` (`docker.io docker-compose-v2 docker-buildx`), each only where the archive has it
+  (otherwise `<pkg>: not packaged for this system; skipped`). When a `docker` that is not the distribution's is on PATH
+  (`docker.io` not installed: Docker's own `docker-ce`, a snap, podman's shim), none of them and no service step: one
+  `docker: <path> is not the distribution's; ... left alone` line.
+- **Published ports bypass ufw**: Docker writes its own iptables rules, so `-p 8080:80` on the default `0.0.0.0` would
+  be reachable from the internet whatever ufw says. With the distribution's `docker.io` (installed, or in this run's
+  apt list), when `/etc/docker/daemon.json` does not exist the install writes `{"ip": "127.0.0.1"}` (`sudo mkdir -p`,
+  `sudo cp`, `sudo chmod 644`) before the service starts, so `-p` publishes on loopback by default (reach it over an SSH
+  tunnel). An existing daemon.json is never changed: without `"ip": "127.0.0.1"` in it, a note says to set it. A port
+  published with an explicit address (`-p 0.0.0.0:8080:80`) still bypasses ufw.
+- **Service**: when not both active and enabled, `sudo systemctl enable --now docker`; when active and enabled but
+  daemon.json was just written, `sudo systemctl restart docker` so it applies. A failure is a note on stderr.
+- **Group**: never `usermod` or `gpasswd`. When this user is not in `docker` (`id -nG`), the manual step prints
+  `docker_group_line`: `sudo usermod -aG docker <user, printf %q>, then log in again (the docker group is
+  root-equivalent)`. On macOS it is empty.
+- **VPN ranges**: Docker's default bridge is `172.17.0.0/16` and new networks come from `172.16.0.0/12`, which can clash
+  with a VPN or office range (the host loses the route to it). The fix is by hand, in daemon.json:
+  `"default-address-pools": [{"base": "10.200.0.0/16", "size": 24}]` (and `"bip": "10.199.0.1/24"` for the default
+  bridge), a range nobody uses, then `sudo systemctl restart docker`.
+- **Elsewhere** (bin/lib.sh): `docker_install_line` is `brew install colima docker docker-compose && colima start` on
+  macOS (colima: the free headless engine; Docker Desktop is not required) and `sudo apt-get install docker.io
+  docker-compose-v2 && sudo systemctl enable --now docker` on Linux. `bin/setup` prints one `warning: docker is not
+  installed ...` line when `docker` is not on PATH and goes on. `bin/doctor` prints `OK docker <docker --version>` when
+  `docker info` works within 15 s; otherwise `WARN docker` with the install line, `did not answer in 15 s` (a timeout),
+  the group command (`permission denied`; on macOS, check the socket's owner), or `docker_start_line` (`colima start (or
+  open Docker Desktop)` / `sudo systemctl enable --now docker`). Never MISSING; its exit stays 0. Nothing installs or
+  starts Docker on macOS.
+- Tests (AGENT_PLATFORM_TEST=1 only) may move `/etc/docker` with `AGENT_DOCKER_ETC`.
 
 ## `bin/server status`
 `== services` (the `bin/schedule status` lines), then `last sync` and `last monitor` (the time of

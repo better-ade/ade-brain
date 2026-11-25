@@ -8,13 +8,19 @@
 #      apt-daily-upgrade.timer enabled); listeners (nothing but sshd listens beyond loopback). A failing row stops the
 #      install before anything changes, unless it is accepted with --accept-risk <row> (repeatable);
 #   2. the missing packages of a fixed list (apt; the distribution's versions): ade's tool set (git python3 tmux gh age) and
-#      the hub's needs (nodejs and npm only when node and npm are not already on PATH), plus the file viewer's extras
-#      (bat glow poppler-utils chafa yazi) where the archive has them (each one it lacks is skipped with a note), then the
+#      the hub's needs (nodejs and npm only when node and npm are not already on PATH), plus, where the archive has them
+#      (each one it lacks is skipped with a note), Docker (docker.io docker-compose-v2 docker-buildx: recommended for
+#      isolated local tests, story V4; none of them when a docker from elsewhere is on PATH) and the file viewer's extras
+#      (bat glow poppler-utils chafa yazi), then the
 #      missing tools at pinned versions (server_pin), each from its release file over https only and checked against
 #      the sha256 pinned here (server_sha): gitleaks (~/.local/bin), bun (~/.bun/bin, linked into ~/.local/bin), Claude
 #      Code (its own `claude install`), and Playwright's Chromium with its system dependencies through the pinned
 #      Playwright MCP's own Playwright (story V3); each must be there afterwards. What is already there is left alone, so a rerun
 #      changes nothing;
+#      With the distribution's docker.io: /etc/docker/daemon.json {"ip": "127.0.0.1"} when there is none (published
+#      ports bypass ufw, so they go to loopback by default; an existing file is never changed, a note says what to set),
+#      then the service enabled and started (restarted when the file was just written). This user is never added to
+#      the docker group (root-equivalent): the command is printed with the manual step;
 #   3. the code folder (AGENT_CODE_DIR, default ~/Project; bin/work clones each checkout there on first use) and the
 #      hub's scheduled jobs (bin/schedule install, when any job it installs is absent);
 #   4. the one manual step: sign Claude Code in over SSH (the Pro or Max login), then bin/keys set telegram.
@@ -32,6 +38,8 @@ USAGE="usage: bin/server install [--dry-run] [--accept-risk ${ROWS// /|}]... | b
 # (apt-cache) and skipped with a note otherwise
 server_packages() { echo "git python3 tmux gh age curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify"; }
 server_extras() { echo "bat glow poppler-utils chafa yazi"; }
+# Docker (story V4): recommended, never needed, so installed like the extras (where the archive has them)
+server_docker() { echo "docker.io docker-compose-v2 docker-buildx"; }
 server_pin() { case "$1" in gitleaks) echo 8.30.1 ;; bun) echo 1.3.9 ;; claude) echo 2.1.330 ;; *) return 1 ;; esac; }
 # server_arch: x64 or arm64, the builds the pins cover; exit 1 on any other machine
 server_arch() { case "$(uname -m)" in x86_64|amd64) echo x64 ;; aarch64|arm64) echo arm64 ;; *) return 1 ;; esac; }
@@ -132,8 +140,12 @@ apt_missing() { local p m=""; for p in $(server_packages); do
       npm) command -v npm >/dev/null 2>&1 && continue
         if command -v node >/dev/null 2>&1 && ! installed nodejs; then echo "npm: this node is not the distribution's; install npm the way node was installed" >&2; continue; fi ;; esac
     installed "$p" || m="$m $p"; done; echo "${m# }"; }
-# extras_missing: the extras not installed that the archive has; a note on stderr for each it lacks
-extras_missing() { local p m=""; for p in $(server_extras); do installed "$p" && continue
+# foreign_docker: a docker on PATH that is not the distribution's (Docker's own docker-ce, a snap, podman's shim); the
+# distribution's packages would clash with it, so they and the service step are left out
+foreign_docker() { command -v docker >/dev/null 2>&1 && ! installed docker.io; }
+# extras_missing [list]: those packages (default: the extras) not installed that the archive has; a note on stderr for
+# each it lacks
+extras_missing() { local p m=""; for p in ${1:-$(server_extras)}; do installed "$p" && continue
     if apt-cache show "$p" >/dev/null 2>&1; then m="$m $p"; else echo "$p: not packaged for this system; skipped" >&2; fi; done; echo "${m# }"; }
 have() { command -v "$1" >/dev/null 2>&1 || [ -x "$HOME/.local/bin/$1" ] || [ -x "$HOME/.bun/bin/$1" ]; }
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -184,7 +196,9 @@ case "${1:-}" in
     if [ -n "$NEED" ] && [ -z "$ARCH" ]; then echo "server: no pinned build of${NEED} for $(uname -m) (x86_64 and aarch64 only)" >&2
       [ "$DRY" = 1 ] || exit 1; FAILED=1; fi
     echo "== packages"
-    m="$(apt_missing)"; x="$(extras_missing 2>&1 >/dev/null)"; [ -z "$x" ] || echo "$x"; m="$m $(extras_missing 2>/dev/null)"; m="$(echo $m)"
+    DK="$(server_docker)"; if foreign_docker; then echo "docker: $(command -v docker) is not the distribution's; $DK and the docker service left alone"; DK=""; fi
+    m="$(apt_missing)"; for l in "$DK" "$(server_extras)"; do [ -n "$l" ] || continue
+      x="$(extras_missing "$l" 2>&1 >/dev/null)"; [ -z "$x" ] || echo "$x"; m="$m $(extras_missing "$l" 2>/dev/null)"; done; m="$(echo $m)"
     if [ -n "$m" ]; then run sudo apt-get update -q && run sudo apt-get install -y -q --no-install-recommends $m || { echo "server: apt-get install failed" >&2; exit 1; }
     else echo "all present: $(server_packages) (and every packaged extra: $(server_extras))"; fi
     echo "== tools"
@@ -197,6 +211,24 @@ case "${1:-}" in
     if browser_chromium >/dev/null; then echo "chromium: present"
     else run npx -y "$(browser_mcp_pkg)" install-browser --with-deps chromium && { [ "$DRY" = 1 ] || browser_chromium >/dev/null; } ||
       { echo "server: Chromium was not installed ($(browser_mcp_pkg) install-browser)" >&2; exit 1; }; fi
+    # docker (story V4), only the distribution's docker.io (installed, or in this run's apt list): published ports bypass
+    # ufw, so they go to loopback unless the owner's own daemon.json says otherwise; then the service enabled and
+    # started. A failure is a note: Docker is recommended, not needed. The docker group is never touched here.
+    DOCKER=0; { installed docker.io || case " $m " in *" docker.io "*) true ;; *) false ;; esac; } && DOCKER=1
+    if [ "$DOCKER" = 1 ]; then
+      DE=/etc/docker; [ "${AGENT_PLATFORM_TEST:-}" != 1 ] || DE="${AGENT_DOCKER_ETC:-$DE}"; WROTE=0
+      if [ -e "$DE/daemon.json" ]; then
+        grep -Eq '"ip"[[:space:]]*:[[:space:]]*"127\.0\.0\.1"' "$DE/daemon.json" 2>/dev/null ||
+          echo "docker: $DE/daemon.json is yours and left alone; set \"ip\": \"127.0.0.1\" in it so published ports stay on loopback (they bypass ufw)"
+      else t="$(tmpd)" && { [ "$DRY" = 1 ] || printf '{"ip": "127.0.0.1"}\n' > "$t/daemon.json"; } &&
+          run sudo mkdir -p "$DE" && run sudo cp "$t/daemon.json" "$DE/daemon.json" && run sudo chmod 644 "$DE/daemon.json" && WROTE=1 ||
+          echo "server: could not write $DE/daemon.json; published Docker ports would bypass ufw: set \"ip\": \"127.0.0.1\" there" >&2
+        [ "$DRY" = 1 ] || rm -rf "$t"; fi
+      if systemctl is-active docker >/dev/null 2>&1 && [ "$(systemctl is-enabled docker 2>/dev/null)" = enabled ]; then
+        if [ "$WROTE" = 1 ]; then run sudo systemctl restart docker || echo "server: could not restart docker (sudo systemctl restart docker)" >&2
+        else echo "docker service: enabled"; fi
+      else run sudo systemctl enable --now docker || echo "server: could not enable the docker service (sudo systemctl enable --now docker)" >&2; fi
+    fi
     echo "== hub"
     CD="${AGENT_CODE_DIR:-$HOME/Project}"
     if [ -d "$CD" ]; then echo "code folder: $CD"; else run mkdir -p "$CD" || exit 1; fi
@@ -209,7 +241,9 @@ case "${1:-}" in
     echo "== one manual step, over SSH on this machine"
     echo "  1. claude            sign in with your Pro or Max login (Claude Code prints a link to open on your own computer)"
     echo "  2. $H/bin/keys set telegram"
+    if [ "$DOCKER" = 1 ]; then case " $(id -nG 2>/dev/null) " in *" docker "*) ;; *) echo "  docker, without sudo (optional; not done for you): $(docker_group_line)" ;; esac; fi
     echo "Nothing here listens on a public port: Telegram, Remote Control and git all connect out."
+    [ "$DOCKER" = 0 ] || echo "Docker publishes ports on 127.0.0.1 ($DE/daemon.json \"ip\") unless you change it; ports it publishes elsewhere bypass ufw."
     exit "$([ "$DRY" = 1 ] && [ "$SAFE$FAILED" != 00 ] && echo 1 || echo 0)" ;;
   status) [ $# -eq 1 ] || { echo "$USAGE" >&2; exit 2; }
     L="$(state_dir)/logs"

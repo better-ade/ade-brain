@@ -40,4 +40,15 @@ printf '| s2 | %s | main | Owner | memory owned by projects/zzz |\n' "$SH2" >> p
 bin/new projects/zzz >/dev/null; printf '| s2 | %s | main | Owner | none |\n' "$SH2" >> projects/zzz/ACCESS.md
 bin/setup >/dev/null 2>&1 || fail "setup failed with a marked shared checkout"
 assert_eq "$(readlink "$CLAUDE_HOME/projects/$(encode_path "$SH2")/memory")" "$HUB/projects/zzz/memory" "the named owner keeps the checkout memory"
+# story V4: no docker on PATH (the system tools only; a Linux runner has /usr/bin/docker): one warning line, setup goes on
+D="$(mktemp -d)"; mkdir -p "$D/sys" "$D/fake"
+for f in /usr/bin/* /bin/*; do n="${f##*/}"; case "$n" in docker|docker-compose|colima|brew) continue ;; esac; [ -e "$D/sys/$n" ] || ln -s "$f" "$D/sys/$n"; done
+for p in macos linux; do
+  out=$(PATH="$D/fake:$D/sys" AGENT_PLATFORM="$p" bin/setup 2>&1); assert_eq "$?" 0 "setup without docker exits 0 ($p): $out"
+  assert_eq "$(echo "$out" | grep -ci docker)" 1 "one docker line ($p): $out"
+  echo "$out" | grep -qE '^warning: docker is not installed.*(brew install colima docker docker-compose|sudo apt-get install docker.io docker-compose-v2)' || fail "the docker warning names the install line ($p): $out"
+done
+printf '#!/bin/bash\nexit 0\n' > "$D/fake/docker"; chmod +x "$D/fake/docker"
+out=$(PATH="$D/fake:$D/sys" bin/setup 2>&1); assert_eq "$?" 0 "setup with docker"; echo "$out" | grep -qi docker && fail "no docker line when docker is here: $out"   # AC4
+rm -rf "$D"
 echo ok
