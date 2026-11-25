@@ -12,7 +12,7 @@ export TMPDIR="$T/tmp"   # bin/keys's temp files land in $T, which AC4 scans
 # three fake services: ok, error (500) and hang; started with the real python3, before the wrappers
 REAL_PY="$(command -v python3)"; SRV=""
 fake() { local d="$T/srv-$1"; mkdir -p "$d"; "$REAL_PY" "$REPO/tests/fake_onetime.py" "$d/port" "$d/log" "$1" > /dev/null 2>&1 & SRV="$SRV $!"
-  for i in $(seq 1 50); do [ -s "$d/port" ] && break; sleep 0.1; done; [ -s "$d/port" ] || fail "fake $1 did not start"; : >> "$d/log"; }
+  for i in $(seq 1 300); do [ -s "$d/port" ] && break; sleep 0.1; done; [ -s "$d/port" ] || fail "fake $1 did not start"; : >> "$d/log"; }
 trap 'kill $SRV 2>/dev/null' EXIT
 fake ok; fake error; fake hang; fake badid; url() { echo "http://127.0.0.1:$(cat "$T/srv-$1/port")"; }
 OK="$(url ok)"; ERR="$(url error)"; HANG="$(url hang)"; LOG="$T/srv-ok/log"

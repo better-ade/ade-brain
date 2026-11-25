@@ -2,7 +2,7 @@
 # tests never reach the internet. argv: <port file> <log file> [ok|error|hang]. Every request is logged as one JSON
 # line (method, path, content type, body). ok: conceal stores, reveal returns once then 404; error: 500 to everything;
 # hang: answers nothing for 30 s (the client's timeout fires first); badid: conceal answers 200 with an id "x/../..".
-import json, secrets, string, sys, time
+import json, os, secrets, string, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 MODE = sys.argv[3] if len(sys.argv) > 3 else "ok"
 STORE = {}
@@ -41,4 +41,6 @@ class H(BaseHTTPRequestHandler):
         self.reply(404, {"message": "Not Found"})
     def log_message(self, *a): pass
 s = ThreadingHTTPServer(("127.0.0.1", 0), H); s.daemon_threads = True
-open(sys.argv[1], "w").write(str(s.server_port)); s.serve_forever()
+# the port file appears whole (written aside, then renamed), so a waiting test never reads it half-written
+with open(sys.argv[1] + ".tmp", "w") as f: f.write(str(s.server_port))
+os.replace(sys.argv[1] + ".tmp", sys.argv[1]); s.serve_forever()

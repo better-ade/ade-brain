@@ -8,7 +8,7 @@ make_hub; cd "$HUB"; unset AGENT_SECRETS_DIR AGENT_KEYCHAIN_SERVICE AGENT_KEYS_N
 printf 'HUB_SECRET_STORE=file\nHUB_ONETIME_URL=https://ots.test\n' > hub.conf
 T="$(mktemp -d)"; HA="$T/a"; HB="$T/b"; mkdir -p "$HA/.ssh" "$HB/.ssh" "$T/bin" "$T/gh" "$T/srv"
 python3 "$REPO/tests/fake_onetime.py" "$T/srv/port" "$T/srv/log" ok > /dev/null 2>&1 & SRV=$!; trap 'kill $SRV 2>/dev/null' EXIT
-for i in $(seq 1 50); do [ -s "$T/srv/port" ] && break; sleep 0.1; done; [ -s "$T/srv/port" ] || fail "the fake service did not start"
+for i in $(seq 1 300); do [ -s "$T/srv/port" ] && break; sleep 0.1; done; [ -s "$T/srv/port" ] || fail "the fake service did not start"
 export AGENT_ONETIME_API="http://127.0.0.1:$(cat "$T/srv/port")"
 unset GH_TOKEN GITHUB_TOKEN; export GH_CONFIG_DIR="$T/gh-none"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/gh"; chmod +x "$T/bin/gh"; export PATH="$T/bin:$PATH" AGENT_GITHUB_KEYS_URL="$T/gh/{user}.keys"
