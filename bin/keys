@@ -3,12 +3,14 @@
 #   bin/keys                 each tool: stored or missing, and what it still needs
 #   bin/keys set <tool>      store or replace its key (hidden prompt, or stdin; never an argument)
 #   bin/keys forget <tool>   remove its key
-#   bin/keys share <github-user|age1…> [<tool|secret> …] [--all] [--days N]
+#   bin/keys share <github-user|age1…> [<tool|secret> …] [--all] [--days N] [-i <ssh key>] [--as <github-user>] [--unsigned]
 #                            seal keys with age to one person (story I4): their GitHub ssh-ed25519/ssh-rsa keys or an age1…
-#                            key; shows the fingerprints and asks (a "y" on stdin); the armored block alone on stdout
-#   bin/keys receive [file] [-i <identity>] [--any-hub]
-#                            open a block (file or stdin) straight into this hub's store; shows what it holds and asks
-#                            once before storing anything, then again before replacing a key
+#                            key; shows the fingerprints and asks (a "y" on stdin); the armored block alone on stdout.
+#                            Signed inside the seal with your ssh key as your GitHub user (story I5)
+#   bin/keys receive [file] [-i <identity>] [--any-hub] [--any-to] [--from <github-user>]
+#                            open a block (file or stdin) straight into this hub's store; checks a signature against the
+#                            signer's GitHub keys; shows what it holds and asks once before storing anything, then again
+#                            before replacing a key
 #   bin/keys receive --new   make a one-off age identity (~/.config/ade/age/key.txt) and print its public key
 # A shared value goes store -> shell variable -> pipe -> age, and back: never a file, an argument or output.
 # Contract: .ade/context/keys-share.md.
@@ -16,7 +18,7 @@
 # only with HUB_AGENT_ANTHROPIC_KEY=1 in hub.conf (story H1, ADR 0002); otherwise bin/agent uses the Claude login. Contract: .ade/context/providers.md, "Keys", and .ade/context/hub-interface.md.
 set +x; unset BASH_ENV   # an inherited xtrace (SHELLOPTS) or BASH_ENV would print or run code next to the values
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
-USAGE="usage: bin/keys | bin/keys set <tool> | bin/keys forget <tool> | bin/keys share <github-user|age1…> [<tool|secret> …] [--all] [--days N] | bin/keys receive [file] [-i <identity>] [--any-hub] | bin/keys receive --new (tools: $(key_tools))"
+USAGE="usage: bin/keys | bin/keys set <tool> | bin/keys forget <tool> | bin/keys share <github-user|age1…> [<tool|secret> …] [--all] [--days N] [-i <ssh key>] [--as <github-user>] [--unsigned] | bin/keys receive [file] [-i <identity>] [--any-hub] [--any-to] [--from <github-user>] | bin/keys receive --new (tools: $(key_tools))"
 bad() { echo "$USAGE" >&2; exit 2; }
 # the hub's secret store (bin/lib.sh, story V1): the Keychain on macOS, pass or the file store on Linux
 keychain() { local why; why="$(secret_store_refusal)"; [ -z "$why" ] || { echo "keys: $why" >&2; exit 1; }; }
@@ -37,14 +39,21 @@ keys_now() { if [ "${AGENT_PLATFORM_TEST:-}" = 1 ] && [[ "${AGENT_KEYS_NOW:-}" =
 age_dir() { echo "${XDG_CONFIG_HOME:-$HOME/.config}/ade/age"; }
 # shown: text from a block (someone else's), printable characters only and short
 shown() { printf '%s' "$1" | LC_ALL=C tr -cd '[:print:]' | cut -c1-80; }
-# github_keys <user>: the public keys GitHub publishes for <user> (AGENT_GITHUB_KEYS_URL, a file or URL, only in tests)
-github_keys() { local u="${AGENT_GITHUB_KEYS_URL:-}"
-  [ "${AGENT_PLATFORM_TEST:-}" = 1 ] && [ -n "$u" ] || u="https://github.com/$1.keys"
-  case "$u" in /*) cat -- "$u" ;; *) curl --proto '=https,file' --tlsv1.2 -fsSL -m 20 -- "$u" ;; esac; }
+# gh_user_ok <name>: a GitHub user name (it goes into a URL and an allowed_signers principal)
+gh_user_ok() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] && [ "${#1}" -le 39 ]; }
+# github_keys <user>: the public keys GitHub publishes for <user>, https only, at most 1 MiB. In tests
+# (AGENT_PLATFORM_TEST=1) only AGENT_GITHUB_KEYS_URL, a file or URL where {user} stands for <user>; never GitHub
+github_keys() { local u="https://github.com/$1.keys"
+  if [ "${AGENT_PLATFORM_TEST:-}" = 1 ]; then u="${AGENT_GITHUB_KEYS_URL:-}"
+    [ -n "$u" ] || { echo "keys: a test run reads keys only from AGENT_GITHUB_KEYS_URL" >&2; return 1; }; u="${u//\{user\}/$1}"; fi
+  case "$u" in /*) cat -- "$u" ;; *) curl --proto '=https,file' --proto-redir '=https' --tlsv1.2 --max-filesize 1048576 -fsSL -m 20 -- "$u" ;; esac; }
 share() {
-  local to="" names="" all=0 days=7 kind n s i=0 list="" count=0 keys k ans armor now exp; local R=()
+  local to="" names="" all=0 days=7 kind n s i=0 list="" count=0 keys k ans armor now exp sigkey="" sigarg=0 unsigned=0 signer="" sfp="" p sig="" pk ok; local R=()
   while [ $# -gt 0 ]; do case "$1" in
       --all) all=1 ;;
+      -i) [ -n "${2:-}" ] || bad; sigkey="$2"; sigarg=1; shift ;;
+      --unsigned) unsigned=1 ;;
+      --as) gh_user_ok "${2:-}" || { echo "keys: --as takes a GitHub user name" >&2; exit 2; }; signer="$2"; shift ;;
       --days) [[ "${2:-}" =~ ^[0-9]+$ ]] && [ "$2" -ge 1 ] && [ "$2" -le 30 ] || { echo "keys: --days takes 1 to 30" >&2; exit 2; }; days=$((10#$2)); shift ;;
       -*) bad ;;
       *) if [ -z "$to" ]; then to="$1"; else names="$names $1"; fi ;;
@@ -53,9 +62,35 @@ share() {
   # the recipient: an age1… key or a GitHub user name; never a file or a path (a recipients file is never taken)
   # an age1 key is an X25519 key only (bech32, 58 characters after age1): a plugin recipient (age1<name>1…) is refused
   if [[ "$to" =~ ^age1[02-9ac-hj-np-z]{58}$ ]]; then kind=age
-  elif [[ "$to" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] && [ "${#to}" -le 39 ] && [ ! -e "$to" ]; then kind=github
+  elif gh_user_ok "$to" && [ ! -e "$to" ]; then kind=github
   else echo "keys: the recipient is a GitHub user name or an age1… key (bin/keys receive --new), never a file or a path; nothing sealed" >&2; exit 2; fi
   need_age; keychain
+  # the signing key (story I5): -i (a private key, or a .pub whose key is in ssh-agent), else ~/.ssh/id_ed25519;
+  # --unsigned: none (format v1)
+  [ "$unsigned" = 0 ] || [ "$sigarg" = 0 ] || { echo "keys: -i signs; --unsigned does not: pass one of them" >&2; exit 2; }
+  if [ "$unsigned" = 1 ]; then echo "keys: --unsigned: the block is unsigned and shows as not verified" >&2
+  elif [ -n "$sigkey" ]; then [ -f "$sigkey" ] || { echo "keys: no ssh key at $sigkey; nothing sealed" >&2; exit 1; }
+  elif [ -f "$HOME/.ssh/id_ed25519" ]; then sigkey="$HOME/.ssh/id_ed25519"; fi
+  # the signer: --as, else the GitHub user gh is signed in as
+  if [ -n "$sigkey" ] && [ -z "$signer" ] && command -v gh >/dev/null 2>&1; then
+    signer="$(timeout 10 gh api user --jq .login 2>/dev/null < /dev/null)" || signer=""; gh_user_ok "$signer" || signer=""; fi
+  if [ -n "$sigkey" ] && [ -z "$signer" ]; then
+    [ "$sigarg" = 0 ] || { echo "keys: -i signs as a GitHub user: add --as <github-user> (or sign in with gh); nothing sealed" >&2; exit 2; }
+    echo "keys: no GitHub user to sign as (--as <github-user>, or sign in with gh): the block is unsigned and shows as not verified" >&2; sigkey=""
+  elif [ -z "$sigkey" ] && [ "$unsigned" = 0 ]; then echo "keys: no ssh key to sign with (~/.ssh/id_ed25519, or -i <ssh key>): the block is unsigned and shows as not verified" >&2; fi
+  # the signing key must be one the signer publishes on GitHub (receive checks against those): -i that is not: refused;
+  # the default key that is not: a warning, and the block is unsigned
+  if [ -n "$sigkey" ]; then ok=0
+    sfp="$(ssh-keygen -lf "$sigkey" < /dev/null 2>/dev/null | cut -d' ' -f2)"
+    if [ -n "$sfp" ] && pk="$(github_keys "$signer")"; then local IFS=$'\n'; set -f
+      for k in $(printf '%s\n' "$pk" | tr -d '\r' | grep -E '^[a-z0-9-]+ [A-Za-z0-9+/]+=*( .*)?$'); do
+        [ "$(printf '%s\n' "$k" | ssh-keygen -lf - 2>/dev/null | cut -d' ' -f2)" != "$sfp" ] || ok=1; done
+      set +f; unset IFS; fi
+    if [ "$ok" = 0 ]; then
+      [ "$sigarg" = 0 ] || { echo "keys: the key ${sfp:-?} ($sigkey) is not among $signer's keys on GitHub (https://github.com/$signer.keys), so the receiver could not check the signature; nothing sealed (add it to $signer's GitHub keys, or --unsigned)" >&2; exit 1; }
+      echo "keys: your key ${sfp:-?} ($sigkey) is not among $signer's keys on GitHub: the block is unsigned and shows as not verified (-i <a key $signer publishes>, or --as <the user who does>)" >&2; sigkey=""; sfp=""
+    fi
+  fi
   [ "$all" = 0 ] || names="$names $(secret_names | tr '\n' ' ')"
   set -f
   for n in $names; do i=$((i + 1))
@@ -81,18 +116,29 @@ share() {
     set +f; unset IFS
     [ "${#R[@]}" -gt 0 ] || { echo "keys: none of $to's keys on GitHub can be used; nothing sealed (they can run bin/keys receive --new and send you its age1… key)" >&2; exit 1; }
   fi
+  [ -z "$sigkey" ] || echo "keys: signing as $signer with $sfp ($sigkey)" >&2
   printf 'keys: seal%s for %s, expiring in %s day(s)? [y/N] ' "$list" "$to" "$days" >&2
   read -r ans || ans=""; [ -t 0 ] || echo >&2   # an answer from a pipe echoes no newline
   case "$ans" in y|Y|yes|Yes|YES) ;; *) echo "keys: nothing sealed" >&2; exit 1 ;; esac
   now="$(keys_now)"; exp=$((now + days * 86400))
-  # the plaintext (format v1): written into a pipe to age, never to a file; a value that cannot be read leaves no "end"
+  # the plaintext (format v1, or v2 when signed): held in a shell variable and written into pipes (ssh-keygen, then age),
+  # never to a file; a value that cannot be read leaves no "end"
   seal_plain() { local n v
-    printf 'ade-keys-share 1\nhub: %s\nfrom: %s\nto: %s\ntime: %s\nexpires: %s\n' "$(hub_name)" "$(hub_user)" "$to" "$(utc_iso "$now")" "$(utc_iso "$exp")"
+    if [ -n "$sigkey" ]; then printf 'ade-keys-share 2\nhub: %s\nfrom: %s\nsigner: %s\n' "$(hub_name)" "$(hub_user)" "$signer"
+    else printf 'ade-keys-share 1\nhub: %s\nfrom: %s\n' "$(hub_name)" "$(hub_user)"; fi
+    printf 'to: %s\ntime: %s\nexpires: %s\n' "$to" "$(utc_iso "$now")" "$(utc_iso "$exp")"
     set -f; for n in $list; do v="$(secret_get "$n")" && [ -n "$v" ] || { echo "keys: could not read $n from $(secret_store_label)" >&2; return 1; }
       case "$v" in *$'\n'*) echo "keys: $n holds more than one line; nothing sealed" >&2; return 1 ;; esac
       printf 'secret %s %s\n' "$n" "$v"; done; unset v
     echo end; }
-  armor="$(set -o pipefail; seal_plain | age -a "${R[@]}")" || { echo "keys: sealing failed; nothing printed" >&2; exit 1; }
+  p="$(seal_plain)" || { unset p; echo "keys: nothing sealed" >&2; exit 1; }
+  # v2: the signature over the plaintext through "end" (ssh-keygen -Y sign reads it on stdin), sealed with it after "end"
+  if [ -n "$sigkey" ]; then
+    sig="$(printf '%s\n' "$p" | ssh-keygen -Y sign -f "$sigkey" -n ade-keys 2>/dev/null)" && [ -n "$sig" ] ||
+      { unset p; echo "keys: signing with $sigkey failed (a key with a passphrase: add it to ssh-agent and pass its .pub with -i, or seal unsigned with --unsigned); nothing sealed" >&2; exit 1; }
+  fi
+  armor="$(set -o pipefail; { printf '%s\n' "$p"; [ -z "$sig" ] || printf '%s\n' "$sig"; } | age -a "${R[@]}")" || { unset p; echo "keys: sealing failed; nothing printed" >&2; exit 1; }
+  unset p
   printf '%s\n' "$armor"
   echo "keys: sealed $count key(s) for $to, until $(utc_iso "$exp"). Send the block above any way; only $to can open it, with bin/keys receive." >&2
 }
@@ -101,6 +147,45 @@ ask() { local a=""
   if [ "$FROM_FILE" = 1 ]; then read -r a || a=""; [ -t 0 ] || echo >&2
   else { read -r a < /dev/tty; } 2>/dev/null || { a=""; echo >&2; }; fi
   case "$a" in y|Y|yes|Yes|YES) return 0 ;; esac; return 1; }
+# verify_block: the v2 signature (the lines after "end") over L[0..endi], checked with ssh-keygen -Y verify against the
+# keys GitHub publishes for the signer (story I5); sets sfp to the signing key's fingerprint, else refuses. The data goes
+# to ssh-keygen on stdin; only the signature and the public keys are written to a private temp folder.
+verify_block() {
+  local d keys t k fp bits out sigl=("${L[@]:$((endi + 1))}") j
+  [ "${#sigl[@]}" -ge 3 ] && [ "${sigl[0]}" = "-----BEGIN SSH SIGNATURE-----" ] && [ "${sigl[$((${#sigl[@]} - 1))]}" = "-----END SSH SIGNATURE-----" ] ||
+    refuse "the block's signature is missing or malformed"
+  for ((j = 1; j < ${#sigl[@]} - 1; j++)); do [[ "${sigl[$j]}" =~ ^[A-Za-z0-9+/=]+$ ]] || refuse "the block's signature is malformed"; done
+  keys="$(github_keys "$bsigner")" || refuse "could not read $bsigner's public keys from GitHub to check the signature"
+  # the temp folder goes on any exit, and on a signal
+  trap 'rm -rf "${VTMP:-}"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+  d="$(mktemp -d "${TMPDIR:-/tmp}/ade-keys.XXXXXX")" || exit 1; VTMP="$d"
+  # allowed_signers: "<signer> namespaces="ade-keys" <type> <key>", ssh-rsa under 2048 bits left out (as share does)
+  local IFS=$'\n'; set -f
+  for k in $(printf '%s\n' "$keys" | tr -d '\r' | grep -E '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+=*( .*)?$'); do
+    k="$(printf '%s' "$k" | cut -d' ' -f1,2)"; fp="$(printf '%s\n' "$k" | ssh-keygen -lf - 2>/dev/null)"; bits="${fp%% *}"
+    [[ "$bits" =~ ^[0-9]+$ ]] || continue; [ "${k%% *}" != ssh-rsa ] || [ "$bits" -ge 2048 ] || continue
+    printf '%s namespaces="ade-keys" %s\n' "$bsigner" "$k"; done > "$d/signers"
+  set +f; unset IFS
+  [ -s "$d/signers" ] || { rm -rf "$d"; refuse "$bsigner publishes no ssh key on GitHub that can check the signature"; }
+  printf '%s\n' "${sigl[@]}" > "$d/sig"
+  out="$(printf '%s\n' "${L[@]:0:$((endi + 1))}" | ssh-keygen -Y verify -f "$d/signers" -I "$bsigner" -n ade-keys -s "$d/sig" 2>/dev/null)" ||
+    { rm -rf "$d"; refuse "the signature does not match $bsigner's keys on GitHub (changed after signing, or signed with a key $bsigner does not publish)"; }
+  rm -rf "$d"
+  sfp="$(printf '%s\n' "$out" | grep -oE 'SHA256:[A-Za-z0-9+/]+' | head -1)"; [ -n "$sfp" ] || refuse "ssh-keygen did not name the signing key"
+}
+# to_is_me <to>: one of the receiver's identities (ids: -i <file> pairs) is <to>: an age1… key that age-keygen -y gives
+# for an identity, or a GitHub user who publishes the public key of an ssh identity; refuses when those keys cannot be read
+to_is_me() { local to="$1" i f pk pubs="" k
+  if [[ "$to" =~ ^age1[02-9ac-hj-np-z]{58}$ ]]; then
+    for ((i = 1; i < ${#ids[@]}; i += 2)); do [ "$(age-keygen -y "${ids[$i]}" 2>/dev/null < /dev/null)" != "$to" ] || return 0; done; return 1; fi
+  gh_user_ok "$to" || return 1
+  pubs="$(github_keys "$to")" || refuse "could not read $to's public keys from GitHub to check the block is for you"
+  pubs="$(printf '%s\n' "$pubs" | tr -d '\r' | cut -d' ' -f1,2)"
+  for ((i = 1; i < ${#ids[@]}; i += 2)); do f="${ids[$i]}"
+    if [ -f "$f.pub" ]; then pk="$(cut -d' ' -f1,2 < "$f.pub")"; else pk="$(ssh-keygen -y -P '' -f "$f" 2>/dev/null < /dev/null | cut -d' ' -f1,2)"; fi
+    [ -n "$pk" ] || continue
+    while IFS= read -r k; do [ "$k" != "$pk" ] || return 0; done <<< "$pubs"; done
+  return 1; }
 # refuse <why>: nothing stored, exit 1
 refuse() { unset plain L vals; echo "keys: refused: $1; nothing stored" >&2; exit 1; }
 new_identity() {
@@ -116,15 +201,18 @@ new_identity() {
 }
 receive() {
   local file="" anyhub=0 new=0 block armor e rc why f i l r n v bhub="" bfrom="" bto="" btime="" bexp="" ended=0 ex tm now stored="" kept="" failed=""
+  local ver bsigner="" endi=0 sfp="" want="" anyto=0 notme=0 age
   local ids=() L=() names=() vals=() plain
   while [ $# -gt 0 ]; do case "$1" in
       --new) new=1 ;;
       --any-hub) anyhub=1 ;;
+      --any-to) anyto=1 ;;
+      --from) gh_user_ok "${2:-}" || { echo "keys: --from takes a GitHub user name" >&2; exit 2; }; want="$2"; shift ;;
       -i) [ -n "${2:-}" ] || bad; [ -f "$2" ] || { echo "keys: no identity file at $2" >&2; exit 1; }; ids+=(-i "$2"); shift ;;
       -*) bad ;;
       *) [ -z "$file" ] || bad; file="$1" ;;
     esac; shift; done
-  if [ "$new" = 1 ]; then [ -z "$file" ] && [ "${#ids[@]}" = 0 ] && [ "$anyhub" = 0 ] || bad; new_identity; return; fi
+  if [ "$new" = 1 ]; then [ -z "$file" ] && [ "${#ids[@]}" = 0 ] && [ "$anyhub" = 0 ] && [ "$anyto" = 0 ] && [ -z "$want" ] || bad; new_identity; return; fi
   need_age; keychain
   # the default identities; ~/.ssh/id_rsa only beside its id_rsa.pub (age needs the public half for an encrypted one)
   if [ "${#ids[@]}" = 0 ]; then for f in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa" "$(age_dir)/key.txt"; do
@@ -137,23 +225,29 @@ receive() {
   armor="$(printf '%s\n' "$block" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed -n '/^-----BEGIN AGE ENCRYPTED FILE-----$/,/^-----END AGE ENCRYPTED FILE-----$/p')"
   case "$armor" in *"-----END AGE ENCRYPTED FILE-----") ;; *) refuse "this is not a sealed block (-----BEGIN AGE ENCRYPTED FILE----- … END)" ;; esac
   e="$(mktemp "${TMPDIR:-/tmp}/ade-keys.XXXXXX")" || exit 1
-  plain="$(printf '%s\n' "$armor" | age -d "${ids[@]}" 2>"$e")"; rc=$?
+  # a NUL byte (which a shell variable would drop silently) becomes \001, and is refused below
+  plain="$(set -o pipefail; printf '%s\n' "$armor" | age -d "${ids[@]}" 2>"$e" | LC_ALL=C tr '\000' '\001')"; rc=$?
   if [ "$rc" != 0 ]; then
     if grep -qi "no identity matched" "$e"; then why="not sealed to your keys (tried:$(for ((i = 1; i < ${#ids[@]}; i += 2)); do printf ' %s' "${ids[$i]}"; done); if it was sealed to another key of yours: -i <identity>"
     else why="age could not open it: $(head -1 "$e" | sed 's/^age: //; s/^error: //')"; fi
     rm -f "$e"; refuse "$why"
   fi
   rm -f "$e"
+  # what is shown is what was signed: share never writes a NUL or an empty line, and the line split below drops both
+  case "$plain" in *$'\001'*) refuse "the block holds a NUL byte (not made by bin/keys share)" ;; esac
+  case "$plain" in "ade-keys-share 2"$'\n'*) case "$plain" in *$'\n\n'*) refuse "the signed block holds an empty line (not made by bin/keys share)" ;; esac ;; esac
   local IFS=$'\n'; set -f; L=($plain); set +f; unset IFS; unset plain
-  [ "${L[0]:-}" = "ade-keys-share 1" ] || refuse "not an ade keys block (or one from a newer version)"
+  # v1: unsigned (story I4); v2: signed, with a signer: line and the signature after "end" (story I5)
+  case "${L[0]:-}" in "ade-keys-share 1") ver=1 ;; "ade-keys-share 2") ver=2 ;; *) refuse "not an ade keys block (or one from a newer version)" ;; esac
   for ((i = 1; i < ${#L[@]}; i++)); do l="${L[$i]}"
     case "$l" in
       "hub: "*) bhub="${l#hub: }" ;; "from: "*) bfrom="${l#from: }" ;; "to: "*) bto="${l#to: }" ;;
       "time: "*) btime="${l#time: }" ;; "expires: "*) bexp="${l#expires: }" ;;
+      "signer: "*) [ "$ver" = 2 ] || refuse "line $((i + 1)) is not part of the format"; bsigner="${l#signer: }" ;;
       "secret "*) r="${l#secret }"; n="${r%% *}"; v="${r#* }"
         [ "$n" != "$r" ] && [ -n "$v" ] && secret_name_ok "$n" || refuse "entry $((${#names[@]} + 1)) is malformed"
         names+=("$n"); vals+=("$v") ;;
-      end) ended=1; break ;;
+      end) ended=1; endi=$i; break ;;
       *) refuse "line $((i + 1)) is not part of the format" ;;
     esac
   done
@@ -167,12 +261,23 @@ receive() {
   [ $((ex - tm)) -le $((30 * 86400)) ] || refuse "the block expires more than 30 days after it was sealed"
   [ "$now" -lt "$ex" ] || refuse "the block expired at $(shown "$bexp"); ask $(shown "$bfrom") for a new one"
   [ "$bhub" = "$(hub_name)" ] || [ "$anyhub" = 1 ] || refuse "the block is for hub $(shown "$bhub"), not this one ($(hub_name)); --any-hub takes it anyway"
+  # the sender (story I5): a v2 block must carry a good signature by its signer; --from names the only signer taken
+  if [ "$ver" = 2 ]; then gh_user_ok "$bsigner" || refuse "the block names no readable signer"; fi
+  if [ -n "$want" ] && { [ "$ver" != 2 ] || [ "$(printf '%s' "$bsigner" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$want" | tr 'A-Z' 'a-z')" ]; }; then
+    if [ "$ver" = 2 ]; then refuse "the block is signed by $bsigner, not $want (--from $want)"; else refuse "the block is not signed, and --from $want takes only a block signed by $want"; fi; fi
+  [ "$ver" != 2 ] || verify_block
+  # the receiver (story I5): a signed to: must be you, or a block sent to someone else could be forwarded to you
+  if [ "$ver" = 2 ] && ! to_is_me "$bto"; then
+    [ "$anyto" = 1 ] || refuse "the block was sealed to $(shown "$bto"), not you (forwarded?); --any-to takes it anyway"; notme=1; fi
+  age=$(( (now - tm) / 86400 )); [ "$age" -ge 0 ] || age=0
   # what it holds, then one yes before anything is stored: anyone with your public key can seal a block
   { echo "keys: the block holds ${#names[@]} key(s):"
     echo "  hub:     $(shown "$bhub")"
-    echo "  from:    $(shown "$bfrom") (not verified: check with them that they sent it)"
+    if [ -n "$sfp" ]; then echo "  from:    $bsigner (verified: signed by $sfp)"
+    else echo "  from:    $(shown "$bfrom") (not verified: check with them that they sent it)"; fi
     echo "  to:      $(shown "$bto")"
-    echo "  sealed:  $(shown "$btime"), expires $(shown "$bexp")"
+    [ "$notme" = 0 ] || echo "  warning: sent to $(shown "$bto"), not you (--any-to)"
+    echo "  sealed:  $(shown "$btime") (sealed $age day(s) ago), expires $(shown "$bexp")"
     for ((i = 0; i < ${#names[@]}; i++)); do if secret_has "${names[$i]}"; then echo "  ${names[$i]}: replace"; else echo "  ${names[$i]}: new"; fi; done
     printf 'keys: store these? [y/N] '; } >&2
   ask || { unset L vals; echo "keys: nothing stored" >&2; exit 1; }

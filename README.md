@@ -278,8 +278,9 @@ bin/agent --role reviewer --folder projects/app < task.md  # the task comes on s
 
 A handover or a share never sends keys in plain text. `bin/keys share` seals them with [age](https://age-encryption.org)
 to one person; only their private key opens the block, and `bin/keys receive` puts the keys straight into their own
-secret store. There is no server, and no value is printed, written to a file or put in git (story I4, contract
-`.ade/context/keys-share.md`).
+secret store. There is no server, and no value is printed, written to a file or put in git (stories I4 and I5, contract
+`.ade/context/keys-share.md`). The block is signed inside the seal with the sender's SSH key, and `receive` checks
+that signature against the keys GitHub publishes for the sender.
 
 ```bash
 bin/keys share <github-user> deepseek glm          # sealed to <github-user>'s ssh-ed25519/ssh-rsa keys on GitHub; asks first
@@ -287,14 +288,24 @@ bin/keys share <github-user> --all > keys.age      # every key of this hub; --da
 bin/keys receive keys.age                    # the recipient: opens it with ~/.ssh/id_ed25519 or id_rsa (-i <identity>)
 bin/keys receive --new                       # an SSH key in 1Password or on a hardware key: prints an age1… key to send
 bin/keys share age1… deepseek                # the sender then seals to that key instead
+bin/keys share <github-user> glm --as <you> -i ~/.ssh/work_ed25519   # sign as your GitHub user with another key
+bin/keys receive keys.age --from <github-user>     # take only a block signed by that GitHub user
 ```
 
 - `share` shows the recipient's key fingerprints and asks before sealing, so a mistyped user is caught. The armored
   block alone goes to stdout; send it any way (chat, email).
+- `share` signs with `~/.ssh/id_ed25519` (or `-i <key>`; a `.pub` whose key is in ssh-agent works) as your GitHub
+  user (`--as <github-user>`, else the user `gh` is signed in as), and only with a key that user publishes on GitHub
+  (`-i` with one that is not: refused). With no key or no user it says so and seals the block unsigned; `--unsigned`
+  seals unsigned on purpose (also the way out for a key with a passphrase and no ssh-agent).
+- `receive` checks a signed block with `ssh-keygen -Y verify` against the signer's keys on GitHub and shows
+  `from: <user> (verified: signed by SHA256:…)`. A block changed after signing, or signed with a key that user does not
+  publish, is refused. `--from <github-user>` refuses any block not signed by that user (an unsigned one too). A signed
+  block whose `to:` is not you (forwarded to you by its recipient) is refused; `--any-to` takes it, with a warning.
 - `receive` refuses a block sealed to someone else, an expired one, or one for another hub (`--any-hub` takes it
-  anyway). It shows what the block holds (each name new or replace, the sender marked not verified) and asks once
-  before storing anything, then again before replacing a key already stored. It lists the names it stored, never the
-  values.
+  anyway). It shows what the block holds (each name new or replace, an unsigned block's sender marked not verified)
+  and asks once before storing anything, then again before replacing a key already stored. It lists the names it
+  stored, never the values.
 - A recipient is a GitHub user name or an `age1…` key, never a file. After a handover, replace the shared keys at their
   source.
 - `age` is needed: `brew install age` (macOS) or `sudo apt-get install age` (Linux); `bin/doctor` and `bin/setup` say
@@ -302,8 +313,12 @@ bin/keys share age1… deepseek                # the sender then seals to that k
 
 ### What this does not protect
 
-- The sender is not verified: anyone with your public key can seal a block that says it is from anyone. Check with
-  the person before you answer y.
+- An unsigned block's sender is not verified: anyone with your public key can seal a block that says it is from
+  anyone. Check with the person before you answer y, or use `--from <github-user>`.
+- A verified signature proves the block came from a key on that GitHub account, as GitHub publishes it now: a stolen
+  key or a taken-over account signs as well as its owner. A signature is checked once, when the block is received.
+- A verified block proves who signed it and for whom, not that it is the latest: an older block from the same sender
+  still opens until it expires. The summary shows how many days ago it was sealed.
 - The expiry binds only honest software: anyone with the identity can open the block with `age` directly, at any time.
 - The block reveals a tag of the recipient's key and its rough size.
 - For a GitHub user, the block is sealed to every ssh-ed25519 and ssh-rsa key on that account; any of them opens it.

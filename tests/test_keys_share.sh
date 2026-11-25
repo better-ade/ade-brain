@@ -10,8 +10,17 @@ T="$(mktemp -d)"; LOG="$T/age.argv"; : > "$LOG"
 # AC6: a fake age earlier on PATH: it records its argv, then runs the real one
 W="$T/wrap"; mkdir -p "$W"; REAL_AGE="$(command -v age)"
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> %q\nexec %q "$@"\n' "$LOG" "$REAL_AGE" > "$W/age"; chmod +x "$W/age"; export PATH="$W:$PATH"
+# I5 AC6: a fake ssh-keygen too: it records its argv and keeps a copy of every file it is given (the scan reads them)
+SKLOG="$T/ssh-keygen.argv"; SEEN="$T/seen"; mkdir -p "$SEEN"; REAL_SK="$(command -v ssh-keygen)"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> %q\nfor a; do [ -f "$a" ] && cp "$a" %q/$RANDOM$RANDOM; done\nexec %q "$@"\n' "$SKLOG" "$SEEN" "$REAL_SK" > "$W/ssh-keygen"; chmod +x "$W/ssh-keygen"
+# no real GitHub sign-in reaches bin/keys share (it asks gh for the sender's user): a gh stub first on PATH that is
+# signed in as nobody, and no token; a curl that records its argv (a test never fetches from github.com)
+unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; export GH_CONFIG_DIR="$T/gh-none"
+printf '#!/bin/sh\necho "gh: not signed in (test stub)" >&2; exit 1\n' > "$W/gh"; chmod +x "$W/gh"
+CLOG="$T/curl.argv"; : > "$CLOG"; REAL_CURL="$(command -v curl)"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> %q\nexec %q "$@"\n' "$CLOG" "$REAL_CURL" > "$W/curl"; chmod +x "$W/curl"
 person() { local h; h="$(mktemp -d)/home"; mkdir -p "$h"; echo "$h"; }
-HA="$(person)"; HB="$(person)"; HC="$(person)"; HD="$(person)"; HE="$(person)"
+HA="$(person)"; HB="$(person)"; HC="$(person)"; HD="$(person)"; HE="$(person)"; HF="$(person)"; HG="$(person)"
 as() { local h="$1"; shift; HOME="$h" "$@"; }
 # no_tty <cmd…>: run it without a controlling terminal (its own session), so /dev/tty cannot be opened even when the
 # suite runs from a terminal
@@ -29,7 +38,8 @@ printf '%s\n' "$V2" | as "$HA" bin/secret --set grafana-token >/dev/null 2>&1 ||
 printf '%s\n' "$V3" | as "$HA" bin/keys set glm >/dev/null 2>&1 || fail "A stores glm"
 # bob's "GitHub keys": ed25519, rsa and ecdsa lines (only the first two are usable)
 KF="$T/bob.keys"; { cut -d' ' -f1,2 "$HB/.ssh/id_ed25519.pub"; cut -d' ' -f1,2 "$T/b_rsa.pub"; cut -d' ' -f1,2 "$T/b_ecdsa.pub"; } > "$KF"
-export AGENT_GITHUB_KEYS_URL="$KF"
+# each GitHub user's keys in $GHK/<user>.keys ({user}: a test-only placeholder, story I5)
+GHK="$T/gh"; mkdir -p "$GHK"; cp "$KF" "$GHK/bob.keys"; export AGENT_GITHUB_KEYS_URL="$GHK/{user}.keys"
 armor_only() { awk 'NR==1 && $0!="-----BEGIN AGE ENCRYPTED FILE-----"{bad=1} {last=$0} END{exit (bad || last!="-----END AGE ENCRYPTED FILE-----")}' "$1"; }
 
 # forge <file> <line…>: a block sealed straight with age to B's ssh key, its plaintext written by the test (not bin/keys)
@@ -161,6 +171,149 @@ ac5_replace_asks() {
   HOME="$HB" no_tty bin/keys receive < "$T/b5" > "$T/o5d" 2> "$T/e5d"; assert_eq "$(as "$HB" bin/secret deepseek-api-key)" "$V1" "a block on stdin, no terminal: keeps the old value"
   printf 'y\ny\n' | as "$HB" bin/keys receive "$T/b5" > "$T/o5e" 2> "$T/e5e"; assert_eq "$(as "$HB" bin/secret deepseek-api-key)" "$V4" "yes replaces it"
 }
+# --- story I5: the block is signed by its sender (ssh-keygen -Y sign, namespace ade-keys); receive checks it ---
+fpr() { ssh-keygen -lf "$1" | cut -d' ' -f2; }
+# sforge <out> <key> <namespace> <signed> <shown>: a v2 block signed by the test (not bin/keys) over <signed>, holding
+# <shown> before the signature, sealed to B (both printf %b strings: \n, \0000)
+sforge() { local sig; sig="$(printf '%b' "$4" | "$REAL_SK" -Y sign -f "$2" -n "$3" 2>/dev/null)" || fail "sign $1"
+  { printf '%b' "$5"; printf '%s\n' "$sig"; } | "$REAL_AGE" -a -R "$HB/.ssh/id_ed25519.pub" > "$1" || fail "seal $1"; }
+# vhead <signer>: a v2 header, sealed now to bob, for a day
+vhead() { local now; now="$(date -u +%s)"; printf 'ade-keys-share 2\\nhub: %s\\nfrom: x\\nsigner: %s\\nto: bob\\ntime: %s\\nexpires: %s\\n' "$HUBN" "$1" "$(iso "$now")" "$(iso $((now + 86400)))"; }
+i5_hermetic() {
+  # fix 3: under AGENT_PLATFORM_TEST=1 with no AGENT_GITHUB_KEYS_URL, nothing is fetched
+  : > "$CLOG"; echo n | env -u AGENT_GITHUB_KEYS_URL HOME="$HA" bin/keys share bob deepseek > "$T/oh1" 2> "$T/eh1"; assert_eq "$?" 1 "no keys URL in a test: refused"
+  grep -q "github.com" "$CLOG" && fail "a test run fetched from github.com: $(cat "$CLOG")"
+  # fix 4: a keys file over 1 MiB is refused by curl; redirects only to https
+  head -c 1100000 /dev/zero | tr '\0' 'a' > "$T/big.keys"
+  echo y | AGENT_GITHUB_KEYS_URL="file://$T/big.keys" as "$HA" bin/keys share bob deepseek > "$T/oh2" 2> "$T/eh2"; assert_eq "$?" 1 "a keys file over 1 MiB is refused"
+  grep -q -- "--max-filesize 1048576" "$CLOG" && grep -q -- "--proto-redir =https" "$CLOG" || fail "curl gets --max-filesize and --proto-redir: $(cat "$CLOG")"
+}
+i5_ac1_signed() {
+  mkdir -p "$HA/.ssh"; ssh-keygen -q -t ed25519 -N '' -C a -f "$HA/.ssh/id_ed25519" || fail "ssh-keygen alice"
+  cut -d' ' -f1,2 "$HA/.ssh/id_ed25519.pub" > "$GHK/alice.keys"; FA="$(fpr "$HA/.ssh/id_ed25519.pub")"
+  ssh-keygen -q -t ed25519 -N '' -C c -f "$T/c_ed25519" || fail "ssh-keygen carol"; cut -d' ' -f1,2 "$T/c_ed25519.pub" > "$GHK/carol.keys"
+  mkdir -p "$HF/.ssh" "$HG/.ssh"; cp "$HB/.ssh/id_ed25519" "$HB/.ssh/id_ed25519.pub" "$HF/.ssh/"; cp "$HB/.ssh/id_ed25519" "$HB/.ssh/id_ed25519.pub" "$HG/.ssh/"
+  echo y | as "$HA" bin/keys share bob deepseek grafana-token --as alice > "$T/s1" 2> "$T/es1"; assert_eq "$?" 0 "signed share: $(cat "$T/es1")"
+  armor_only "$T/s1" || fail "a signed share prints the armored block alone: $(cat "$T/s1")"
+  grep -qF "$FA" "$T/es1" || fail "share shows the signing key's fingerprint: $(cat "$T/es1")"
+  echo y | as "$HF" bin/keys receive "$T/s1" > "$T/os1" 2> "$T/ers1"; assert_eq "$?" 0 "signed receive: $(cat "$T/ers1")"
+  grep -qF "from:    alice (verified: signed by $FA)" "$T/ers1" || fail "B sees verified with A's fingerprint: $(cat "$T/ers1")"
+  assert_eq "$(as "$HF" bin/secret deepseek-api-key)" "$V4" "a signed block's value arrived"
+  assert_eq "$(as "$HF" bin/secret grafana-token)" "$V2" "a signed block's value with spaces arrived"
+  # the sender's user from gh when --as is not given
+  local G="$T/fake-gh"; mkdir -p "$G"; printf '#!/bin/sh\n[ "$1 $2" = "api user" ] && echo alice\n' > "$G/gh"; chmod +x "$G/gh"
+  echo y | PATH="$G:$PATH" as "$HA" bin/keys share bob deepseek > "$T/s1g" 2> "$T/es1g"; assert_eq "$?" 0 "signed share, user from gh: $(cat "$T/es1g")"
+  echo n | as "$HG" bin/keys receive "$T/s1g" > "$T/os1g" 2> "$T/ers1g"
+  grep -qF "from:    alice (verified: signed by $FA)" "$T/ers1g" || fail "the user came from gh: $(cat "$T/ers1g")"
+}
+i5_share_checks_key() {
+  # fix 2: share signs only with a key the signer publishes; -i a key alice does not publish: refused, says which
+  ssh-keygen -q -t ed25519 -N '' -C other -f "$T/a_other" || fail "ssh-keygen other"
+  echo y | as "$HA" bin/keys share bob deepseek -i "$T/a_other" --as alice > "$T/ok1" 2> "$T/ek1"; assert_eq "$?" 1 "-i with a key alice does not publish: refused"
+  assert_eq "$(cat "$T/ok1")" "" "nothing sealed (-i not published)"
+  grep -qF "$(fpr "$T/a_other.pub")" "$T/ek1" && grep -q "alice" "$T/ek1" || fail "says which key and user: $(cat "$T/ek1")"
+  echo y | as "$HA" bin/keys share bob deepseek -i "$T/a_other" --as nobody-here > "$T/ok1b" 2> "$T/ek1b"; assert_eq "$?" 1 "-i and the signer's keys unreadable: refused"
+  # the default key, not published by the user: a warning, sealed unsigned
+  echo y | as "$HA" bin/keys share bob deepseek --as carol > "$T/sk2" 2> "$T/ek2"; assert_eq "$?" 0 "default key not published: sealed: $(cat "$T/ek2")"
+  grep -q "unsigned" "$T/ek2" || fail "warns it is unsigned: $(cat "$T/ek2")"
+  echo n | as "$HG" bin/keys receive "$T/sk2" > "$T/okr2" 2> "$T/ekr2"; grep -q "not verified" "$T/ekr2" || fail "shows not verified: $(cat "$T/ekr2")"
+  # --unsigned: no signature, no gh, no key check
+  : > "$SKLOG"; echo y | as "$HA" bin/keys share bob deepseek --unsigned > "$T/sk3" 2> "$T/ek3"; assert_eq "$?" 0 "--unsigned: $(cat "$T/ek3")"
+  grep -q -- "-Y sign" "$SKLOG" && fail "--unsigned signed"
+  echo n | as "$HG" bin/keys receive "$T/sk3" > "$T/okr3" 2> "$T/ekr3"; grep -q "not verified" "$T/ekr3" || fail "--unsigned shows not verified: $(cat "$T/ekr3")"
+  # a passphrase key with no agent and no terminal: signing fails, the error names --unsigned
+  ssh-keygen -q -t ed25519 -N 'pass-phrase-x' -C d -f "$T/d_ed25519" || fail "ssh-keygen dave"; cut -d' ' -f1,2 "$T/d_ed25519.pub" > "$GHK/dave.keys"
+  echo y | no_tty env -u SSH_AUTH_SOCK -u SSH_ASKPASS -u DISPLAY HOME="$HA" bin/keys share bob deepseek -i "$T/d_ed25519" --as dave > "$T/ok4" 2> "$T/ek4"; assert_eq "$?" 1 "a passphrase key with no agent: nothing sealed"
+  assert_eq "$(cat "$T/ok4")" "" "nothing printed (passphrase)"; grep -q -- "--unsigned" "$T/ek4" || fail "the error names --unsigned: $(cat "$T/ek4")"
+  # fix 4: a gh that hangs is cut off; the block is sealed unsigned
+  local G="$T/slow-gh" t0; mkdir -p "$G"; printf '#!/bin/sh\nsleep 60\n' > "$G/gh"; chmod +x "$G/gh"; t0="$(date +%s)"
+  echo y | PATH="$G:$PATH" as "$HA" bin/keys share bob deepseek > "$T/sk5" 2> "$T/ek5"; assert_eq "$?" 0 "a hanging gh: $(cat "$T/ek5")"
+  [ $(( $(date +%s) - t0 )) -lt 30 ] || fail "gh api user is cut off by a timeout"
+}
+i5_ac2_tampered() {
+  "$REAL_AGE" -d -i "$HB/.ssh/id_ed25519" "$T/s1" | sed "s/^secret grafana-token .*/secret grafana-token $V4/" | "$REAL_AGE" -a -R "$HB/.ssh/id_ed25519.pub" > "$T/s2" || fail "re-seal a changed block"
+  "$REAL_AGE" -d -i "$HB/.ssh/id_ed25519" "$T/s1" | sed "s/^to: bob$/to: eve/" | "$REAL_AGE" -a -R "$HB/.ssh/id_ed25519.pub" > "$T/s2b" || fail "re-seal a changed header"
+  for f in s2 s2b; do echo y | as "$HG" bin/keys receive "$T/$f" > "$T/o$f" 2> "$T/e$f"; assert_eq "$?" 1 "a block changed after signing ($f) is refused"
+    grep -q "refused" "$T/e$f" || fail "says refused ($f): $(cat "$T/e$f")"; assert_eq "$(as "$HG" bin/secret --list)" "" "nothing stored ($f)"; done
+}
+i5_ac3_unpublished_key() {
+  local D; D="$(vhead alice)secret forged-b forged-$R\nend\n"
+  sforge "$T/s3" "$T/a_other" ade-keys "$D" "$D"
+  echo y | as "$HG" bin/keys receive "$T/s3" > "$T/os3" 2> "$T/ers3"; assert_eq "$?" 1 "a key alice does not publish is refused"
+  grep -q "refused" "$T/ers3" || fail "says refused: $(cat "$T/ers3")"; assert_eq "$(as "$HG" bin/secret --list)" "" "nothing stored (unpublished key)"
+  echo y | AGENT_GITHUB_KEYS_URL="$T/no-such.keys" as "$HG" bin/keys receive "$T/s1" > "$T/os3b" 2> "$T/ers3b"; assert_eq "$?" 1 "the signer's keys cannot be read: refused"
+  assert_eq "$(as "$HG" bin/secret --list)" "" "nothing stored (keys unreadable)"
+  echo y | as "$HA" bin/keys share bob deepseek -i "$T/no-such-key" --as alice > "$T/os3c" 2> "$T/es3c"; assert_eq "$?" 1 "share with a missing -i key: nothing sealed"
+  assert_eq "$(cat "$T/os3c")" "" "nothing printed for a missing -i key"
+}
+i5_ac4_from() {
+  echo y | as "$HA" bin/keys share bob deepseek -i "$T/c_ed25519" --as carol > "$T/s4" 2> "$T/es4"; assert_eq "$?" 0 "carol signs: $(cat "$T/es4")"
+  echo n | as "$HG" bin/keys receive "$T/s4" > "$T/os4a" 2> "$T/ers4a"
+  grep -qF "from:    carol (verified: signed by $(fpr "$T/c_ed25519.pub"))" "$T/ers4a" || fail "carol's block verifies as carol: $(cat "$T/ers4a")"
+  echo y | as "$HG" bin/keys receive --from alice "$T/s4" > "$T/os4" 2> "$T/ers4"; assert_eq "$?" 1 "--from alice refuses carol's block"
+  grep -q "refused.*alice" "$T/ers4" || fail "says it is not from alice: $(cat "$T/ers4")"; assert_eq "$(as "$HG" bin/secret --list)" "" "nothing stored (--from)"
+  echo y | as "$HG" bin/keys receive --from alice "$T/b1" > "$T/os4b" 2> "$T/ers4b"; assert_eq "$?" 1 "--from alice refuses an unsigned block"
+  assert_eq "$(as "$HG" bin/secret --list)" "" "nothing stored (--from, unsigned)"
+  echo y | as "$HG" bin/keys receive --from alice "$T/s1" > "$T/os4c" 2> "$T/ers4c"; assert_eq "$?" 0 "--from alice takes alice's block: $(cat "$T/ers4c")"
+  as "$HG" bin/secret --forget deepseek-api-key 2>/dev/null; as "$HG" bin/secret --forget grafana-token 2>/dev/null
+}
+i5_forwarded() {
+  # fix 1: bob reseals alice's block (to: bob) to carol's age key; carol is refused even with --from alice
+  "$REAL_AGE" -d -i "$HB/.ssh/id_ed25519" "$T/s1" | "$REAL_AGE" -a -r "$(cat "$T/pub")" > "$T/s1fwd" || fail "reseal to carol"
+  echo y | as "$HC" bin/keys receive --from alice "$T/s1fwd" > "$T/ofw" 2> "$T/efw"; assert_eq "$?" 1 "a block forwarded to carol is refused"
+  grep -q "refused.*bob" "$T/efw" || fail "says it was sent to bob: $(cat "$T/efw")"
+  as "$HC" bin/secret --has grafana-token && fail "a forwarded block stored a key"
+  assert_eq "$(as "$HC" bin/secret deepseek-api-key)" "$V1" "a forwarded block left carol's key alone"
+  echo n | as "$HC" bin/keys receive --from alice --any-to "$T/s1fwd" > "$T/ofw2" 2> "$T/efw2"; assert_eq "$?" 1 "--any-to, then no: nothing stored"
+  grep -q "sent to bob, not you" "$T/efw2" || fail "--any-to warns before the confirm: $(cat "$T/efw2")"
+  as "$HC" bin/secret --has grafana-token && fail "--any-to and no stored a key"
+  # an age1 to: is the receiver when an identity's public key is that key; the summary says how old the block is
+  echo y | AGENT_KEYS_NOW=$(( $(date -u +%s) - 3 * 86400 - 60 )) as "$HA" bin/keys share "$(cat "$T/pub")" glm --as alice > "$T/s1age" 2> "$T/es1age"; assert_eq "$?" 0 "signed share to an age key: $(cat "$T/es1age")"
+  echo n | as "$HC" bin/keys receive "$T/s1age" > "$T/oag" 2> "$T/eag"
+  grep -q "verified" "$T/eag" && grep -q "store these" "$T/eag" || fail "an age1 to: that is carol's opens: $(cat "$T/eag")"
+  grep -q "not you" "$T/eag" && fail "carol's own age key is not 'not you': $(cat "$T/eag")"
+  grep -q "sealed 3 day(s) ago" "$T/eag" || fail "the summary says the block's age: $(cat "$T/eag")"
+}
+i5_strict_bytes() {
+  # fix 5: what is shown is what was signed: an empty line or a NUL added after signing is refused
+  local H D; H="$(vhead alice)"; D="${H}secret forged-b forged-$R\nend\n"
+  sforge "$T/f5ok" "$HA/.ssh/id_ed25519" ade-keys "$D" "$D"
+  echo n | as "$HG" bin/keys receive "$T/f5ok" > "$T/of5" 2> "$T/ef5"; grep -q "verified" "$T/ef5" || fail "a test-signed block verifies: $(cat "$T/ef5")"
+  sforge "$T/f5blank" "$HA/.ssh/id_ed25519" ade-keys "$D" "${H}\nsecret forged-b forged-$R\nend\n"
+  sforge "$T/f5nul" "$HA/.ssh/id_ed25519" ade-keys "$D" "${H}secret forged-b forged-\0000$R\nend\n"
+  # fix 7: another namespace is refused; a v1 block with a signer: line is refused
+  sforge "$T/f7ns" "$HA/.ssh/id_ed25519" git "$D" "$D"
+  local now; now="$(date -u +%s)"
+  forge "$T/f7v1" "ade-keys-share 1" "hub: $HUBN" "from: x" "signer: alice" "to: bob" "time: $(iso "$now")" "expires: $(iso $((now + 86400)))" "secret forged-b forged-$R" end
+  for f in f5blank f5nul f7ns f7v1; do echo y | as "$HG" bin/keys receive "$T/$f" > "$T/o$f" 2> "$T/e$f"; assert_eq "$?" 1 "$f is refused: $(cat "$T/e$f")"
+    as "$HG" bin/secret --has forged-b && fail "$f stored a key"; done
+  # fix 7: allowed_signers binds the signer, by name, to each key (the files ssh-keygen was given)
+  grep -h 'namespaces=' "$SEEN"/* | grep -q '^alice namespaces="ade-keys" ssh-ed25519 ' || fail "allowed_signers names alice: $(grep -h 'namespaces=' "$SEEN"/* | head -3)"
+  grep -h 'namespaces=' "$SEEN"/* | grep -vE '^[A-Za-z0-9][A-Za-z0-9-]* namespaces="ade-keys" (ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+=*$' | grep -q . &&
+    fail "an allowed_signers line binds anything but one signer: $(grep -h 'namespaces=' "$SEEN"/* | head -3)"
+}
+i5_trap() {
+  # fix 6: a TERM during the check leaves no temp folder (an ssh-keygen that kills bin/keys while verifying)
+  local K="$T/killer" TT="$T/trap-tmp"; mkdir -p "$K" "$TT"
+  printf '#!/bin/bash\ncase "$*" in *"-Y verify"*) p=$PPID; top=""; while [ "$p" -gt 1 ]; do c="$(ps -o command= -p "$p")"; case "$c" in *"bin/keys receive"*) top=$p ;; esac; p="$(ps -o ppid= -p "$p" | tr -d " ")"; done; kill -TERM "$top"; sleep 1; exit 1 ;; esac\nexec %q "$@"\n' "$REAL_SK" > "$K/ssh-keygen"; chmod +x "$K/ssh-keygen"
+  echo y | TMPDIR="$TT" PATH="$K:$PATH" as "$HG" bin/keys receive "$T/s1" > "$T/otr" 2> "$T/etr"; assert_eq "$?" 143 "TERM during the check: killed"
+  [ -z "$(ls "$TT")" ] || fail "a TERM left a temp folder: $(ls "$TT")"
+  assert_eq "$(as "$HG" bin/secret --list)" "" "nothing stored (TERM)"
+}
+i5_ac5_unsigned() {
+  # $T/b1 was sealed by bin/keys before A had a key: unsigned, as I4
+  as "$HG" bin/keys receive "$T/b1" < /dev/null > "$T/os5" 2> "$T/ers5"; assert_eq "$?" 1 "an unsigned block, no answer: nothing stored"
+  grep -q "not verified" "$T/ers5" && grep -q "store these" "$T/ers5" || fail "an unsigned block shows not verified and asks: $(cat "$T/ers5")"
+  echo y | as "$HG" bin/keys receive "$T/b1" > "$T/os5b" 2> "$T/ers5b"; assert_eq "$?" 0 "an unsigned block still opens: $(cat "$T/ers5b")"
+  # A has a key but no GitHub user (no --as, gh not signed in): sealed unsigned, with a note
+  echo y | as "$HA" bin/keys share bob deepseek > "$T/s5" 2> "$T/es5"; assert_eq "$?" 0 "share with no user: $(cat "$T/es5")"
+  grep -q "unsigned" "$T/es5" || fail "share says the block is unsigned: $(cat "$T/es5")"
+  echo n | as "$HG" bin/keys receive "$T/s5" > "$T/os5c" 2> "$T/ers5c"; grep -q "not verified" "$T/ers5c" || fail "shows not verified: $(cat "$T/ers5c")"
+}
+i5_ac6_signing_tools() {
+  grep -q -- "-Y sign .*-n ade-keys" "$SKLOG" && grep -q -- "-Y verify .*-n ade-keys" "$SKLOG" || fail "ssh-keygen signed and verified (namespace ade-keys): $(cat "$SKLOG")"
+  ls "$SEEN" | grep -q . || fail "the ssh-keygen wrapper kept the files it was given"
+}
 ac6_hygiene() {
   # an inherited xtrace never prints a value; a block pasted on a terminal gets a prompt
   printf 'y\ny\n' | env SHELLOPTS=xtrace HOME="$HB" bin/keys receive "$T/b5" > "$T/o6a" 2> "$T/e6a"
@@ -199,9 +352,18 @@ ac7_doctor_and_setup() {
   PATH="$NS" as "$HA" bin/keys share bob deepseek < /dev/null > "$T/o7" 2> "$T/e7b"; assert_eq "$?" 1 "share without age"; grep -q "brew install age" "$T/e7b" || fail "share says how to install age"
   grep -q '^server_packages() { echo "git python3 tmux gh age ' bin/server || fail "bin/server install installs age"
 }
-ac1_share_receive_ssh; ac2_github_user; ac3_receive_new; ac4_refusals; ac4b_confirm_before_storing; ac5_replace_asks; ac6_hygiene; ac6_no_value_leaks; ac7_doctor_and_setup
+i5_hermetic
+ac1_share_receive_ssh; ac2_github_user; ac3_receive_new; ac4_refusals; ac4b_confirm_before_storing; ac5_replace_asks
+i5_ac1_signed; i5_share_checks_key; i5_ac2_tampered; i5_ac3_unpublished_key; i5_ac4_from; i5_forwarded; i5_strict_bytes; i5_trap
+i5_ac5_unsigned; i5_ac6_signing_tools
+ac6_hygiene; ac6_no_value_leaks; ac7_doctor_and_setup
 assert_contains README.md "bin/keys share" "README documents bin/keys share"; assert_contains docs/index.html "bin/keys share" "the docs page documents bin/keys share"
 assert_contains .ade/context/keys-share.md "bin/keys share <new person>" "the I2 adopt text is recorded (AC8, deferred to I2)"
+for d in README.md .ade/context/keys-share.md; do assert_contains "$d" "--from <github-user>" "$d documents receive --from (I5)"; done
+assert_contains docs/index.html "--from &lt;github-user&gt;" "the docs page documents receive --from (I5)"
+assert_contains .ade/context/keys-share.md "ade-keys-share 2" "the contract records the signed format (I5)"
+for f in README.md .ade/context/keys-share.md; do assert_contains "$f" "--any-to" "$f names --any-to (I5)"; assert_contains "$f" "--unsigned" "$f names --unsigned (I5)"
+  assert_contains "$f" "proves who signed it and for whom, not that it is the latest" "$f states the replay limit (I5)"; done
 for d in README.md .ade/context/keys-share.md; do assert_contains "$d" "not verified" "$d says the sender is not verified"
   assert_contains "$d" "What this does not protect" "$d has the limits section"; done
 echo ok
