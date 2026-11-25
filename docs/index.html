@@ -695,6 +695,8 @@ flowchart LR
     <li><b>Handing keys over:</b> <code>bin/keys share &lt;github-user|age1…&gt; [names…] [--all]</code> seals keys with <code>age</code> to that person's
       GitHub SSH keys (it shows their fingerprints and asks first) and prints the armored block alone. <code>bin/keys receive [file]</code> opens it into
       their own store, refusing a block for someone else, an expired one (7 days by default) or one for another hub, and asking before replacing a key.
+      The block is signed inside the seal with the sender's SSH key as their GitHub user (<code>--as</code>, <code>-i</code>); <code>receive</code> checks it against that user's GitHub keys,
+      shows <code>verified</code> with the key's fingerprint, refuses a block changed after signing, and with <code>--from &lt;github-user&gt;</code> takes only that user's block; a signed block sealed to someone else is refused (<code>--any-to</code> takes it).
       <code>bin/keys receive --new</code> makes an <code>age1…</code> key for people whose SSH key age cannot use. No value is printed, written to a file or put in git.</li>
     <li><b>The pre-commit hook</b> (<code>.githooks/pre-commit</code>) refuses anything under <code>repos/</code>, files over 1 MB (unless listed in
       <code>.bigfiles-allow</code>) and anything gitleaks flags. <b>If gitleaks isn't installed, the hook only warns</b> and the commit goes through, so install it on every Mac.</li>
