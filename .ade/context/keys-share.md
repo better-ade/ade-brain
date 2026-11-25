@@ -1,8 +1,10 @@
-# A hub's keys sealed to one person (contract, stories I4 and I5)
+# A hub's keys sealed to one person (contract, stories I4, I5 and I6)
 
 `bin/keys share` seals keys from this hub's secret store (`bin/lib.sh` `secret_*`, `.ade/context/platform.md`) with
-`age` to one person; `bin/keys receive` opens the block into the recipient's own store. No server. Tests:
-`tests/test_keys_share.sh` (AC1-7; I5: `i5_*`), `tests/e2e_keys.sh` (AC9; I5 AC7).
+`age` to one person; `bin/keys receive` opens the block into the recipient's own store. No server of ours; with
+`--link` (story I6) the sealed block travels as a one-time secret on a Onetime Secret instance (see "One-time link").
+Tests: `tests/test_keys_share.sh` (AC1-7; I5: `i5_*`), `tests/e2e_keys.sh` (AC9; I5 AC7), `tests/test_keys_link.sh`
+(I6 AC1-5), `tests/e2e_keys_link.sh` (I6 AC6).
 
 ## Commands
 - `bin/keys share <github-user | age1…> [<tool|secret name> …] [--all] [--days N] [-i <ssh key>] [--as <github-user>] [--unsigned]`
@@ -103,6 +105,33 @@ refuses a v2 block as "from a newer version".
 A name matches `secret_name_ok`; a value is one non-empty line (it may hold spaces). Outside the block: nothing but the
 age armor. `AGENT_KEYS_NOW` (seconds since 1970) is a test-only clock, honoured only with `AGENT_PLATFORM_TEST=1`.
 
+## One-time link (story I6)
+The service and its calls: `.ade/context/onetime-secret.md`.
+- `bin/keys share … --link`: `HUB_ONETIME_URL` (hub.conf, a location; default `https://us.onetimesecret.com`) must be
+  `https://<host>[:port]` with no path, user, query, whitespace or control character (`onetime_base`); otherwise exit 2 right after the arguments, before
+  the prompt and any request. After the y, the armored block (and nothing else: the armor's charset is checked, then
+  it goes into the JSON body on curl's stdin, `--data-binary @-`) becomes an anonymous secret with `ttl` = the block's
+  days, at most 7 (`604800`, the service's anonymous ceiling; `--days` over 7 says the link stops at 7 days). stdout:
+  the link alone, `<HUB_ONETIME_URL>/secret/<id>`; exit 0. Before the prompt, stderr names the host the block goes to
+  and the link's expiry. Any failure (an HTTP code other than 200, no answer in 20
+  s, no id, or in tests no `AGENT_ONETIME_API`): the block on stdout as without `--link`, stderr says
+  `the one-time link failed`, exit 1.
+- `bin/keys receive <link>`: an argument with `://` is a link (so a file path holding `://` cannot be received as a
+  file). It must be `https://<HUB_ONETIME_URL's host[:port]>/secret/<id>[/]` (`<id>` 20-128 letters and digits, host
+  compared case-insensitively; whitespace or a control character anywhere is refused); anything else is refused (exit 1) before any request. A bad `HUB_ONETIME_URL`: exit 2. The link is fetched only after an identity to open it is found (a fetch uses it up), once; then everything is
+  as for a block from a file (answers from stdin). 404: refused, `the link was already opened or expired (a one-time
+  link opens once)`; any other failure: `could not fetch the link`; nothing stored either way. A link and a file
+  together: usage, exit 2.
+- The block is kept (`keep_block`): once a fetched block is sealed armor, any later refusal (not sealed to your keys,
+  another hub, expired, a bad signature) or a "no" writes the armor alone to
+  `${XDG_CONFIG_HOME:-~/.config}/ade/links/<id>.age` (folder 0700, file 0600) and stderr says `the link is used up;
+  its sealed block is kept in <path> … bin/keys receive <path> [-i <identity>]`. If it cannot be written, the armor
+  goes to stderr instead. It is ciphertext, sealed to the recipient; delete it once received.
+- curl: `-q` first (no `~/.curlrc`), `--proto '=https' --proto-redir '=https' --tlsv1.2 --max-filesize 1048576 -m 20`, no `-L` (a redirect is not
+  followed). Tests: with `AGENT_PLATFORM_TEST=1` requests go only to `AGENT_ONETIME_API`, which must be
+  `http://127.0.0.1:<port>` (`tests/fake_onetime.py`); unset or anything else, nothing is fetched.
+  `AGENT_ONETIME_TIMEOUT` (seconds) is test-only too. `HUB_ONETIME_URL` still decides the link and the host check.
+
 ## Values
 A value moves store -> shell variable -> pipe -> `ssh-keygen -Y sign` and `age` (and back: `age -d` -> shell variable ->
 pipe -> `ssh-keygen -Y verify`, and `secret_put`): never a
@@ -121,6 +150,13 @@ files), or git.
 - The block reveals a tag of the recipient's key (for an SSH recipient) and its rough size (about how many keys).
 - A GitHub recipient: the block is sealed to every `ssh-ed25519` and `ssh-rsa` (2048+ bits) key on that account; any
   of them opens it.
+- A one-time link is a bearer link until it is opened: whoever opens it first gets the sealed block (still sealed to
+  the recipient, so it gives them nothing), and the recipient's receive then fails as "already opened or expired":
+  ask for a new one. Fetching uses the link up even when the receiver then answers no, or the block is refused; the
+  sealed block is then kept in a 0600 file to retry from (above), so only a block that is not for you (another hub,
+  expired) needs a new one from the sender. A share whose answer is lost (no answer in time) may leave a live secret on the service, holding only
+  the sealed block, until it expires.
+- The service sees the sealed block, its size, the sender's and receiver's IP addresses and when it was opened.
 - bin/keys starts with `set +x; unset BASH_ENV`, so an inherited xtrace or BASH_ENV does not print or run code next to
   the values.
 
