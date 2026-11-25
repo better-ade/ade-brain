@@ -44,7 +44,8 @@ How focus sessions and the main session notify each other. Code: `bin/events.py`
   each git call and waiting for the lock. `bin/inbox` first checks in bash (stdin read once, `read -t 1`; a stdin
   that never closes counts as empty): a call that mentions neither `push` nor `/.ade/context/` starts no python when
   the log is not newer than the session's cursor or its last delivery is under 60 s old.
-- **Hooks:** `templates/folder-settings.json` (PostToolUse `bin/inbox <folder>`), the hub root's
+- **Hooks:** `templates/folder-settings.json` (PostToolUse `"$CLAUDE_PROJECT_DIR"/../../bin/inbox <folder>`, committed in
+  the folder's `.claude/settings.json`; story I1, per-machine.md), the hub root's
   `.claude/settings.json` (PostToolUse `bin/inbox`, Stop `bin/stop-check`). `bin/doctor` warns `settings <folder>`
   for each hook event the template has and a folder's settings lack; `bin/new --settings <folder>` re-renders only
   that file, keeping the old one as `settings.json.bak`.

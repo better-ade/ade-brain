@@ -18,7 +18,8 @@ from the SessionStart hook, `bin/context <folder> --rules`.)
 ```
 <hub>/projects/<name>/
   CLAUDE.md               imports @.claude/hub/CLAUDE.md, then its own @ACCESS.md @memory/MEMORY.md @STATE.md
-  .claude/settings.json   "claudeMdExcludes": ["<hub>/CLAUDE.md"] (plus the real path when the hub is behind a symlink)
+  .claude/settings.local.json  per machine, untracked (per-machine.md): "claudeMdExcludes": ["<hub>/CLAUDE.md"]
+                          (plus the real path when the hub is behind a symlink); nothing else is written there
   .claude/hub/            generated; owned by the hub; never edited, never committed
     .gitignore            says so, and ignores everything in the folder (itself included)
     CLAUDE.md             copy of <hub>/CLAUDE.md
@@ -36,7 +37,7 @@ from the SessionStart hook, `bin/context <folder> --rules`.)
 - **When:** `bin/new` (a new folder) and every `bin/work <folder>` start, for every engine, before the launcher is
   written; never on `WORK_DRY=1`. A change in the hub reaches the next session, not a running one. A session started
   by hand in the folder, or a `bin/agent` run, reads the copies as the last `bin/work` left them.
-- **The exclusion** (`claudeMdExcludes`, a documented Claude Code setting, in the folder's own settings file) keeps
+- **The exclusion** (`claudeMdExcludes`, a documented Claude Code setting, in the folder's own `settings.local.json`, since it names this machine's hub path) keeps
   the hub root's `CLAUDE.md` from loading as an ancestor, so the rules are read once, from the copy. Nothing is ever
   written to Claude Code's trust or approval state (`~/.claude.json`, a config dir).
 - **Migration:** on `bin/work`, a folder whose settings lack the exclusion or whose `CLAUDE.md` lacks the import gets

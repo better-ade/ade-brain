@@ -43,10 +43,10 @@ assert_contains hub.conf "HUB_NAME=p1-hub" "hub.conf keeps its other lines"
 out=$(bin/new projects/other --repo acme/api) || fail "the same repo in a second folder"
 assert_eq "$(. ./hub.conf; echo "$HUB_REPOS")" "acme/infra acme/api acme/web" "no duplicate in HUB_REPOS"
 printf '%s\n' "$out" | grep -q 'hub.conf' && fail "no hub.conf line when nothing was added"
-# AC4: owner/name alone: an empty checkout (bin/work clones it); owner/name=~/x expands ~
+# AC4: owner/name alone: an empty checkout (bin/work clones it); owner/name=~/x is stored as ~/x (story I1: no machine path)
 assert_eq "$(code_row projects/other/ACCESS.md acme/api)" "| acme/api |  | main | Sam Lee | (fill in) |" "owner/name alone"
 mkdir -p "$P/h/x"; HOME="$P/h" bin/new projects/home --repo 'acme/home=~/x' >/dev/null || fail "owner/name=~/x"
-assert_eq "$(code_row projects/home/ACCESS.md acme/home)" "| acme/home | $P/h/x | main | Sam Lee | (fill in) |" "~ expanded"
+assert_eq "$(code_row projects/home/ACCESS.md acme/home)" "| acme/home | ~/x | main | Sam Lee | (fill in) |" "stored under ~"
 # AC5: an existing folder gains the row and keeps every other file byte for byte
 echo "my notes" > projects/shop/notes.md; echo "custom" > projects/shop/STATE.md
 sums() { (cd projects/shop && find . -type f ! -name ACCESS.md -exec shasum {} \; | sort); }

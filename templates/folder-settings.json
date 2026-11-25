@@ -1,7 +1,4 @@
 {
-  "claudeMdExcludes": [
-    "{{HUB}}/CLAUDE.md"
-  ],
   "permissions": {
     "ask": [
       "Bash(*bin/dispatch --approve*)",
@@ -29,15 +26,15 @@
       "Bash(*bin/browser login*)",
       "Bash(*bin/browser forget*)",
       "Bash(*ade browser*)",
-      "Edit(/{{HUB}}/hub.conf)",
+      "Edit(//**/hub.conf)",
       "Bash(*hub.conf*)",
       "Bash(*bin/learn feedback*)",
       "Bash(*bin/learn profile*)",
       "Bash(*bin/learn forget*)",
       "Bash(*bin/learn confirm*)",
       "Bash(*learn.py*)",
-      "Edit(/{{HUB}}/memory/users/**)",
-      "Write(/{{HUB}}/memory/users/**)"
+      "Edit(//**/memory/users/**)",
+      "Write(//**/memory/users/**)"
     ],
     "deny": [
       "Read(~/.config/ade/browser/**)",
@@ -53,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"{{HUB}}\"/bin/context {{FOLDER}} --rules"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/../../bin/context {{FOLDER}} --rules"
           }
         ]
       }
@@ -63,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"{{HUB}}\"/bin/journal {{FOLDER}} \"(compaction: STATE.md and this entry should say what was in progress)\""
+            "command": "\"$CLAUDE_PROJECT_DIR\"/../../bin/journal {{FOLDER}} \"(compaction: STATE.md and this entry should say what was in progress)\""
           }
         ]
       }
@@ -73,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"{{HUB}}\"/bin/changes {{FOLDER}}"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/../../bin/changes {{FOLDER}}"
           }
         ]
       }
@@ -83,7 +80,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"{{HUB}}\"/bin/inbox {{FOLDER}}"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/../../bin/inbox {{FOLDER}}"
           }
         ]
       }
@@ -93,7 +90,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"{{HUB}}\"/bin/stop-check {{FOLDER}}"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/../../bin/stop-check {{FOLDER}}"
           }
         ]
       }
@@ -103,7 +100,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"{{HUB}}\"/bin/session-end {{FOLDER}}"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/../../bin/session-end {{FOLDER}}"
           }
         ]
       }

@@ -73,7 +73,8 @@ for k in sys.argv[2].split("."): d = d.get(k, "<absent>") if isinstance(d, dict)
 print(json.dumps(d) if not isinstance(d, str) else d)' "$1" "$2"; }
 agents_json() { eval "$(printf '%s\n' "$1" | head -1 | sed -E 's/^.* --agents /printf %s /; s/ --(permission-mode|model|effort) [^ ]*//g; s/ -- .*$//')"; }
 calls() { grep -c "^$1" "$SP_CALLS"; }
-dry() { WORK_DRY=1 bin/work "$@"; }
+# the merged settings file has a new name on each run (story I1); dry prints it as agent-settings.X
+dry() { (set -o pipefail; WORK_DRY=1 bin/work "$@" | sed -E 's/agent-settings\.[A-Za-z0-9]+/agent-settings.X/g'); }
 # a provider dry run prints the command, then the merged settings JSON (no file is kept): the JSON, as a file to read
 dry_settings() { printf '%s\n' "$1" | sed 1d > "$S/dry.json"; echo "$S/dry.json"; }
 # launch [bin/work args]: a non-dry run through the stubs; sets rc, output in $SP_CAP/work.out
@@ -180,8 +181,10 @@ key_checked_once_before_launch() {
 single_merged_settings_keeps_hooks() {
   allow; launch --provider deepseek projects/demo; assert_eq "$rc" "0" "launch exit"
   assert_eq "$(jget "$SP_CAP/settings.json" apiKeyHelper)" "HUB='$HUB' AGENT_KEYCHAIN_SERVICE='hub' '$HUB/bin/secret' deepseek-api-key" "apiKeyHelper"
+  # the folder's hooks; a session started outside the folder gets them with the hub's own path (story I1)
   python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
-assert a.get("hooks") and a["hooks"] == b["hooks"], "hooks differ"' "$SP_CAP/settings.json" projects/demo/.claude/settings.json || fail "merged settings lost the folder hooks"
+n = lambda h: json.loads(json.dumps(h).replace("\\\"$CLAUDE_PROJECT_DIR\\\"/../../", "\\\"%s\\\"/" % sys.argv[3]))
+assert a.get("hooks") and a["hooks"] in (b["hooks"], n(b["hooks"])), "hooks differ"' "$SP_CAP/settings.json" projects/demo/.claude/settings.json "$HUB" || fail "merged settings lost the folder hooks"
   assert_eq "$(grep -cx -- "--settings" "$SP_CAP/argv")" "1" "one --settings"
 }
 # AC7 (skip)
@@ -278,7 +281,8 @@ provider_env_not_trusted() {
   rm -f hub.conf; local plain out
   plain=$(dry projects/demo)
   out=$(HUB_PROVIDER=deepseek HUB_PROVIDERS_ALLOWED="anthropic deepseek" WORK_DRY=1 bin/work projects/demo 2>&1) || fail "env provider broke the default run: $out"
-  assert_eq "$out" "$plain" "HUB_PROVIDER from the environment is ignored"
+  ms() { sed -E 's/agent-settings\.[A-Za-z0-9]+/agent-settings.X/g'; }   # each run merges its own settings file (story I1)
+  assert_eq "$(echo "$out" | ms)" "$(echo "$plain" | ms)" "HUB_PROVIDER from the environment is ignored"
   HUB_PROVIDERS_ALLOWED="anthropic deepseek" WORK_DRY=1 bin/work --provider deepseek projects/demo >/dev/null 2>&1; assert_eq "$?" "2" "HUB_PROVIDERS_ALLOWED from the environment is ignored"
   allow 'HUB_PROVIDER=deepseek'
   dry projects/demo | grep -qF "CLAUDE_CONFIG_DIR='$HUB/.local/providers/deepseek'" || fail "HUB_PROVIDER in hub.conf picks the session provider"
@@ -423,10 +427,10 @@ anthropic_path_unchanged() {
     a=$(dry --provider anthropic projects/demo) || fail "--provider anthropic"; b=$(dry projects/demo)
     assert_eq "$a" "$b" "--provider anthropic is the default command"
     echo "$a" | grep -q CLAUDE_CONFIG_DIR && fail "anthropic has a config dir prefix"
-    echo "$a" | grep -qF -- "--settings '$HUB/projects/demo/.claude/settings.json'" || fail "anthropic uses the folder settings"
+    echo "$a" | grep -qF -- "--settings '$TMPDIR/agent-settings.X'" || fail "anthropic uses the folder settings (merged with settings.local.json, story I1)"
   done
   launch projects/demo; assert_eq "$rc" "0" "anthropic launch"; assert_eq "$(calls secret)" "0" "anthropic reads no key"
-  grep -q "^trap 'rm -f \"\$0\" \"\$R\"' EXIT$" "$SP_CAP/launcher" || fail "anthropic launcher trap unchanged (itself and its session record)"
+  grep -qE "^trap 'rm -f \"\\\$0\" '\\\\''[^']*/agent-settings\.[A-Za-z0-9]+'\\\\'' \"\\\$R\"' EXIT$" "$SP_CAP/launcher" || fail "anthropic launcher trap (itself, its merged settings (story I1) and its session record): $(sed -n 2p "$SP_CAP/launcher")"
 }
 
 # AC31: owner rule (2026-11-09): DeepSeek only in the owner's own hubs; a client hub refuses it even when allowed

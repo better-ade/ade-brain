@@ -337,7 +337,8 @@ learn_rules_present() {
   for r in 'Bash(*bin/learn feedback*)' 'Bash(*bin/learn profile*)' 'Bash(*bin/learn forget*)' 'Bash(*bin/learn confirm*)' 'Bash(*learn.py*)'; do
     for f in .claude/settings.json templates/folder-settings.json; do has "$f" "$r" || fail "$f lacks the ask rule $r"; done; done
   for r in 'Edit(/memory/users/**)' 'Write(/memory/users/**)'; do has .claude/settings.json "$r" || fail "root settings lack $r"; done
-  for r in 'Edit(/{{HUB}}/memory/users/**)' 'Write(/{{HUB}}/memory/users/**)'; do has templates/folder-settings.json "$r" || fail "folder settings lack $r"; done
+  # in a folder, path-independent (story I1): any memory/users/ on the machine, so the rule holds on every hub path
+  for r in 'Edit(//**/memory/users/**)' 'Write(//**/memory/users/**)'; do has templates/folder-settings.json "$r" || fail "folder settings lack $r"; done
 }
 
 learn_owner_controls() {

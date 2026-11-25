@@ -100,7 +100,8 @@ own terminal. `learn/confirmed.<user>` holds one line per confirmed entry: `<sha
 
 ## Ask rules (both `.claude/settings.json` and `templates/folder-settings.json`)
 `Bash(*bin/learn feedback*)`, `Bash(*bin/learn profile*)`, `Bash(*bin/learn forget*)`, `Bash(*bin/learn confirm*)`,
-`Bash(*learn.py*)`, and `Edit`/`Write` of `/memory/users/**` (root) and `/{{HUB}}/memory/users/**` (folders).
+`Bash(*learn.py*)`, and `Edit`/`Write` of `/memory/users/**` (root) and `//**/memory/users/**` (folders: any path,
+so the committed file names no hub path; story I1).
 
 ## The session-start block (`bin/context`: root mode at the end, folder mode after the `--rules` sections)
 At most `HUB_LEARN_LINES` lines (default 30; 0 or less turns it off; 1 prints only the last line); nothing at all when

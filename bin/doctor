@@ -49,12 +49,27 @@ if md="$("$H/bin/method" check 2>/dev/null)"; then line OK "method" "ade-method 
 elif echo "$md" | grep -q "^not synced at "; then line MISSING "method" "$(echo "$md" | grep "^not synced at " | head -1) (bin/method sync)"
 elif [ -z "$mr" ]; then line MISSING "method" "none recorded: bin/method sync"
 else line MISSING "method" "differs from ade-method $mr: $(echo "$md" | sed 's/^differs: //' | tr '\n' ' ')(bin/method sync)"; fi
+# the committed hub.conf holds what is the same for everyone; this machine's values belong in .local/hub.conf (story I1)
+if [ -f "$H/hub.conf" ]; then
+  grep -qE '^[[:space:]]*(export[[:space:]]+)?HUB_USER=' "$H/hub.conf" &&
+    line WARN "hub.conf" "HUB_USER is in the committed hub.conf: everyone who syncs this hub would be the same user; move it to .local/hub.conf"
+  for k in $(machine_conf_keys); do grep -q "^$k=" "$H/hub.conf" && line WARN "hub.conf" "$k is this machine's value: bin/setup moves it to .local/hub.conf"; done
+fi
 # folders made before a hook was added to the template (story C6): each hook event the template has and a folder's
-# settings lack, by name; bin/new --settings re-renders that file (keeping a .bak)
-tev=$(grep -oE '"[A-Za-z]+": \[' "$H/templates/folder-settings.json" 2>/dev/null | tr -d '":[ ' | grep -vx hooks)
+# settings lack, by name; bin/new --settings re-renders that file (keeping a .bak). Story I1 (.ade/context/per-machine.md):
+# the committed settings.json names the hub as "$CLAUDE_PROJECT_DIR"/../.. and asks with //**/ rules (a hub path there
+# is a folder from before I1: bin/setup), and this machine's settings.local.json excludes this hub's CLAUDE.md.
+tev=$(grep -oE '"[A-Za-z]+": \[' "$H/templates/folder-settings.json" 2>/dev/null | tr -d '":[ ' | grep -vxE 'hooks|ask|deny|enabledMcpjsonServers')
 for f in $(folders); do s="$H/$f/.claude/settings.json"; [ -f "$s" ] || continue; miss=""
   for e in $tev; do grep -q "\"$e\"" "$s" || miss="$miss $e"; done
   [ -z "$miss" ] || line WARN "settings $f" "no${miss} hook from the template (bin/new --settings $f)"
+  if grep -qE '"command": "\\"/[^"\\]*\\"/bin/' "$s" || grep -qE '"(Edit|Write)\(/[^/*"][^"]*/(hub\.conf|memory/users/\*\*)\)"' "$s"; then
+    line WARN "settings $f" "settings.json names a hub path (a folder from before story I1): bin/setup"
+  else miss=""; for a in 'Edit(//**/hub.conf)' 'Edit(//**/memory/users/**)' 'Write(//**/memory/users/**)'; do grep -qF "\"$a\"" "$s" || miss="$miss $a"; done
+    [ -z "$miss" ] || line WARN "settings $f" "no ask${miss} from the template (bin/new --settings $f)"; fi
+  l="$H/$f/.claude/settings.local.json"
+  if [ ! -f "$l" ]; then line MISSING "settings $f" "no .claude/settings.local.json (this machine's claudeMdExcludes): bin/setup"
+  elif ! grep -qF "\"$H/CLAUDE.md\"" "$l"; then line WARN "settings $f" "settings.local.json does not exclude this hub's CLAUDE.md: bin/setup"; fi
 done
 w="$(orchestrator_endpoint_warning)"; [ -z "$w" ] || line WARN "orchestrator" "$w"
 # crash recovery (story R1): what bin/recover would repair, one row per check, read-only

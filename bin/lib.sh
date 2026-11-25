@@ -88,7 +88,9 @@ repo_row() {
       [ -f "$u" ] && { ci="GitHub Actions"; break; }; done
   fi
   [ -n "$ROW_REPO" ] || ROW_REPO="$(basename "$ROW_CHECKOUT")"
-  ROW="| $ROW_REPO | $ROW_CHECKOUT | ${br:-main} | $2 | $ci |"
+  # a checkout under $HOME is written ~/... (story I1): the row then holds on every machine; ROW_CHECKOUT stays absolute
+  local shown="$ROW_CHECKOUT"; case "$shown" in "$HOME"/*) shown="~${shown#"$HOME"}" ;; esac
+  ROW="| $ROW_REPO | $shown | ${br:-main} | $2 | $ci |"
 }
 # stale_repos <folder>: repos whose HEAD commit is newer than STATE.md's mtime, as "<repo> <hash>" lines
 stale_repos() {
@@ -482,12 +484,23 @@ orchestrator_endpoint_warning() {
 # (bin/init writes it as HUB_METHOD_REF); method_repo is where bin/method fetches it (AGENT_METHOD_REPO: tests' fixture)
 method_pin() { echo v2.1.0; }
 method_repo() { echo "${AGENT_METHOD_REPO:-https://github.com/better-ade/ade-method}"; }
+# the keys only the committed hub.conf sets (never the environment, never .local/hub.conf)
+hub_policy_vars() { echo HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE $(compgen -v HUB_ROLE_) $(compgen -v HUB_BROWSER_PROFILE_); }
 # hub.conf (written by bin/init): who this agent is and what it can reach. Names and locations only, never secrets.
 # AGENT_* environment variables override it (tests use them). Provider choice, role tables, hub ownership and HUB_AGENT_ANTHROPIC_KEY come only from hub.conf.
 unset HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE
 for _v in $(compgen -v HUB_ROLE_) $(compgen -v HUB_BROWSER_PROFILE_); do unset "$_v"; done; unset _v   # role tables and browser profile switches too
 unset HUB_USER   # story L1: <user> comes from hub.conf or the system user, never the environment
 [ -f "$(hub_root)/hub.conf" ] && . "$(hub_root)/hub.conf"
+# .local/hub.conf (story I1, .ade/context/per-machine.md): this machine's values (HUB_CLAUDE, HUB_CLAUDE_CONFIG_DIR,
+# HUB_REMOTE_KEY, HUB_BRAIN_PATHS, HUB_USER), never committed; read after hub.conf, so a key set there wins. The hub's
+# shared policy (provider choice, ownership, role tables, the agent key's name, the secret store, browser profile
+# switches) stays the committed hub.conf's alone.
+if [ -f "$(hub_root)/.local/hub.conf" ]; then
+  _keep=""; for _v in $(hub_policy_vars); do declare -p "$_v" >/dev/null 2>&1 && _keep="$_keep$(printf '%s=%q' "$_v" "${!_v}")"$'\n'; done
+  . "$(hub_root)/.local/hub.conf"
+  for _v in $(hub_policy_vars); do unset "$_v"; done; eval "$_keep"; unset _keep
+fi; unset _v
 hub_name() { echo "${HUB_NAME:-$(basename "$(hub_root)")}"; }
 hub_owner() { echo "${HUB_OWNER:-the hub owner}"; }
 # the person running this session, as a slug (story L1, .ade/context/learn.md): HUB_USER from hub.conf, else the
@@ -770,7 +783,7 @@ git_config_own() {
 #   same relative paths (the copy's own imports then resolve inside the folder). Each is written to a temp file beside
 #   it and renamed over it; a symlink at a copy's path, or at a folder on the way, is removed and never followed; a copy
 #   the hub no longer has is removed. Its .gitignore marks the folder generated and ignores all of it.
-# - the folder's .claude/settings.json excludes the hub root's CLAUDE.md (claudeMdExcludes), so it is not loaded twice;
+# - the folder's .claude/settings.local.json excludes the hub root's CLAUDE.md (claudeMdExcludes), so it is not loaded twice;
 # - the folder's CLAUDE.md imports .claude/hub/CLAUDE.md, and an import there of a hub file from outside the folder is
 #   rewritten to its copy; every other line is kept.
 # Prints one line when it changed the folder's CLAUDE.md or settings (a folder from before this); warnings on stderr.
@@ -855,17 +868,18 @@ except OSError as e:
     warn("could not copy the hub's rules into %s: %s" % (MIRROR, e)); sys.exit(0)
 changed = False
 # the folder's settings: the hub root's CLAUDE.md is not loaded as an ancestor (its copy is imported instead)
-sp = os.path.join(dot, "settings.json")
+# (this machine's paths: the folder's gitignored settings.local.json, story I1; never the committed settings.json)
+sp = os.path.join(dot, "settings.local.json")
 try:
-    s = json.loads(read(sp).decode("utf-8")) if os.path.isfile(sp) and not os.path.islink(sp) else None
+    s = json.loads(read(sp).decode("utf-8")) if os.path.isfile(sp) and not os.path.islink(sp) else ({} if not os.path.lexists(sp) else None)
 except ValueError: s = None
-if not isinstance(s, dict): warn(".claude/settings.json is missing or not JSON: the hub root's CLAUDE.md is not excluded (bin/new --settings %s)" % folder)
+if not isinstance(s, dict): warn(".claude/settings.local.json is not JSON: the hub root's CLAUDE.md is not excluded (bin/setup)")
 else:
     ex = s.get("claudeMdExcludes"); ex = ex if isinstance(ex, list) else []
     want = [p for p in dict.fromkeys([os.path.join(hub, "CLAUDE.md"), root_md]) if p not in ex]
     if want:
         s["claudeMdExcludes"] = ex + want
-        put(sp, (json.dumps(s, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), stat.S_IMODE(os.stat(sp).st_mode)); changed = True
+        put(sp, (json.dumps(s, indent=2, ensure_ascii=False) + "\n").encode("utf-8"), stat.S_IMODE(os.stat(sp).st_mode) if os.path.isfile(sp) else 0o644); changed = True
 # the folder's CLAUDE.md: hub files come from the copies; every other line stays as it is
 cp = os.path.join(fdir, "CLAUDE.md")
 if os.path.isfile(cp) and not os.path.islink(cp):
@@ -889,5 +903,172 @@ if os.path.isfile(cp) and not os.path.islink(cp):
 elif os.path.islink(cp): warn("CLAUDE.md is a symlink: left as it is")
 if changed:
     print("work: %s: CLAUDE.md now imports the hub's rules from %s/ (copies bin/work refreshes), so a session there starts without the external-imports question" % (folder, MIRROR))
+PY
+}
+# Per-machine files (story I1, .ade/context/per-machine.md): what names this machine's paths is written on this machine and
+# never committed. A folder's committed .claude/settings.json and .mcp.json name the hub as "$CLAUDE_PROJECT_DIR"/../..
+# (the folder's session starts in the folder) and its asks are path-independent (//**/...), so they hold on any path; only
+# the claudeMdExcludes of this hub's CLAUDE.md (an absolute path) go to the gitignored .claude/settings.local.json.
+# hub_gitignore_ensure: the hub's .gitignore ignores this machine's files (.local/, every settings.local.json, the .bak
+# files bin/new --settings leaves, folder_local_write's temps); a missing line is appended (after a newline when the file does not end in one) and
+# named on one "migrated .gitignore" line.
+hub_gitignore_ensure() {
+  local gi miss="" p; gi="$(hub_root)/.gitignore"
+  while IFS= read -r p; do grep -qxF -- "$p" "$gi" 2>/dev/null || miss="$miss$p"$'\n'; done <<'LIST'
+.local/
+.claude/settings.local.json
+projects/*/.claude/settings.local.json
+ops/*/.claude/settings.local.json
+projects/*/.claude/*.bak
+ops/*/.claude/*.bak
+projects/*/.mcp.json.bak
+ops/*/.mcp.json.bak
+projects/*/.claude/*.tmp
+ops/*/.claude/*.tmp
+projects/*/.mcp.json.*.tmp
+ops/*/.mcp.json.*.tmp
+LIST
+  [ -n "$miss" ] || return 0
+  [ ! -s "$gi" ] || [ -z "$(tail -c 1 "$gi")" ] || echo >> "$gi"
+  printf '# this machine'"'"'s files (story I1)\n%s' "$miss" >> "$gi" || return 1
+  echo "migrated .gitignore: $(printf '%s' "$miss" | tr '\n' ' ')"
+}
+# folder_local_write <folder> [--migrate]: the folder's settings.local.json gets this hub's CLAUDE.md (and its real path)
+# in claudeMdExcludes; nothing there is removed. A settings.local.json that is not a JSON object is left as it is, with a
+# warning. --migrate (bin/setup, a folder from before I1) also rewrites, in place, the hub's own entries in the committed
+# files to the portable form: a hook command that is exactly a pre-I1 template command "<a hub>"/bin/<hook> ... becomes
+# "$CLAUDE_PROJECT_DIR"/../../bin/<hook> ...; the asks Edit(/<that hub>/hub.conf) and Edit|Write(/<that hub>/memory/users/**)
+# become //**/...; the exclude <that hub>/CLAUDE.md leaves settings.json; the playwright server <a hub>/bin/browser run
+# <folder> in .mcp.json becomes the template's (a missing .mcp.json is written from it). Every other hook, ask, exclude
+# and server is kept as it is. A temp file (<name>.*.tmp) sits beside the file it replaces. One line per changed file; a second run changes nothing.
+folder_local_write() {
+  hub_gitignore_ensure || return 1
+  python3 -I - "$(hub_root)" "$1" "${2:-}" <<'PY'
+import json, os, re, sys, tempfile
+hub, folder, mode = sys.argv[1:]
+fdir = os.path.join(hub, folder); dot = os.path.join(fdir, ".claude"); realhub = os.path.realpath(hub)
+if not os.path.isdir(fdir): sys.exit(1)
+PORT = '"$CLAUDE_PROJECT_DIR"/../../bin/'
+def esc(v): return json.dumps(v)[1:-1]
+def render(name):
+    t = open(os.path.join(hub, "templates", name)).read()
+    return json.loads(t.replace("{{HUB}}", esc(hub)).replace("{{FOLDER}}", esc(folder)))
+def load(p):
+    try: return json.load(open(p)) if os.path.isfile(p) and not os.path.islink(p) else None
+    except ValueError: return None
+def save(p, d, what):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(p) + ".", suffix=".tmp", dir=os.path.dirname(p))
+    try:
+        with os.fdopen(fd, "w") as f: f.write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+        if os.path.isfile(p): os.chmod(tmp, os.stat(p).st_mode & 0o777)
+        else: os.chmod(tmp, 0o644)
+        os.replace(tmp, p)
+    except BaseException:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+    print("%s %s" % (what, os.path.relpath(p, hub)))
+def bad(p): print("warning: %s is not a JSON object: left as it is" % os.path.relpath(p, hub), file=sys.stderr)
+hubs = {hub, realhub}
+if mode == "--migrate":
+    # the template's hook commands after "$CLAUDE_PROJECT_DIR"/../../bin/: a pre-I1 command is "<a hub>"/bin/ + the same
+    tpl = render("folder-settings.json")
+    tails = [h["command"][len(PORT):] for gs in tpl.get("hooks", {}).values() for g in gs for h in g.get("hooks", [])
+             if isinstance(h.get("command"), str) and h["command"].startswith(PORT)]
+    OLD = re.compile(r'^"([^"]*)"/bin/(.*)$', re.S)
+    tp = os.path.join(dot, "settings.json"); t = load(tp)
+    if t is not None and not isinstance(t, dict): bad(tp)
+    elif isinstance(t, dict):
+        n = json.loads(json.dumps(t))
+        for gs in (n.get("hooks") if isinstance(n.get("hooks"), dict) else {}).values():
+            for g in gs if isinstance(gs, list) else []:
+                for h in g.get("hooks", []) if isinstance(g, dict) and isinstance(g.get("hooks"), list) else []:
+                    m = OLD.match(h.get("command", "")) if isinstance(h, dict) and isinstance(h.get("command"), str) else None
+                    if m and m.group(1).startswith("/") and m.group(2) in tails:
+                        h["command"] = PORT + m.group(2); hubs.add(m.group(1).rstrip("/") or "/")
+        perm = n.get("permissions")
+        if isinstance(perm, dict) and isinstance(perm.get("ask"), list):
+            old = {}
+            for x in hubs:
+                old["Edit(/%s/hub.conf)" % x] = "Edit(//**/hub.conf)"
+                old["Edit(/%s/memory/users/**)" % x] = "Edit(//**/memory/users/**)"
+                old["Write(/%s/memory/users/**)" % x] = "Write(//**/memory/users/**)"
+            ask = []
+            for a in perm["ask"]:
+                a = old.get(a, a) if isinstance(a, str) else a
+                if a not in ask: ask.append(a)
+            perm["ask"] = ask
+        if isinstance(n.get("claudeMdExcludes"), list):
+            n["claudeMdExcludes"] = [x for x in n["claudeMdExcludes"] if x not in {os.path.join(h, "CLAUDE.md") for h in hubs}]
+            if not n["claudeMdExcludes"]: del n["claudeMdExcludes"]
+        if n != t: save(tp, n, "migrated")
+    mp = os.path.join(fdir, ".mcp.json"); m = load(mp); wm = render("folder-mcp.json")
+    if m is not None and not isinstance(m, dict): bad(mp)
+    elif m is None and os.path.lexists(mp): bad(mp)
+    elif m is None: save(mp, wm, "wrote")
+    else:
+        n = json.loads(json.dumps(m)); srv = n.get("mcpServers")
+        pw = srv.get("playwright") if isinstance(srv, dict) else None
+        if (isinstance(pw, dict) and isinstance(pw.get("command"), str) and pw["command"].startswith("/")
+                and pw["command"].endswith("/bin/browser") and pw.get("args") == ["run", folder]):
+            srv["playwright"] = wm["mcpServers"]["playwright"]
+        if n != m: save(mp, n, "migrated")
+# the local settings: this hub's excludes added, nothing removed
+lp = os.path.join(dot, "settings.local.json"); cur = load(lp)
+if cur is None and os.path.lexists(lp) or cur is not None and not isinstance(cur, dict): bad(lp)
+else:
+    cur = cur or {}; n = json.loads(json.dumps(cur))
+    want = render("folder-settings-local.json").get("claudeMdExcludes", []) + [os.path.join(realhub, "CLAUDE.md")]
+    ex = n.get("claudeMdExcludes")
+    if isinstance(ex, list) or ex is None:
+        ex = ex or []; n["claudeMdExcludes"] = ex + [x for x in dict.fromkeys(want) if x not in ex]
+    else: print("warning: %s: claudeMdExcludes is not a list: left as it is" % os.path.relpath(lp, hub), file=sys.stderr)
+    if n != cur or not os.path.isfile(lp): save(lp, n, "wrote")
+PY
+}
+# the machine keys (story I1): bin/init writes them to .local/hub.conf, bin/setup moves them there from an older hub.conf
+machine_conf_keys() { echo HUB_CLAUDE HUB_CLAUDE_CONFIG_DIR HUB_REMOTE_KEY HUB_BRAIN_PATHS; }
+local_conf_header() {
+  echo "# .local/hub.conf: this machine's values (story I1, .ade/context/per-machine.md). Never committed (.gitignore)."
+  echo "# Read after hub.conf, so a key here wins; the shared policy (HUB_PROVIDER, HUB_PROVIDERS_ALLOWED, HUB_OWNED_BY_OWNER,"
+  echo "# HUB_GEMINI_CLIENT_APPROVED, HUB_AGENT_ANTHROPIC_KEY, HUB_SECRET_STORE, HUB_ROLE_*, HUB_BROWSER_PROFILE_*) is read"
+  echo "# from hub.conf only. Names and paths, never secrets."
+  echo "# HUB_CLAUDE (claude command), HUB_CLAUDE_CONFIG_DIR (empty: CLAUDE_CONFIG_DIR, else ~/.claude), HUB_REMOTE_KEY (ssh key"
+  echo "# path), HUB_BRAIN_PATHS (extra paths for bin/brain), HUB_USER (this person's slug, bin/learn)."
+}
+# tilde_path <path>: the path written ~/... when it is under $HOME (a row then holds on every machine), else as given
+tilde_path() { case "$1" in "$HOME"/*) [ -n "$HOME" ] && [ "$HOME" != / ] && { echo "~${1#"$HOME"}"; return; } ;; esac; echo "$1"; }
+# folder_settings_merged <folder> <dst> [<hub>]: the folder's settings.json with its settings.local.json merged in, as
+# Claude Code merges them (objects key by key, lists joined without repeats, the local value wins otherwise), written to
+# <dst>, which bin/work passes with --settings. With <hub> (a session started in a checkout outside the folder, where
+# $CLAUDE_PROJECT_DIR is the checkout), each hook's "$CLAUDE_PROJECT_DIR"/../../ becomes "<hub>"/.
+folder_settings_merged() {
+  python3 -I - "$(hub_root)/$1/.claude" "$2" "${3:-}" <<'PY'
+import json, os, sys
+dot, dst, hub = sys.argv[1:]
+def merge(a, b):
+    if isinstance(a, dict) and isinstance(b, dict):
+        o = dict(a)
+        for k, v in b.items(): o[k] = merge(a[k], v) if k in a else v
+        return o
+    if isinstance(a, list) and isinstance(b, list): return a + [x for x in b if x not in a]
+    return b
+out = {}
+for n in ("settings.json", "settings.local.json"):
+    p = os.path.join(dot, n)
+    if not os.path.isfile(p): continue
+    try: d = json.load(open(p))
+    except ValueError: sys.exit("%s is not JSON" % p)
+    if not isinstance(d, dict): sys.exit("%s is not a JSON object" % p)
+    out = merge(out, d)
+if hub:
+    q = '"%s"/' % hub.replace("\\", "\\\\").replace('"', '\\"')
+    for gs in (out.get("hooks") if isinstance(out.get("hooks"), dict) else {}).values():
+        for g in gs if isinstance(gs, list) else []:
+            for h in g.get("hooks", []) if isinstance(g, dict) and isinstance(g.get("hooks"), list) else []:
+                if isinstance(h, dict) and isinstance(h.get("command"), str):
+                    h["command"] = h["command"].replace('"$CLAUDE_PROJECT_DIR"/../../', q)
+with open(dst, "w") as f: f.write(json.dumps(out, indent=2, ensure_ascii=False) + "\n")
 PY
 }

@@ -89,9 +89,10 @@ wired_through_folder_mcp() {   # the folder's own MCP server runs bin/browser ru
   make_chromium; conf '# none'; local m=projects/acme/.mcp.json
   [ -f "$m" ] || fail "bin/new writes the folder's MCP override"
   python3 -c 'import json, sys; s = json.load(open(sys.argv[1]))["enabledMcpjsonServers"]; assert "playwright" in s, s' projects/acme/.claude/settings.json || fail "the folder settings turn the override on"
+  # as Claude Code starts it in a session there: in the folder, $CLAUDE_PROJECT_DIR the folder (story I1: no hub path)
   effective() { rm -f "$S/npx.argv"; python3 -c 'import json, os, subprocess, sys
-s = json.load(open(sys.argv[1]))["mcpServers"]["playwright"]
-sys.exit(subprocess.call([s["command"]] + s["args"]))' "$m" || fail "the folder's MCP command ran: $(cat "$m")"; }
+s = json.load(open(sys.argv[1]))["mcpServers"]["playwright"]; d = os.path.dirname(os.path.abspath(sys.argv[1]))
+sys.exit(subprocess.call([s["command"]] + s["args"], cwd=d, env=dict(os.environ, CLAUDE_PROJECT_DIR=d)))' "$m" || fail "the folder's MCP command ran: $(cat "$m")"; }
   effective; printf -- '-y\n@playwright/mcp@0.0.84\n--browser\nchromium\n--headless\n--isolated\n--output-dir\n%s\n' "$HUB/projects/acme/reports/browser" > "$S/want"
   assert_eq "$(cat "$S/npx.argv")" "$(cat "$S/want")" "the folder's effective MCP command line (isolated)"
   conf 'HUB_BROWSER_PROFILE_PROJECTS_ACME=1'; effective
@@ -99,7 +100,8 @@ sys.exit(subprocess.call([s["command"]] + s["args"]))' "$m" || fail "the folder'
   assert_eq "$(arg_after --config "$S/npx.argv")" "$P_ACME/ade-mcp.json" "the disk cache config"
   echo '{"mcpServers": {}}' > "$m"; bin/new --settings projects/acme >/dev/null || fail "bin/new --settings"
   [ -f "$m.bak" ] && grep -q 'bin/browser' "$m" || fail "bin/new --settings re-renders the MCP override: $(cat "$m")"; rm -f "$m.bak"
-  grep -q '"run", "projects/acme"' "$m" || fail "the override names its folder: $(cat "$m")"
+  python3 -c 'import json, sys; a = json.load(open(sys.argv[1]))["mcpServers"]["playwright"]["args"]; assert a[-1] == "projects/acme" and "bin/browser run" in a[1], a' "$m" || fail "the override names its folder: $(cat "$m")"
+  grep -qF "$HUB" "$m" && fail "the override names the hub path: $(cat "$m")"
 }
 hub_from_own_path() {   # bin/browser never takes another hub from $HUB outside the tests
   conf '# none'; mkdir -p "$S/other/projects/acme"; echo x > "$S/other/projects/acme/ACCESS.md"

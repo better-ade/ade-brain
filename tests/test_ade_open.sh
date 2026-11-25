@@ -136,10 +136,12 @@ name_is_the_folder_and_cwd_is_the_checkout() {
 ade_and_window_launchers_are_identical() {
   work inade bin/work projects/demo --model opus --prompt "go"; cp "$CAP/ade.launcher" "$S/l.ade" || fail "no ADE launcher"
   work bin/work projects/demo --model opus --prompt "go"; cp "$CAP/osa.launcher" "$S/l.win" || fail "no window launcher"
-  cmp -s "$S/l.ade" "$S/l.win" || fail "the launchers differ: $(diff "$S/l.ade" "$S/l.win")"
+  # each launch has its own merged settings file (story I1: settings.json + settings.local.json); its name aside, the same
+  for f in l.ade l.win; do sed -E 's/agent-settings\.[A-Za-z0-9]+/agent-settings.X/g' "$S/$f" > "$S/$f.n"; done
+  cmp -s "$S/l.ade.n" "$S/l.win.n" || fail "the launchers differ: $(diff "$S/l.ade.n" "$S/l.win.n")"
   bash -n "$S/l.ade" || fail "the launcher is not valid bash"
   assert_eq "$(head -1 "$S/l.ade")" "#!/bin/bash" "shebang"
-  assert_eq "$(sed -n 2p "$S/l.ade")" "trap 'rm -f \"\$0\" \"\$R\"' EXIT" "the launcher's trap (itself and its session record)"
+  assert_eq "$(sed -n 2p "$S/l.ade.n")" "trap 'rm -f \"\$0\" '\\''$TMPDIR/agent-settings.X'\\'' \"\$R\"' EXIT" "the launcher's trap (itself, its merged settings and its session record)"
   clean_tmp
 }
 # C5
@@ -360,7 +362,8 @@ dry_run_inside_ade_calls_nothing() {
   local want
   want="$(WORK_DRY=1 bin/work projects/demo --prompt "go")"
   work inade env WORK_DRY=1 bin/work projects/demo --prompt "go"; assert_eq "$rc" 0 "exit"
-  assert_eq "$(cat "$S/out")" "$want" "the dry-run command line"
+  ms() { sed -E 's/agent-settings\.[A-Za-z0-9]+/agent-settings.X/g'; }   # each run merges its own settings file (story I1)
+  assert_eq "$(ms < "$S/out")" "$(echo "$want" | ms)" "the dry-run command line"
   assert_eq "$(n ade)" 0 "helper called"; assert_eq "$(n osa)" 0 "osascript called"
   [ ! -e "$CAP/ade.help" ] || fail "a dry run probed the helper"
   grep -qF -- "work: if this ADE lists capabilities: command, this runs: $S/ade-hook open --cwd $R --name demo --focus -- bash -l " "$S/err" || fail "the ADE argv is not shown: $(cat "$S/err")"

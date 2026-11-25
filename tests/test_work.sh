@@ -10,10 +10,12 @@ mem="$CLAUDE_HOME/projects/$(encode_path "$R")/memory"
 assert_eq "$(readlink "$mem")" "$HUB/projects/demo/memory" "the repo session shares the folder memory"
 out=$(WORK_DRY=1 bin/work projects/demo)
 echo "$out" | grep -q "cd '$R'" || fail "work starts in the repo"
-echo "$out" | grep -q -- "--settings '$HUB/projects/demo/.claude/settings.json'" || fail "work loads the folder hooks"
-grep -qF "$HUB" projects/demo/.claude/settings.json && grep -qF "/bin/session-end" projects/demo/.claude/settings.json && ! grep -q CLAUDE_PROJECT_DIR projects/demo/.claude/settings.json || fail "hooks use the absolute hub path"
-grep -q -- "--rules" projects/demo/.claude/settings.json || fail "SessionStart hook loads the shared rules"
-grep -qF "/bin/changes projects/demo" projects/demo/.claude/settings.json && grep -q "UserPromptSubmit" projects/demo/.claude/settings.json || fail "new folders hear hub changes (UserPromptSubmit bin/changes <folder>)"
+echo "$out" | grep -qE -- "--settings '[^']*/agent-settings\.[^']*'" || fail "work loads the folder hooks (a merged settings file): $out"
+# the hooks name the hub as "$CLAUDE_PROJECT_DIR"/../.. (story I1): the tracked settings.json holds no hub path
+TS=projects/demo/.claude/settings.json
+grep -qF '"\"$CLAUDE_PROJECT_DIR\"/../../bin/session-end projects/demo"' $TS && ! grep -qF "$HUB" $TS || fail "hooks name the hub portably"
+grep -q -- "--rules" $TS || fail "SessionStart hook loads the shared rules"
+grep -qF "/bin/changes projects/demo" $TS && grep -q "UserPromptSubmit" $TS || fail "new folders hear hub changes (UserPromptSubmit bin/changes <folder>)"
 bin/context projects/demo --rules | grep -q '^## Shared rules' || fail "--rules prints Shared rules"
 bin/context projects/demo --rules | grep -q '^## Git boundaries' || fail "--rules prints Git boundaries"
 bin/context projects/demo --rules | grep -q '^# Context: projects/demo' || fail "--rules ends with the folder context"

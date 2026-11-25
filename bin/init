@@ -207,7 +207,8 @@ for k, e in [("NAME","NAME"),("TITLE","TITLE"),("CLIENT","CLIENT"),("OWNER","OWN
 open(sys.argv[2], "w").write(s)
 PY
 }
-REMOTE_TXT="none configured"; [ -n "$RHOST" ] && REMOTE_TXT="${RUSER:+$RUSER@}$RHOST port $RPORT${RKEY:+, key \`$RKEY\`}${RDIR:+, dir \`$RDIR\`}"
+RKEY_TXT="$RKEY"; case "$RKEY_TXT" in "$HOME"/*) RKEY_TXT="~${RKEY_TXT#"$HOME"}" ;; esac   # ~/...: the same on every machine
+REMOTE_TXT="none configured"; [ -n "$RHOST" ] && REMOTE_TXT="${RUSER:+$RUSER@}$RHOST port $RPORT${RKEY:+, key \`$RKEY_TXT\`}${RDIR:+, dir \`$RDIR\`}"
 SECRETS_TXT="${SECRETS[*]+${SECRETS[*]}}"; [ -n "$SECRETS_TXT" ] || SECRETS_TXT="none yet"
 REPO_ROWS=""; REPO_NAMES=""; FIRST_REPO_ROW=""
 # each row from the checkout itself (bin/lib.sh repo_row, as bin/new --repo): its default branch and CI
@@ -224,8 +225,6 @@ HUB_PERSONA=$(q "$PERSONA")
 HUB_PERSONA_TITLE=$(q "$TITLE")
 HUB_CLIENT=$(q "$CLIENT")
 HUB_OWNER=$(q "$OWNER")
-HUB_CLAUDE=$(q "$CLAUDE_CMD")
-HUB_CLAUDE_CONFIG_DIR=$(q "$CFG")
 HUB_MODEL=$(q "$MODEL")
 HUB_EFFORT=$(q "$EFFORT")
 HUB_AGENT_MODEL=$(q "$AMODEL")
@@ -237,7 +236,6 @@ HUB_REPOS=$(q "${REPO_NAMES# }")
 HUB_REMOTE_HOST=$(q "$RHOST")
 HUB_REMOTE_USER=$(q "$RUSER")
 HUB_REMOTE_PORT=$(q "$RPORT")
-HUB_REMOTE_KEY=$(q "$RKEY")
 HUB_REMOTE_DIR=$(q "$RDIR")
 HUB_STAGING_URL=$(q "$STAGING")
 HUB_SECRETS=$(q "${SECRETS[*]+${SECRETS[*]}}")
@@ -246,7 +244,6 @@ HUB_BRIEFING_HOUR=$(q "$((10#${BRIEF%%:*}))")
 HUB_BRIEFING_MINUTE=$(q "$((10#${BRIEF##*:}))")
 HUB_BRIEFING_FOCUS=$(q "$FOCUS")
 HUB_TOOLS=""
-HUB_BRAIN_PATHS=$(q "${BPATHS[*]+${BPATHS[*]}}")
 HUB_EMBED_MODEL=$(q "$EMODEL")
 HUB_OLLAMA_URL=$(q "$OURL")
 # token limits: the hub root's model (its .claude/settings.json; a --model flag or ANTHROPIC_MODEL still wins), and the
@@ -259,6 +256,16 @@ HUB_AUTO_SYNC=$([ "$ASYNC" = off ] && echo 0 || echo 1)
 # the ade-method tag this hub's .ade/rules.md and _bmad/custom/ come from (bin/method sync; the template's pin)
 HUB_METHOD_REF=$(q "$(method_pin)")
 CONF
+# this machine's values (story I1, .ade/context/per-machine.md): gitignored, read after hub.conf; bin/setup writes them
+# on a clone
+mkdir -p "$H/.local"
+cat > "$H/.local/hub.conf" <<CONF
+$(local_conf_header)
+HUB_CLAUDE=$(q "$CLAUDE_CMD")
+HUB_CLAUDE_CONFIG_DIR=$(q "$CFG")
+HUB_REMOTE_KEY=$(q "$RKEY")
+HUB_BRAIN_PATHS=$(q "${BPATHS[*]+${BPATHS[*]}}")
+CONF
 render "$T/templates/hub/CLAUDE.md" "$H/CLAUDE.md"
 render "$T/templates/hub/ACCESS.md" "$H/ACCESS.md"
 render "$T/templates/hub/README.md" "$H/README.md"
@@ -269,9 +276,10 @@ HUB="$H" AGENT_METHOD_REPO="$(method_repo)" "$H/bin/method" sync "$(method_pin)"
     echo "init: could not sync the method at $(method_pin) from $(method_repo); kept the template's copy (run bin/method sync)" >&2; }
 mkdir -p "$H/.claude/agents" "$H/journal" "$H/memory" "$H/projects" "$H/ops"
 render "$T/templates/hub/persona-agent.md" "$H/.claude/agents/$PERSONA.md"
-# BMAD's project name and output folder (python: the hub path may hold & or #); a failure stops init, never silently
+# BMAD's project name and output folder, relative to the hub (the runtime joins it to the project root, so the hub
+# works from any path: story I1); python: the name may hold & or #; a failure stops init, never silently
 if [ -f "$H/_bmad/config.toml" ]; then
-  python3 - "$H/_bmad/config.toml" "$NAME" "$H/_bmad-output" <<'PY' || { echo "init: could not write _bmad/config.toml" >&2; exit 1; }
+  python3 - "$H/_bmad/config.toml" "$NAME" "_bmad-output" <<'PY' || { echo "init: could not write _bmad/config.toml" >&2; exit 1; }
 import re, sys
 p, name, out = sys.argv[1:]
 q = lambda v: '"%s"' % v.replace("\\", "\\\\").replace('"', '\\"')

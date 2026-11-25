@@ -7,8 +7,11 @@
 # (no remote) row by its checkout), a checkout that is not a directory. A new owner/name joins HUB_REPOS in hub.conf (bin/doctor checks it); commit hub.conf after.
 # bin/new --settings <folder>: re-renders only that existing folder's .claude/settings.json and .mcp.json from the
 # templates (hooks and permissions added since the folder was made, story C6; the browser override, story V3), after
-# copying each old file to <file>.bak.
+# copying each old file to <file>.bak (gitignored).
 # .mcp.json: the folder's `playwright` MCP server, <hub>/bin/browser run <folder> (its browser profile and output folder).
+# Both name the hub as "$CLAUDE_PROJECT_DIR"/../.. (story I1, .ade/context/per-machine.md), so they hold on any path; the
+# one machine path, the hub's CLAUDE.md in claudeMdExcludes, goes to the gitignored .claude/settings.local.json
+# (bin/lib.sh folder_local_write; bin/setup writes it on a clone).
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; F="${1:-}"; SETTINGS=0; REPOS=()
 usage() { echo "usage: bin/new projects/<name>|ops/<name> (a-z 0-9 -) [--repo <checkout>|owner/name[=<checkout>]]... | bin/new --settings <folder>" >&2; exit 2; }
 [ $# = 0 ] || shift
@@ -54,10 +57,13 @@ PY
 if [ "$SETTINGS" = 1 ]; then
   for S in "$H/$F/.claude/settings.json" "$H/$F/.mcp.json"; do
     if [ -f "$S" ]; then cp -p "$S" "$S.bak" || { echo "new: could not copy $S to $S.bak" >&2; exit 1; }; rm -f "$S"; fi; done
-  put folder-settings.json "$F/.claude/settings.json"; put folder-mcp.json "$F/.mcp.json"; exit 0
+  put folder-settings.json "$F/.claude/settings.json"; put folder-mcp.json "$F/.mcp.json"
+  folder_local_write "$F" >/dev/null || exit 1; exit 0
 fi
 put CLAUDE.md "$F/CLAUDE.md"; put ACCESS.md "$F/ACCESS.md"; put STATE.md "$F/STATE.md"
 put MEMORY.md "$F/memory/MEMORY.md"; put folder-settings.json "$F/.claude/settings.json"; put folder-mcp.json "$F/.mcp.json"
+# this machine's part (the hub's CLAUDE.md excluded): gitignored, written for this hub's path (story I1)
+folder_local_write "$F" >/dev/null || exit 1
 put agent.md ".claude/agents/$AGENT.md"
 if [ -n "$ROWS" ]; then
   # the rows go at the end of the Code table (after its last | line), every other line as it was

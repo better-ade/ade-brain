@@ -206,8 +206,8 @@ else
     if [ ! -d "$dir" ]; then
       mkdir -p "$(dirname "$dir")"; gh repo clone "$slug" "$dir" >&2 || { echo "work: clone of $repo failed" >&2; exit 2; }
     fi
-    # record the checkout path in this repo's row (BSD-safe: rewrite via a temp file)
-    awk -F'|' -v OFS='|' -v r="$repo" -v d="$dir" '/^## /{c=($0=="## Code")} /^\|/{n=$2; gsub(/^[ \t]+|[ \t]+$/,"",n); if((c || $3 ~ /\/|~/) && n==r){$3=" " d " "}} {print}' "$A" > "$A.tmp" && mv "$A.tmp" "$A"
+    # record the checkout path in this repo's row, ~/... under $HOME (story I1; BSD-safe: rewrite via a temp file)
+    awk -F'|' -v OFS='|' -v r="$repo" -v d="$(tilde_path "$dir")" '/^## /{c=($0=="## Code")} /^\|/{n=$2; gsub(/^[ \t]+|[ \t]+$/,"",n); if((c || $3 ~ /\/|~/) && n==r){$3=" " d " "}} {print}' "$A" > "$A.tmp" && mv "$A.tmp" "$A"
   fi
 fi
 # the folder's specialist agents (front matter + body) go to the session as --agents JSON
@@ -255,6 +255,20 @@ fi
 [ "$PROV" = anthropic ] || [ -z "$agents" ] || provider_feature_go "$PROV" agents || { echo "work: $(provider_no_go_reason "$PROV" agents)" >&2; exit 2; }
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }   # single-quoted for the launcher, a ' inside kept
 TRAP='rm -f "$0"'
+# the folder's settings as one file (story I1): the committed settings.json plus this machine's settings.local.json
+# (the hub's CLAUDE.md excluded), built after both are up to date (a dry run writes nothing). A session started in a
+# checkout outside the folder gets the hooks with the hub's own path, since $CLAUDE_PROJECT_DIR is the checkout there.
+if [ "$PROV" != gemini ]; then
+  [ "$PROV" = anthropic ] || [ -f "$H/$F/.claude/settings.json" ] || { echo "work: $F has no .claude/settings.json" >&2; exit 2; }
+  if [ "${WORK_DRY:-}" != 1 ]; then
+    folder_local_write "$F" >/dev/null || { echo "work: could not write $F's local settings (bin/setup)" >&2; exit 2; }
+    focus_hub_sync "$F" >&2; SYNCED=1
+  fi
+  MS=$(mktemp "${TMPDIR:-/tmp}/agent-settings.XXXXXX") && chmod 600 "$MS" || exit 2
+  MH=""; [ "$dir" -ef "$H/$F" ] || MH="$H"
+  folder_settings_merged "$F" "$MS" ${MH:+"$MH"} || { echo "work: $F's settings could not be merged" >&2; exit 2; }
+  TRAP="rm -f \"\$0\" $(sq "$MS")"
+fi
 if [ "$PROV" = gemini ]; then
   why="$(gemini_checkout_refusal "$dir")"; [ -z "$why" ] || { echo "work: $why" >&2; exit 2; }
   # fail closed, before anything is written: the CLI's own Google login, else a stored key (read once, never kept)
@@ -267,7 +281,7 @@ elif [ "$PROV" = anthropic ]; then
   # the caller's install: a bare name runs what the caller's PATH finds, since a new window's login shell may find another
   # claude first (an explicit path, or a name not on PATH, is kept as given)
   case "$CL" in */*) ;; *) p="$(command -v -- "$CL" 2>/dev/null)"; [[ "$p" == /* && "$p" =~ ^[A-Za-z0-9._/-]+$ ]] && CL="$p" ;; esac
-  cmd="cd $(sq "$dir") && AGENT_FOLDER='$F' $CL --settings $(sq "$H/$F/.claude/settings.json")"
+  cmd="cd $(sq "$dir") && AGENT_FOLDER='$F' $CL --settings $(sq "$MS")"; MSHOW=0
 else
   SEC="$(provider_field "$PROV" secret)"; CD="$H/.local/providers/$PROV"; SCRUB="$(provider_scrub_vars)"
   why="$(provider_config_refusal "$PROV")"; [ -z "$why" ] || { echo "work: $why" >&2; exit 2; }
@@ -277,13 +291,10 @@ else
     provider_key_ok "$PROV" || { echo "work: no $(provider_field "$PROV" label) in the Keychain; store it with: bin/secret --set $SEC" >&2; exit 1; }
   fi
   # one settings file: the folder's (hooks kept) plus the provider layer (provider_settings_write)
-  [ -f "$H/$F/.claude/settings.json" ] || { echo "work: $F has no .claude/settings.json" >&2; exit 2; }
-  MS=$(mktemp "${TMPDIR:-/tmp}/agent-settings.XXXXXX") && chmod 600 "$MS" || exit 2
-  provider_settings_write "$H/$F/.claude/settings.json" "$MS" "$PROV" "$P_MAIN" "$P_SMALL" || exit 2
+  provider_settings_write "$MS" "$MS" "$PROV" "$P_MAIN" "$P_SMALL" || exit 2
   # its own config dir, so /model writes there and not to the owner's settings.json; env -u drops any credential or backend
   # switch the launching (login) shell holds, since those beat apiKeyHelper
-  cmd="cd $(sq "$dir") && env$(printf ' -u %s' $SCRUB) AGENT_FOLDER='$F' CLAUDE_CONFIG_DIR=$(sq "$CD") $CL --settings $(sq "$MS")"
-  TRAP="rm -f \"\$0\" $(sq "$MS")"
+  cmd="cd $(sq "$dir") && env$(printf ' -u %s' $SCRUB) AGENT_FOLDER='$F' CLAUDE_CONFIG_DIR=$(sq "$CD") $CL --settings $(sq "$MS")"; MSHOW=1
 fi
 if [ "$PROV" != gemini ]; then   # Claude Code's flags; the gemini command is complete above
   [ -n "$agents" ] && cmd="$cmd --agents $(printf %q "$agents")"
@@ -306,12 +317,12 @@ if [ "${WORK_DRY:-}" = 1 ]; then
     echo "work: if this ADE lists capabilities: command, this runs: $ADE_HOOK_BIN open --cwd $dir --name ${F##*/} --focus -- bash -l <launcher>" >&2
     echo "work: if it does not, this runs: $ADE_HOOK_BIN open --cwd $dir --name ${F##*/} --focus (no command) and prints the command to paste there: bash -l <launcher>" >&2
   fi
-  [ -z "$MS" ] || { cat "$MS"; echo; } 2>/dev/null; exit 0
+  [ "${MSHOW:-0}" = 0 ] || { cat "$MS"; echo; } 2>/dev/null; exit 0
 fi
 # the hub's rules reach the folder as copies inside it, refreshed on every start, so a session whose working directory
 # is the folder is never stopped by Claude Code's external-imports question (focus_hub_sync, bin/lib.sh;
 # .ade/context/focus-folders.md). A folder from before this is migrated here, once, and the line says so.
-focus_hub_sync "$F" >&2
+[ "${SYNCED:-0}" = 1 ] || focus_hub_sync "$F" >&2
 if [ "$PROV" != anthropic ] && [ "$PROV" != gemini ]; then   # the memory links bin/setup makes, inside the provider's config dir
   plink() { local m="$CD/projects/$(encode_path "$1")/memory"; mkdir -p "$2" "$(dirname "$m")"
     [ -L "$m" ] && [ "$(readlink "$m")" = "$2" ] && return 0
