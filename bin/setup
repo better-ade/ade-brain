@@ -84,6 +84,8 @@ if [ "$GITH" = 1 ] && { [ ${#MIG[@]} -gt 0 ] || [ "$RMC" = 1 ]; }; then
   fi
 fi
 link() { local r; r="$(link_memory "$CH" "$1" "${3:-}")" || return 1; echo "$r $2"; }   # absolute dir, label, [memory dir to link to]
+# age: bin/keys share and receive need it (story I4); a warning only, setup goes on
+command -v age >/dev/null 2>&1 || echo "warning: age is not installed (bin/keys share and receive need it): $(tool_install_line age)" >&2
 link "$H" "."
 CLAIMED=""
 # folders that mark a row "memory owned by <folder>" go last, so the named owner claims the shared checkout first

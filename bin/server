@@ -7,7 +7,7 @@
 #      denying incoming by default, with only the SSH port(s) of sshd -T open); upgrades (APT's unattended upgrades on and
 #      apt-daily-upgrade.timer enabled); listeners (nothing but sshd listens beyond loopback). A failing row stops the
 #      install before anything changes, unless it is accepted with --accept-risk <row> (repeatable);
-#   2. the missing packages of a fixed list (apt; the distribution's versions): ade's tool set (git python3 tmux gh) and
+#   2. the missing packages of a fixed list (apt; the distribution's versions): ade's tool set (git python3 tmux gh age) and
 #      the hub's needs (nodejs and npm only when node and npm are not already on PATH), plus the file viewer's extras
 #      (bat glow poppler-utils chafa yazi) where the archive has them (each one it lacks is skipped with a note), then the
 #      missing tools at pinned versions (server_pin), each from its release file over https only and checked against
@@ -27,10 +27,10 @@ set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
 ROWS="ssh-password ssh-root firewall upgrades listeners"
 USAGE="usage: bin/server install [--dry-run] [--accept-risk ${ROWS// /|}]... | bin/server status"
 # the fixed package list (apt) and the pinned tool versions
-# required (ade's tool set first: git python3 tmux gh; xvfb x11vnc novnc websockify: the SSH-tunnelled sign-in view of
+# required (ade's tool set first: git python3 tmux gh age, age for bin/keys share and receive; xvfb x11vnc novnc websockify: the SSH-tunnelled sign-in view of
 # bin/browser login, story V3), then the extras for ade's file viewer, installed where this system's archive has them
 # (apt-cache) and skipped with a note otherwise
-server_packages() { echo "git python3 tmux gh curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify"; }
+server_packages() { echo "git python3 tmux gh age curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify"; }
 server_extras() { echo "bat glow poppler-utils chafa yazi"; }
 server_pin() { case "$1" in gitleaks) echo 8.30.1 ;; bun) echo 1.3.9 ;; claude) echo 2.1.330 ;; *) return 1 ;; esac; }
 # server_arch: x64 or arm64, the builds the pins cover; exit 1 on any other machine

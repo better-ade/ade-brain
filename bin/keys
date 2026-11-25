@@ -3,10 +3,20 @@
 #   bin/keys                 each tool: stored or missing, and what it still needs
 #   bin/keys set <tool>      store or replace its key (hidden prompt, or stdin; never an argument)
 #   bin/keys forget <tool>   remove its key
+#   bin/keys share <github-user|age1…> [<tool|secret> …] [--all] [--days N]
+#                            seal keys with age to one person (story I4): their GitHub ssh-ed25519/ssh-rsa keys or an age1…
+#                            key; shows the fingerprints and asks (a "y" on stdin); the armored block alone on stdout
+#   bin/keys receive [file] [-i <identity>] [--any-hub]
+#                            open a block (file or stdin) straight into this hub's store; shows what it holds and asks
+#                            once before storing anything, then again before replacing a key
+#   bin/keys receive --new   make a one-off age identity (~/.config/ade/age/key.txt) and print its public key
+# A shared value goes store -> shell variable -> pipe -> age, and back: never a file, an argument or output.
+# Contract: .ade/context/keys-share.md.
 # anthropic is optional: a stored Anthropic API key is used through apiKeyHelper by bin/agent --live-test, and by role runs
 # only with HUB_AGENT_ANTHROPIC_KEY=1 in hub.conf (story H1, ADR 0002); otherwise bin/agent uses the Claude login. Contract: .ade/context/providers.md, "Keys", and .ade/context/hub-interface.md.
+set +x; unset BASH_ENV   # an inherited xtrace (SHELLOPTS) or BASH_ENV would print or run code next to the values
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
-USAGE="usage: bin/keys | bin/keys set <tool> | bin/keys forget <tool> (tools: $(key_tools))"
+USAGE="usage: bin/keys | bin/keys set <tool> | bin/keys forget <tool> | bin/keys share <github-user|age1…> [<tool|secret> …] [--all] [--days N] | bin/keys receive [file] [-i <identity>] [--any-hub] | bin/keys receive --new (tools: $(key_tools))"
 bad() { echo "$USAGE" >&2; exit 2; }
 # the hub's secret store (bin/lib.sh, story V1): the Keychain on macOS, pass or the file store on Linux
 keychain() { local why; why="$(secret_store_refusal)"; [ -z "$why" ] || { echo "keys: $why" >&2; exit 1; }; }
@@ -19,6 +29,162 @@ tool_state() {
   if [ "$(engine_of "$1")" = gemini ]; then why="$(candidate_refusal "gemini:gemini-2.5-pro")"
   else provider_field "$1" base_url >/dev/null 2>&1 || { echo "$1 is not connected yet"; return 0; }; why="$(candidate_refusal "$1:sonnet")"; fi
   case "$why" in "no "*" in the Keychain"*|"no Gemini sign-in"*) ;; *) printf '%s' "$why" ;; esac
+}
+# --- share / receive (story I4, .ade/context/keys-share.md) ---
+need_age() { local t; for t in age "$@"; do command -v "$t" >/dev/null 2>&1 || { echo "keys: $t is not installed: $(tool_install_line age)" >&2; exit 1; }; done; }
+# keys_now: seconds since 1970 (AGENT_KEYS_NOW, a test-only clock, counts only with AGENT_PLATFORM_TEST=1)
+keys_now() { if [ "${AGENT_PLATFORM_TEST:-}" = 1 ] && [[ "${AGENT_KEYS_NOW:-}" =~ ^[0-9]+$ ]]; then echo "$AGENT_KEYS_NOW"; else date -u +%s; fi; }
+age_dir() { echo "${XDG_CONFIG_HOME:-$HOME/.config}/ade/age"; }
+# shown: text from a block (someone else's), printable characters only and short
+shown() { printf '%s' "$1" | LC_ALL=C tr -cd '[:print:]' | cut -c1-80; }
+# github_keys <user>: the public keys GitHub publishes for <user> (AGENT_GITHUB_KEYS_URL, a file or URL, only in tests)
+github_keys() { local u="${AGENT_GITHUB_KEYS_URL:-}"
+  [ "${AGENT_PLATFORM_TEST:-}" = 1 ] && [ -n "$u" ] || u="https://github.com/$1.keys"
+  case "$u" in /*) cat -- "$u" ;; *) curl --proto '=https,file' --tlsv1.2 -fsSL -m 20 -- "$u" ;; esac; }
+share() {
+  local to="" names="" all=0 days=7 kind n s i=0 list="" count=0 keys k ans armor now exp; local R=()
+  while [ $# -gt 0 ]; do case "$1" in
+      --all) all=1 ;;
+      --days) [[ "${2:-}" =~ ^[0-9]+$ ]] && [ "$2" -ge 1 ] && [ "$2" -le 30 ] || { echo "keys: --days takes 1 to 30" >&2; exit 2; }; days=$((10#$2)); shift ;;
+      -*) bad ;;
+      *) if [ -z "$to" ]; then to="$1"; else names="$names $1"; fi ;;
+    esac; shift; done
+  [ -n "$to" ] || bad
+  # the recipient: an age1… key or a GitHub user name; never a file or a path (a recipients file is never taken)
+  # an age1 key is an X25519 key only (bech32, 58 characters after age1): a plugin recipient (age1<name>1…) is refused
+  if [[ "$to" =~ ^age1[02-9ac-hj-np-z]{58}$ ]]; then kind=age
+  elif [[ "$to" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] && [ "${#to}" -le 39 ] && [ ! -e "$to" ]; then kind=github
+  else echo "keys: the recipient is a GitHub user name or an age1… key (bin/keys receive --new), never a file or a path; nothing sealed" >&2; exit 2; fi
+  need_age; keychain
+  [ "$all" = 0 ] || names="$names $(secret_names | tr '\n' ' ')"
+  set -f
+  for n in $names; do i=$((i + 1))
+    case " $(key_tools) " in *" $n "*) s="$(key_secret "$n")" ;; *) s="$n" ;; esac
+    # an unknown name is not repeated: it may be a value typed in the wrong place
+    secret_name_ok "$s" && secret_has "$s" || { set +f; echo "keys: name $i is neither a tool with a stored key nor a stored secret; nothing sealed" >&2; exit 1; }
+    case " $list " in *" $s "*) ;; *) list="$list $s"; count=$((count + 1)) ;; esac
+  done
+  set +f
+  [ "$count" -gt 0 ] || { [ "$all" = 1 ] && { echo "keys: nothing stored to share" >&2; exit 1; }; echo "keys: name the keys to share (a tool or a secret name), or --all" >&2; exit 2; }
+  if [ "$kind" = age ]; then R=(-r "$to"); echo "keys: sealing to the age key $to" >&2
+  else
+    keys="$(github_keys "$to")" || { echo "keys: could not read $to's public keys from GitHub; nothing sealed" >&2; exit 1; }
+    keys="$(printf '%s\n' "$keys" | tr -d '\r' | grep -E '^(ssh-ed25519|ssh-rsa) [A-Za-z0-9+/]+=*( .*)?$')"
+    [ -n "$keys" ] || { echo "keys: $to has no ssh-ed25519 or ssh-rsa key on GitHub; nothing sealed (they can run bin/keys receive --new and send you its age1… key)" >&2; exit 1; }
+    echo "keys: $to's keys on GitHub (check them with $to):" >&2
+    local IFS=$'\n' fp bits; set -f
+    for k in $keys; do k="$(printf '%s' "$k" | cut -d' ' -f1,2)"
+      fp="$(printf '%s\n' "$k" | ssh-keygen -lf - 2>/dev/null)"; bits="${fp%% *}"
+      if ! [[ "$bits" =~ ^[0-9]+$ ]]; then echo "  skipped: a ${k%% *} key ssh-keygen cannot read (…${k: -12})" >&2; continue; fi
+      if [ "${k%% *}" = ssh-rsa ] && [ "$bits" -lt 2048 ]; then echo "  skipped: $fp (ssh-rsa under 2048 bits)" >&2; continue; fi
+      R+=(-r "$k"); echo "  $fp" >&2; done
+    set +f; unset IFS
+    [ "${#R[@]}" -gt 0 ] || { echo "keys: none of $to's keys on GitHub can be used; nothing sealed (they can run bin/keys receive --new and send you its age1… key)" >&2; exit 1; }
+  fi
+  printf 'keys: seal%s for %s, expiring in %s day(s)? [y/N] ' "$list" "$to" "$days" >&2
+  read -r ans || ans=""; [ -t 0 ] || echo >&2   # an answer from a pipe echoes no newline
+  case "$ans" in y|Y|yes|Yes|YES) ;; *) echo "keys: nothing sealed" >&2; exit 1 ;; esac
+  now="$(keys_now)"; exp=$((now + days * 86400))
+  # the plaintext (format v1): written into a pipe to age, never to a file; a value that cannot be read leaves no "end"
+  seal_plain() { local n v
+    printf 'ade-keys-share 1\nhub: %s\nfrom: %s\nto: %s\ntime: %s\nexpires: %s\n' "$(hub_name)" "$(hub_user)" "$to" "$(utc_iso "$now")" "$(utc_iso "$exp")"
+    set -f; for n in $list; do v="$(secret_get "$n")" && [ -n "$v" ] || { echo "keys: could not read $n from $(secret_store_label)" >&2; return 1; }
+      case "$v" in *$'\n'*) echo "keys: $n holds more than one line; nothing sealed" >&2; return 1 ;; esac
+      printf 'secret %s %s\n' "$n" "$v"; done; unset v
+    echo end; }
+  armor="$(set -o pipefail; seal_plain | age -a "${R[@]}")" || { echo "keys: sealing failed; nothing printed" >&2; exit 1; }
+  printf '%s\n' "$armor"
+  echo "keys: sealed $count key(s) for $to, until $(utc_iso "$exp"). Send the block above any way; only $to can open it, with bin/keys receive." >&2
+}
+# ask: a yes from stdin when the block came from a file, else from the terminal; no answer keeps the old value
+ask() { local a=""
+  if [ "$FROM_FILE" = 1 ]; then read -r a || a=""; [ -t 0 ] || echo >&2
+  else { read -r a < /dev/tty; } 2>/dev/null || { a=""; echo >&2; }; fi
+  case "$a" in y|Y|yes|Yes|YES) return 0 ;; esac; return 1; }
+# refuse <why>: nothing stored, exit 1
+refuse() { unset plain L vals; echo "keys: refused: $1; nothing stored" >&2; exit 1; }
+new_identity() {
+  local d f pub; need_age age-keygen; d="$(age_dir)"; f="$d/key.txt"
+  if [ ! -d "$d" ]; then ( umask 077; mkdir -p "$d" ) && chmod 700 "$d" || { echo "keys: cannot make $d" >&2; exit 1; }; fi
+  [ "$(file_low9 "$d")" = 700 ] && [ "$(file_owner "$d")" = "$(id -u)" ] || { echo "keys: $d must be a 0700 folder of yours: chmod 700 $d" >&2; exit 1; }
+  if [ -f "$f" ]; then echo "keys: you already have an age identity ($f); its public key:" >&2
+  else ( umask 077; age-keygen -o "$f" ) 2>/dev/null && chmod 600 "$f" || { rm -f "$f"; echo "keys: age-keygen failed" >&2; exit 1; }; fi
+  [ "$(file_low9 "$f")" = 600 ] && [ "$(file_owner "$f")" = "$(id -u)" ] || { echo "keys: $f must be a 0600 file of yours: chmod 600 $f" >&2; exit 1; }
+  pub="$(age-keygen -y "$f")" || { echo "keys: cannot read $f" >&2; exit 1; }
+  printf '%s\n' "$pub"
+  echo "keys: send this age1… key to the sender (bin/keys share <that key> …); bin/keys receive opens blocks with $f" >&2
+}
+receive() {
+  local file="" anyhub=0 new=0 block armor e rc why f i l r n v bhub="" bfrom="" bto="" btime="" bexp="" ended=0 ex tm now stored="" kept="" failed=""
+  local ids=() L=() names=() vals=() plain
+  while [ $# -gt 0 ]; do case "$1" in
+      --new) new=1 ;;
+      --any-hub) anyhub=1 ;;
+      -i) [ -n "${2:-}" ] || bad; [ -f "$2" ] || { echo "keys: no identity file at $2" >&2; exit 1; }; ids+=(-i "$2"); shift ;;
+      -*) bad ;;
+      *) [ -z "$file" ] || bad; file="$1" ;;
+    esac; shift; done
+  if [ "$new" = 1 ]; then [ -z "$file" ] && [ "${#ids[@]}" = 0 ] && [ "$anyhub" = 0 ] || bad; new_identity; return; fi
+  need_age; keychain
+  # the default identities; ~/.ssh/id_rsa only beside its id_rsa.pub (age needs the public half for an encrypted one)
+  if [ "${#ids[@]}" = 0 ]; then for f in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa" "$(age_dir)/key.txt"; do
+      [ -f "$f" ] || continue; [ "$f" != "$HOME/.ssh/id_rsa" ] || [ -f "$f.pub" ] || continue; ids+=(-i "$f"); done; fi
+  [ "${#ids[@]}" -gt 0 ] || { echo "keys: no identity to open it: ~/.ssh/id_ed25519, ~/.ssh/id_rsa, -i <identity>, or bin/keys receive --new" >&2; exit 1; }
+  FROM_FILE=0
+  if [ -n "$file" ]; then [ -f "$file" ] || { echo "keys: no such file: $file" >&2; exit 1; }; block="$(cat -- "$file")"; FROM_FILE=1
+  else [ ! -t 0 ] || echo "keys: paste the block, then Ctrl-D" >&2; block="$(cat)"; fi
+  # the armor alone (a block pasted with chat text around it still opens)
+  armor="$(printf '%s\n' "$block" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed -n '/^-----BEGIN AGE ENCRYPTED FILE-----$/,/^-----END AGE ENCRYPTED FILE-----$/p')"
+  case "$armor" in *"-----END AGE ENCRYPTED FILE-----") ;; *) refuse "this is not a sealed block (-----BEGIN AGE ENCRYPTED FILE----- … END)" ;; esac
+  e="$(mktemp "${TMPDIR:-/tmp}/ade-keys.XXXXXX")" || exit 1
+  plain="$(printf '%s\n' "$armor" | age -d "${ids[@]}" 2>"$e")"; rc=$?
+  if [ "$rc" != 0 ]; then
+    if grep -qi "no identity matched" "$e"; then why="not sealed to your keys (tried:$(for ((i = 1; i < ${#ids[@]}; i += 2)); do printf ' %s' "${ids[$i]}"; done); if it was sealed to another key of yours: -i <identity>"
+    else why="age could not open it: $(head -1 "$e" | sed 's/^age: //; s/^error: //')"; fi
+    rm -f "$e"; refuse "$why"
+  fi
+  rm -f "$e"
+  local IFS=$'\n'; set -f; L=($plain); set +f; unset IFS; unset plain
+  [ "${L[0]:-}" = "ade-keys-share 1" ] || refuse "not an ade keys block (or one from a newer version)"
+  for ((i = 1; i < ${#L[@]}; i++)); do l="${L[$i]}"
+    case "$l" in
+      "hub: "*) bhub="${l#hub: }" ;; "from: "*) bfrom="${l#from: }" ;; "to: "*) bto="${l#to: }" ;;
+      "time: "*) btime="${l#time: }" ;; "expires: "*) bexp="${l#expires: }" ;;
+      "secret "*) r="${l#secret }"; n="${r%% *}"; v="${r#* }"
+        [ "$n" != "$r" ] && [ -n "$v" ] && secret_name_ok "$n" || refuse "entry $((${#names[@]} + 1)) is malformed"
+        names+=("$n"); vals+=("$v") ;;
+      end) ended=1; break ;;
+      *) refuse "line $((i + 1)) is not part of the format" ;;
+    esac
+  done
+  [ "$ended" = 1 ] || refuse "the block is incomplete (no end)"
+  [ "${#names[@]}" -gt 0 ] || refuse "the block holds no key"
+  ex="$(utc_epoch "${bexp%Z}")"; [ -n "$ex" ] || refuse "the block has no readable expiry"
+  tm="$(utc_epoch "${btime%Z}")"; [ -n "$tm" ] || refuse "the block has no readable time"
+  now="$(keys_now)"
+  [ "$tm" -le $((now + 300)) ] || refuse "the block was sealed in the future ($(shown "$btime"))"
+  [ "$ex" -ge "$tm" ] || refuse "the block expires before it was sealed"
+  [ $((ex - tm)) -le $((30 * 86400)) ] || refuse "the block expires more than 30 days after it was sealed"
+  [ "$now" -lt "$ex" ] || refuse "the block expired at $(shown "$bexp"); ask $(shown "$bfrom") for a new one"
+  [ "$bhub" = "$(hub_name)" ] || [ "$anyhub" = 1 ] || refuse "the block is for hub $(shown "$bhub"), not this one ($(hub_name)); --any-hub takes it anyway"
+  # what it holds, then one yes before anything is stored: anyone with your public key can seal a block
+  { echo "keys: the block holds ${#names[@]} key(s):"
+    echo "  hub:     $(shown "$bhub")"
+    echo "  from:    $(shown "$bfrom") (not verified: check with them that they sent it)"
+    echo "  to:      $(shown "$bto")"
+    echo "  sealed:  $(shown "$btime"), expires $(shown "$bexp")"
+    for ((i = 0; i < ${#names[@]}; i++)); do if secret_has "${names[$i]}"; then echo "  ${names[$i]}: replace"; else echo "  ${names[$i]}: new"; fi; done
+    printf 'keys: store these? [y/N] '; } >&2
+  ask || { unset L vals; echo "keys: nothing stored" >&2; exit 1; }
+  for ((i = 0; i < ${#names[@]}; i++)); do n="${names[$i]}"
+    if secret_has "$n"; then printf 'keys: %s is already stored; replace it? [y/N] ' "$n" >&2
+      ask || { kept="$kept $n"; continue; }; fi
+    if secret_put "$n" "${vals[$i]}"; then stored="$stored $n"; else failed="$failed $n"; fi
+  done
+  unset L vals
+  echo "keys: stored:${stored:- none}" >&2
+  [ -z "$kept" ] || echo "keys: kept your own:$kept" >&2
+  [ -z "$failed" ] || { echo "keys: could not store in $(secret_store_label):$failed" >&2; exit 1; }
 }
 case "${1:-}" in
   "") [ $# -eq 0 ] || bad; keychain
@@ -36,5 +202,7 @@ case "${1:-}" in
   forget) [ $# -eq 2 ] || bad; s="$(tool_name "$2")" || exit 2; keychain
     "$H/bin/secret" --has "$s" || { echo "keys: no key stored for $2" >&2; exit 1; }
     exec "$H/bin/secret" --forget "$s" ;;
+  share) shift; share "$@" ;;
+  receive) shift; receive "$@" ;;
   *) bad ;;
 esac
