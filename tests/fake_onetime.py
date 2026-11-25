@@ -1,7 +1,7 @@
 # A stand-in for a Onetime Secret instance's anonymous v3 guest API (story I6, .ade/context/onetime-secret.md), so
 # tests never reach the internet. argv: <port file> <log file> [ok|error|hang]. Every request is logged as one JSON
 # line (method, path, content type, body). ok: conceal stores, reveal returns once then 404; error: 500 to everything;
-# hang: answers nothing for 30 s (the client's timeout fires first).
+# hang: answers nothing for 30 s (the client's timeout fires first); badid: conceal answers 200 with an id "x/../..".
 import json, secrets, string, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 MODE = sys.argv[3] if len(sys.argv) > 3 else "ok"
@@ -26,6 +26,7 @@ class H(BaseHTTPRequestHandler):
             s = body.get("secret") if isinstance(body, dict) else None
             if not isinstance(s, dict) or not s.get("secret"): return self.reply(422, {"message": "You did not provide anything to share"})
             ttl = int(s.get("ttl") or 604800); sid = new_id(); STORE[sid] = s["secret"]
+            if MODE == "badid": sid = "x/../.."
             return self.reply(200, {"success": True, "record": {"receipt": {"identifier": new_id(), "secret_ttl": ttl},
                 "secret": {"identifier": sid, "key": sid, "secret_ttl": ttl, "state": "new"}}, "details": {"kind": "conceal"}})
         if len(p) == 7 and p[1:5] == ["api", "v3", "guest", "secret"] and p[6] == "reveal":

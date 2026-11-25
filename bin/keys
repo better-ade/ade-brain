@@ -53,7 +53,8 @@ github_keys() { local u="https://github.com/$1.keys"
 # Onetime Secret instance (its v3 guest API); the link opens once. Only the sealed block ever goes there.
 # onetime_base: HUB_ONETIME_URL (default the public instance's API host), https://<host>[:port] only, never a path, a user
 # or a query; prints it without a trailing /, else says why and fails
-onetime_base() { local u="${HUB_ONETIME_URL:-https://us.onetimesecret.com}"; u="${u%/}"
+onetime_base() { local u="${HUB_ONETIME_URL:-https://us.onetimesecret.com}"
+  [[ "$u" =~ [[:space:][:cntrl:]] ]] && { echo "keys: HUB_ONETIME_URL holds whitespace or a control character; nothing sent" >&2; return 1; }; u="${u%/}"
   [[ "$u" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$ ]] ||
     { echo "keys: HUB_ONETIME_URL must be https://<host> (no path, user or query): $(shown "$u"); nothing sent" >&2; return 1; }
   printf '%s' "$u"; }
@@ -65,7 +66,7 @@ onetime_post() { local api proto='=https' to=20
     [[ "$api" =~ ^http://127\.0\.0\.1:[0-9]{1,5}$ ]] || { echo "keys: a test run sends only to AGENT_ONETIME_API (http://127.0.0.1:<port>), never a real service" >&2; return 1; }
     proto='=http'; [[ "${AGENT_ONETIME_TIMEOUT:-}" =~ ^[1-9][0-9]{0,2}$ ]] && to="$AGENT_ONETIME_TIMEOUT"
   else api="$1"; fi
-  curl --proto "$proto" --proto-redir '=https' --tlsv1.2 -sS --max-filesize 1048576 -m "$to" -H 'Content-Type: application/json' \
+  curl -q --proto "$proto" --proto-redir '=https' --tlsv1.2 -sS --max-filesize 1048576 -m "$to" -H 'Content-Type: application/json' \
     -H 'Accept: application/json' --data-binary @- -w '\n%{http_code}' -- "$api$2" 2>/dev/null; return 0; }
 # onetime_share <base> <armor> <ttl>: makes the secret; prints its link (<base>/secret/<id>), else says why and fails
 onetime_share() { local r code id
@@ -234,7 +235,16 @@ to_is_me() { local to="$1" i f pk pubs="" k
     while IFS= read -r k; do [ "$k" != "$pk" ] || return 0; done <<< "$pubs"; done
   return 1; }
 # refuse <why>: nothing stored, exit 1
-refuse() { unset plain L vals; echo "keys: refused: $1; nothing stored" >&2; exit 1; }
+refuse() { unset plain L vals; echo "keys: refused: $1; nothing stored" >&2; keep_block; exit 1; }
+# keep_block: a block fetched from a link (which opens once) is not lost when receive stops short: the sealed armor
+# alone goes to a 0600 file in a 0700 folder, and the receiver retries from it (bin/keys receive <file> [-i <identity>]);
+# if it cannot be written, the armor goes to stderr instead. It is ciphertext: only the receiver's key opens it.
+keep_block() { local d f; [ "${KEEP:-0}" = 1 ] && [ -n "${armor:-}" ] || return 0; KEEP=0
+  d="${XDG_CONFIG_HOME:-$HOME/.config}/ade/links"; f="$d/$id.age"
+  if ( umask 077; mkdir -p "$d" ) 2>/dev/null && chmod 700 "$d" && ( umask 077; printf '%s\n' "$armor" > "$f" ) 2>/dev/null && chmod 600 "$f"; then
+    echo "keys: the link is used up; its sealed block is kept in $f (only your key opens it): bin/keys receive $f [-i <identity>]" >&2
+  else echo "keys: the link is used up and $d could not hold its block; here it is (sealed; save it, then bin/keys receive <file>):" >&2
+    printf '%s\n' "$armor" >&2; fi; }
 new_identity() {
   local d f pub; need_age age-keygen; d="$(age_dir)"; f="$d/key.txt"
   if [ ! -d "$d" ]; then ( umask 077; mkdir -p "$d" ) && chmod 700 "$d" || { echo "keys: cannot make $d" >&2; exit 1; }; fi
@@ -263,6 +273,7 @@ receive() {
   if [ "$new" = 1 ]; then [ -z "$file" ] && [ "${#ids[@]}" = 0 ] && [ "$anyhub" = 0 ] && [ "$anyto" = 0 ] && [ -z "$want" ] || bad; new_identity; return; fi
   # a link (story I6): https://<HUB_ONETIME_URL's host>/secret/<id> and nothing else, checked before any request
   case "$file" in *://*) link="$file"; file=""; base="$(onetime_base)" || exit 2
+    [[ "$link" =~ [[:space:][:cntrl:]] ]] && refuse "the link holds whitespace or a control character"
     [[ "$link" =~ ^https://([^/]+)/secret/([A-Za-z0-9]{20,128})/?$ ]] && lh="${BASH_REMATCH[1]}" && id="${BASH_REMATCH[2]}" &&
       [ "$(printf '%s' "$lh" | tr 'A-Z' 'a-z')" = "$(printf '%s' "${base#https://}" | tr 'A-Z' 'a-z')" ] ||
       refuse "not a one-time link on ${base#https://} (HUB_ONETIME_URL): $base/secret/<id> only" ;; esac
@@ -290,6 +301,7 @@ assert isinstance(v, str) and v; print(v)' 2>/dev/null)" ||
   # the armor alone (a block pasted with chat text around it still opens)
   armor="$(printf '%s\n' "$block" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed -n '/^-----BEGIN AGE ENCRYPTED FILE-----$/,/^-----END AGE ENCRYPTED FILE-----$/p')"
   case "$armor" in *"-----END AGE ENCRYPTED FILE-----") ;; *) refuse "this is not a sealed block (-----BEGIN AGE ENCRYPTED FILE----- … END)" ;; esac
+  [ -z "$link" ] || KEEP=1
   e="$(mktemp "${TMPDIR:-/tmp}/ade-keys.XXXXXX")" || exit 1
   # a NUL byte (which a shell variable would drop silently) becomes \001, and is refused below
   plain="$(set -o pipefail; printf '%s\n' "$armor" | age -d "${ids[@]}" 2>"$e" | LC_ALL=C tr '\000' '\001')"; rc=$?
@@ -346,7 +358,7 @@ assert isinstance(v, str) and v; print(v)' 2>/dev/null)" ||
     echo "  sealed:  $(shown "$btime") (sealed $age day(s) ago), expires $(shown "$bexp")"
     for ((i = 0; i < ${#names[@]}; i++)); do if secret_has "${names[$i]}"; then echo "  ${names[$i]}: replace"; else echo "  ${names[$i]}: new"; fi; done
     printf 'keys: store these? [y/N] '; } >&2
-  ask || { unset L vals; echo "keys: nothing stored" >&2; exit 1; }
+  ask || { unset L vals; echo "keys: nothing stored" >&2; keep_block; exit 1; }
   for ((i = 0; i < ${#names[@]}; i++)); do n="${names[$i]}"
     if secret_has "$n"; then printf 'keys: %s is already stored; replace it? [y/N] ' "$n" >&2
       ask || { kept="$kept $n"; continue; }; fi

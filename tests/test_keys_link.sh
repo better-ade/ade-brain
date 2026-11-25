@@ -14,7 +14,7 @@ REAL_PY="$(command -v python3)"; SRV=""
 fake() { local d="$T/srv-$1"; mkdir -p "$d"; "$REAL_PY" "$REPO/tests/fake_onetime.py" "$d/port" "$d/log" "$1" > /dev/null 2>&1 & SRV="$SRV $!"
   for i in $(seq 1 50); do [ -s "$d/port" ] && break; sleep 0.1; done; [ -s "$d/port" ] || fail "fake $1 did not start"; : >> "$d/log"; }
 trap 'kill $SRV 2>/dev/null' EXIT
-fake ok; fake error; fake hang; url() { echo "http://127.0.0.1:$(cat "$T/srv-$1/port")"; }
+fake ok; fake error; fake hang; fake badid; url() { echo "http://127.0.0.1:$(cat "$T/srv-$1/port")"; }
 OK="$(url ok)"; ERR="$(url error)"; HANG="$(url hang)"; LOG="$T/srv-ok/log"
 export AGENT_ONETIME_API="$OK"
 # argv recorders: each logs its argv, then runs the real tool
@@ -145,6 +145,52 @@ done
 grep -q '/conceal' "$T/srv-error/log" || fail "the error service was asked"
 # the printed block still opens
 echo y | as "$HB" bin/keys receive "$T/o8" > /dev/null 2> "$T/e9" || fail "the fallback block opens: $(cat "$T/e9")"
+
+# --- fix round: a block refused after the fetch is kept (sealed, 0600) so the right receiver can retry from it
+# D has an ssh identity, but the block is sealed to B: the fetch burns the link, the refusal names the kept file
+HD="$(person)"; ssh-keygen -q -t ed25519 -N '' -C d -f "$HD/.ssh/id_ed25519" || fail "ssh-keygen d"
+echo y | as "$HA" bin/keys share b deepseek --as a --link > "$T/ok1" 2>/dev/null || fail "share for the kept-block case"
+echo y | as "$HD" bin/keys receive "$(cat "$T/ok1")" > /dev/null 2> "$T/ek1"; assert_eq "$?" 1 "D cannot open it: $(cat "$T/ek1")"
+grep -q "not sealed to your keys" "$T/ek1" || fail "the refusal says why: $(cat "$T/ek1")"
+KEPT="$(sed -n 's/^keys: the link is used up; its sealed block is kept in \(.*\) (only.*$/\1/p' "$T/ek1")"
+[ -n "$KEPT" ] && [ -f "$KEPT" ] || fail "the refusal names the kept block: $(cat "$T/ek1")"
+case "$KEPT" in "$HD"/*) ;; *) fail "the kept block is in D's home: $KEPT" ;; esac
+assert_eq "$(fmode "$KEPT")" 600 "the kept block is 0600"; assert_eq "$(fmode "${KEPT%/*}")" 700 "its folder is 0700"
+armor_only "$KEPT" || fail "the kept file is the armored block alone"
+echo y | as "$HB" bin/keys receive "$KEPT" > /dev/null 2> "$T/ek2"; assert_eq "$?" 0 "B opens the kept block: $(cat "$T/ek2")"
+assert_eq "$(as "$HB" bin/secret deepseek-api-key)" "$V1" "B stored it from the kept block"
+# --- fix round: whitespace or a control character in a link or HUB_ONETIME_URL is refused before any request
+n0="$(lines "$LOG")"
+for l in "https://ots.test"$'\n'"/secret/$ID" "https://ots.test/secret/$ID"$'\n' "https://ots.test /secret/$ID" "https://ots.test"$'\t'"/secret/$ID" "https://ots.test"$'\r'"/secret/$ID"; do
+  echo y | as "$HB" bin/keys receive "$l" > /dev/null 2> "$T/ew"; assert_eq "$?" 1 "a link with whitespace is refused: $(cat "$T/ew")"; done
+printf 'HUB_SECRET_STORE=file\nHUB_ONETIME_URL="https://ots.test\n"\n' > hub.conf
+echo y | as "$HA" bin/keys share b deepseek --as a --link > /dev/null 2> "$T/ew2"; assert_eq "$?" 2 "HUB_ONETIME_URL with a newline is refused: $(cat "$T/ew2")"
+printf 'HUB_SECRET_STORE=file\nHUB_ONETIME_URL=https://ots.test\n' > hub.conf
+assert_eq "$(lines "$LOG")" "$n0" "no request for a link or base with whitespace"
+# --- fix round: the JSON charset guard: an armor line with a quote or backslash is never sent
+W2="$T/wrap2"; mkdir -p "$W2"; REAL_AGE="$(cd "$W" && PATH="${PATH#"$W:"}" command -v age)"
+printf '#!/bin/bash\nfor a in "$@"; do [ "$a" = -a ] && { %q "$@" | sed '"'"'2s/^/x\\"\\\\\\\\/'"'"'; exit "${PIPESTATUS[0]}"; }; done\nexec %q "$@"\n' "$REAL_AGE" "$REAL_AGE" > "$W2/age"; chmod +x "$W2/age"
+n0="$(lines "$LOG")"
+echo y | PATH="$W2:$PATH" as "$HA" bin/keys share b deepseek --as a --link > "$T/oj" 2> "$T/ej"; assert_eq "$?" 1 "a block with a quote is not sent: $(cat "$T/ej")"
+grep -q '"' "$T/oj" || fail "the tampered age output reached the guard: $(cat "$T/oj")"
+grep -q "link failed" "$T/ej" || fail "says the link failed: $(cat "$T/ej")"
+assert_eq "$(lines "$LOG")" "$n0" "no request for a block with a quote or backslash"
+# --- fix round: an id that is not letters and digits (x/../..) gives the fallback, never a printed link
+echo y | AGENT_ONETIME_API="$(url badid)" as "$HA" bin/keys share b deepseek --as a --link > "$T/ob" 2> "$T/eb"; assert_eq "$?" 1 "a bad id: $(cat "$T/eb")"
+armor_only "$T/ob" || fail "a bad id prints the block: $(cat "$T/ob")"
+grep -q "link failed" "$T/eb" || fail "a bad id says the link failed: $(cat "$T/eb")"
+grep -q '/conceal' "$T/srv-badid/log" || fail "the badid service was asked"
+# --- fix round: outside test mode curl gets -q first, --proto =https, --tlsv1.2, no -L, HUB_ONETIME_URL as the base
+# (hermetic: a curl stub records its argv and answers 404; nothing leaves the machine)
+W3="$T/wrap3"; mkdir -p "$W3"; PA="$T/prod.argv"; : > "$PA"
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" > %q; cat > /dev/null; printf "{}\\n404"\n' "$PA" > "$W3/curl"; chmod +x "$W3/curl"
+echo y | PATH="$W3:$PATH" HOME="$HB" env -u AGENT_PLATFORM_TEST -u AGENT_PLATFORM bin/keys receive "https://ots.test/secret/$ID" > /dev/null 2> "$T/ep"
+grep -q "already opened or expired" "$T/ep" || fail "the production path reached the stubbed curl: $(cat "$T/ep")"
+assert_eq "$(head -1 "$PA")" "-q" "curl's first argument is -q (no ~/.curlrc)"
+grep -qx -- "--proto" "$PA" && grep -A1 -x -- "--proto" "$PA" | grep -qx '=https' || fail "--proto =https: $(tr '\n' ' ' < "$PA")"
+grep -qx -- "--tlsv1.2" "$PA" || fail "--tlsv1.2: $(tr '\n' ' ' < "$PA")"
+grep -qxE -- "-L|--location" "$PA" && fail "no redirects followed: $(tr '\n' ' ' < "$PA")"
+assert_eq "$(tail -1 "$PA")" "https://ots.test/api/v3/guest/secret/$ID/reveal" "the request goes to HUB_ONETIME_URL"
 
 # --- AC4: no value on stdout or stderr, in files outside the stores, in process arguments or in the service's log
 grep -lF -e "$V1" -e "$V2" "$T"/o* "$T"/e* "$ARGV" "$T"/srv-*/log 2>/dev/null | grep -q . && fail "a value in output, argv or the service log: $(grep -lF -e "$V1" -e "$V2" "$T"/o* "$T"/e* "$ARGV" "$T"/srv-*/log)"
