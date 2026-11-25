@@ -1,0 +1,244 @@
+#!/bin/bash
+# bin/adopt: take a hub from someone, in a fresh clone of it on your machine (after bin/setup). Story I2, contract
+# .ade/context/adopt.md.
+#   bin/adopt --share                              join it: nothing about the hub changes; reports what this machine needs
+#   bin/adopt --handover --owner <name> [--from <user>|none]
+#       <name> becomes the owner everywhere bin/init and bin/new wrote it; the previous owner's memory/users/<user>/
+#       leaves the tree (it stays in git history); one journal line; one commit. --from names that folder when the
+#       previous owner's name does not (none: keep every folder).
+#   bin/adopt --clone --owner <name> --name <new-hub-name>
+#       this clone becomes a new hub: new name and owner, a fresh git history (one commit, no remote), no journal, no
+#       memory/users/, every folder's STATE.md reset, .ade/session.md emptied; personas, folders, rules, skills kept.
+# Every mode ends with what is left to do by hand. Refused (exit 2, nothing changed): an unknown mode or option, a
+# missing --owner/--name, a tree that is not clean, a clone with commits or a stash on no remote, a name a hub on this machine has.
+set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
+usage() { sed -n '4,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+no() { echo "adopt: $*" >&2; exit 2; }
+MODE="${1:-}"; case "$MODE" in --share|--handover|--clone) shift ;; *) usage ;; esac
+NEW_OWNER=""; NEW_NAME=""; FROM=""; GOT=" "
+while [ $# -gt 0 ]; do
+  [ $# -ge 2 ] && [ -n "$2" ] || usage
+  case "$1" in --owner) NEW_OWNER="$2" ;; --name) NEW_NAME="$2" ;; --from) FROM="$2" ;; *) usage ;; esac
+  GOT="$GOT$1 "; shift 2
+done
+allowed() { local o; for o in $GOT; do case " $1 " in *" $o "*) ;; *) usage ;; esac; done; }
+case "$MODE" in
+  --share) allowed "" ;;
+  --handover) allowed "--owner --from"; [ -n "$NEW_OWNER" ] || usage ;;
+  --clone) allowed "--owner --name"; [ -n "$NEW_OWNER" ] && [ -n "$NEW_NAME" ] || usage ;;
+esac
+# the hub, its state and the values: every check before the first write
+[ -f "$H/hub.conf" ] || no "$H is not a hub (no hub.conf)"
+OLD_OWNER="${HUB_OWNER:-}"; OLD_NAME="$(hub_name)"
+if [ -n "$NEW_OWNER" ]; then
+  [[ "$NEW_OWNER" =~ [[:cntrl:]] ]] && no "--owner: no control characters or newline"
+  case "$NEW_OWNER" in *'|'*|*'`'*) no "--owner: no | or \` (they break the ACCESS.md table rows)" ;; esac
+  [ "$NEW_OWNER" = "${NEW_OWNER#[[:space:]]}" ] && [ "$NEW_OWNER" = "${NEW_OWNER%[[:space:]]}" ] || no "--owner: no leading or trailing space"
+  [ -n "$OLD_OWNER" ] || no "hub.conf names no owner (HUB_OWNER)"
+  [ "$MODE" != --handover ] || [ "$NEW_OWNER" != "$OLD_OWNER" ] || no "$NEW_OWNER is already this hub's owner"
+fi
+if [ -n "$NEW_NAME" ]; then
+  [[ "$NEW_NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]] || no "--name must be a-z 0-9 - (it names the hub's folder, Keychain service and jobs)"
+  [ "$NEW_NAME" != "$OLD_NAME" ] || no "--name $NEW_NAME is this hub's name; a copy needs its own"
+  [ ! -e "$HOME/.agent-hub/$NEW_NAME" ] || no "a hub named $NEW_NAME is already on this machine ($HOME/.agent-hub/$NEW_NAME exists): pick another --name"
+fi
+git -C "$H" rev-parse --is-inside-work-tree >/dev/null 2>&1 || no "$H is not a git clone"
+[ "$(cd "$(git -C "$H" rev-parse --show-toplevel)" && pwd -P)" = "$(cd "$H" && pwd -P)" ] || no "$H is a folder inside another repository"
+[ -z "$(git -C "$H" status --porcelain)" ] || no "the tree is not clean (git status): commit, stash or remove the changes first"
+if [ "$MODE" = --clone ]; then
+  git_config_own "$H" || no "$H shares its git directory (a worktree): clone the hub to its own folder first"
+  lost="$(git -C "$H" for-each-ref --format='%(refname:short)' refs/heads refs/tags | while IFS= read -r r; do
+    [ -z "$(git -C "$H" rev-list -n 1 "$r" --not --remotes 2>/dev/null)" ] || printf ' %s' "$r"; done)"
+  [ -z "$lost" ] || no "commits on no remote, a new history would lose them:$lost (push them first, or clone again)"
+  git -C "$H" rev-parse -q --verify refs/stash >/dev/null && no "a git stash, a new history would lose it (git stash list): apply or drop it first"
+fi
+# user_slug <name>: a person's memory folder name (bin/lib.sh hub_user, for that name)
+user_slug() { HUB_USER="$1" AGENT_PLATFORM_TEST="" hub_user; }
+GONE=""   # the previous owner's memory folder (handover)
+if [ "$MODE" = --handover ]; then
+  others=""; for d in "$H"/memory/users/*/; do [ -d "$d" ] && others="$others $(basename "$d")"; done
+  if [ "$FROM" = none ]; then GONE=""
+  elif [ -n "$FROM" ]; then [ -d "$H/memory/users/$FROM" ] && [[ "$FROM" =~ ^[a-z0-9-]+$ ]] || no "--from: no folder memory/users/$FROM"; GONE="$FROM"
+  elif [ -d "$H/memory/users/$(user_slug "$OLD_OWNER")" ]; then GONE="$(user_slug "$OLD_OWNER")"
+  elif [ -n "$others" ]; then
+    no "no memory/users/$(user_slug "$OLD_OWNER")/ for $OLD_OWNER: memory folders are named after the computer login, not the name; pass --from <login> (here:$others), or --from none to keep them all"
+  fi
+fi
+
+# from here on the tree is written; any failure puts it back as it was (it was clean)
+rollback() { git -C "$H" reset -q --hard HEAD && git -C "$H" clean -fdq; echo "adopt: $1; the tree is back as it was" >&2; exit 1; }
+# rewrite: the owner (and for a clone the hub's name) where bin/init and bin/new wrote them. Each line of the rendered
+# files that matches a template line (persona text included) gets the new value in that placeholder's place; a repo
+# row's "who merges" cell too. Prints each file changed and, as "check:", any line that still holds an old value.
+rewrite() {
+  python3 - "$H" "${HUB_PERSONA:-}" "$OLD_OWNER" "$NEW_OWNER" "$OLD_NAME" "$1" <<'PY'
+import glob, os, re, sys, tempfile
+hub, persona, oo, no, on, nn = sys.argv[1:]
+def lines_of(p):
+    try: return open(os.path.join(hub, p)).read().split("\n")
+    except OSError: return []
+def body(p):
+    out, n = [], 0
+    for l in lines_of(p):
+        if n >= 2: out.append(l)
+        elif l == "---": n += 1
+    return out
+owner = {"OWNER": (oo, no)} if no and no != oo else {}
+name = (on, nn) if nn and nn != on else None
+def pats(tlines, subs):
+    subs = {k: v for k, v in subs.items() if v}
+    res = []
+    for t in tlines:
+        parts = re.split(r"\{\{(\w+)\}\}", t)
+        if not any(parts[i] in subs for i in range(1, len(parts), 2)): continue
+        rx, kinds = "", []
+        for i, p in enumerate(parts):
+            if i % 2 == 0: rx += re.escape(p)
+            elif p in subs: rx += "(" + re.escape(subs[p][0]) + ")"; kinds.append(subs[p][1])
+            else: rx += "(.*?)"; kinds.append(None)
+        res.append((re.compile(rx), kinds))
+    return res
+olds = [v[0] for v in list(owner.values()) + ([name] if name else [])]
+word = [re.compile(r"(?<![A-Za-z0-9_])" + re.escape(o) + r"(?![A-Za-z0-9_])") for o in olds]
+def apply(rel, ps, rows=False):
+    p = os.path.join(hub, rel)
+    if not os.path.isfile(p) or os.path.islink(p): return
+    s = open(p).read(); out = []
+    for l in s.split("\n"):
+        for rx, kinds in ps:
+            m = rx.fullmatch(l)
+            if not m: continue
+            new, last = "", 0
+            for g, k in enumerate(kinds, 1):
+                if k is None: continue
+                a, b = m.span(g); new += l[last:a] + k; last = b
+            l = new + l[last:]; break
+        if rows and owner and l.startswith("|"):
+            c = l.split("|")
+            if len(c) == 7 and c[4].strip() == oo: c[4] = c[4].replace(oo, no); l = "|".join(c)
+        out.append(l)
+    n = "\n".join(out)
+    if n != s:
+        fd, t = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".adopt.", suffix=".tmp")
+        with os.fdopen(fd, "w") as f: f.write(n)
+        os.chmod(t, os.stat(p).st_mode & 0o777); os.replace(t, p); print("rewrote " + rel)
+    for i, l in enumerate(n.split("\n"), 1):
+        if any(w.search(l) for w in word): print("check: %s:%d still holds an old name: edit it by hand" % (rel, i))
+pers = body("personas/%s.md" % persona) if persona else []
+hubsubs = dict(owner, **({"NAME": name} if name else {}))
+for rel, tpl in (("CLAUDE.md", "templates/hub/CLAUDE.md"), ("ACCESS.md", "templates/hub/ACCESS.md"),
+                 ("README.md", "templates/hub/README.md"), (".claude/agents/%s.md" % persona, "templates/hub/persona-agent.md")):
+    if rel.endswith("/.md"): continue
+    apply(rel, pats(lines_of(tpl) + pers, hubsubs), rows=(rel == "ACCESS.md"))
+fpats = pats(lines_of("templates/ACCESS.md"), owner)
+for a in sorted(glob.glob(os.path.join(hub, "projects/*/ACCESS.md")) + glob.glob(os.path.join(hub, "ops/*/ACCESS.md"))):
+    apply(os.path.relpath(a, hub), fpats, rows=True)
+apats = pats(lines_of("templates/agent.md"), dict(owner, **({"HUBNAME": name} if name else {})))
+for a in sorted(glob.glob(os.path.join(hub, ".claude/agents/*.md"))):
+    rel = os.path.relpath(a, hub)
+    if rel != ".claude/agents/%s.md" % persona: apply(rel, apats)
+PY
+}
+# conf_set <file> <KEY> <value>: that line of hub.conf as KEY=<value, shell-quoted>, every other line as it was
+conf_set() { L="$2=$(printf '%q' "$3")" awk -v k="$2=" 'index($0, k) == 1 {print ENVIRON["L"]; f = 1; next} {print} END {if (!f) print ENVIRON["L"]}' "$1" > "$1.adopt.tmp" &&
+  mv "$1.adopt.tmp" "$1"; }
+# owner_left: every tracked line (journal/, memory/, .ade/session.md, .ade/archive/, tests/ aside) that still names the
+# old owner; a rule only they hold would keep their authority, so any is a failure
+owner_left() { git -C "$H" ls-files -z | python3 -c '
+import os, re, sys
+hub, o = sys.argv[1:]; w = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(o) + r"(?![A-Za-z0-9_])")
+for f in sys.stdin.read().split("\0"):
+    if not f or f == ".ade/session.md" or f.startswith(("journal/", "memory/", ".ade/archive/", "tests/")): continue
+    p = os.path.join(hub, f)
+    if os.path.islink(p) or not os.path.isfile(p): continue
+    try: lines = open(p, encoding="utf-8").read().split("\n")
+    except (OSError, UnicodeDecodeError): continue
+    for i, l in enumerate(lines, 1):
+        if w.search(l): print("%s:%d" % (f, i))
+' "$H" "$OLD_OWNER"; }
+owner_gate() { local left; left="$(owner_left)"
+  [ -z "$left" ] || { echo "adopt: $OLD_OWNER is still named here (a line the rewrite does not know; edit each, commit, run again):" >&2
+    echo "$left" | sed 's/^/  /' >&2; rollback "$OLD_OWNER would keep these rules"; }; }
+
+case "$MODE" in
+  --handover)
+    out="$(rewrite "")" || rollback "could not rewrite the owner"; [ -z "$out" ] || echo "$out"
+    conf_set "$H/hub.conf" HUB_OWNER "$NEW_OWNER" || rollback "could not write hub.conf"
+    owner_gate
+    if [ -n "$GONE" ]; then
+      git -C "$H" rm -r -q -- "memory/users/$GONE" && rm -rf "${H:?}/memory/users/$GONE" || rollback "could not remove memory/users/$GONE"
+      echo "removed memory/users/$GONE/ ($OLD_OWNER's learned facts) from the tree; it stays in git history (git log -- memory/users/$GONE)"
+    fi
+    HUB="$H" "$H/bin/journal" hub "Handover: $OLD_OWNER handed this hub to $NEW_OWNER (bin/adopt)" || rollback "could not write the journal"
+    git -C "$H" add -A && git -C "$H" commit -q -m "adopt: $OLD_OWNER hands the hub over to $NEW_OWNER (story I2)" >/dev/null ||
+      rollback "could not commit (git commit)"
+    echo "handed over: $NEW_OWNER is the owner of $OLD_NAME (one commit; push it: bin/sync)" ;;
+  --clone)
+    out="$(rewrite "$NEW_NAME")" || rollback "could not rewrite the owner and name"; [ -z "$out" ] || echo "$out"
+    conf_set "$H/hub.conf" HUB_OWNER "$NEW_OWNER" && conf_set "$H/hub.conf" HUB_NAME "$NEW_NAME" || rollback "could not write hub.conf"
+    if grep -qx "HUB_KEYCHAIN_SERVICE=$(printf '%q' "$OLD_NAME")" "$H/hub.conf"; then
+      conf_set "$H/hub.conf" HUB_KEYCHAIN_SERVICE "$NEW_NAME" || rollback "could not write hub.conf"; fi
+    if [ -f "$H/_bmad/config.toml" ]; then
+      python3 - "$H/_bmad/config.toml" "$OLD_NAME" "$NEW_NAME" <<'PY' || rollback "could not write _bmad/config.toml"
+import re, sys
+p, o, n = sys.argv[1:]
+q = lambda v: '"%s"' % v.replace("\\", "\\\\").replace('"', '\\"')
+s = open(p).read(); open(p, "w").write(re.sub(r"(?m)^project_name = " + re.escape(q(o)) + "$", lambda m: "project_name = " + q(n), s))
+PY
+    fi
+    for st in "$H"/projects/*/STATE.md "$H"/ops/*/STATE.md; do [ -f "$st" ] || continue; f="${st%/STATE.md}"
+      P_NAME="${f##*/}" python3 -c 'import os, sys; s = open(sys.argv[1]).read(); open(sys.argv[2], "w").write(s.replace("{{NAME}}", os.environ["P_NAME"]))' \
+        "$H/templates/STATE.md" "$st" || rollback "could not reset $st"; done
+    rm -rf "${H:?}/memory/users"; rm -f "$H"/journal/[0-9]*.md
+    [ ! -f "$H/.ade/session.md" ] || printf '# Session journal\n' > "$H/.ade/session.md"
+    owner_gate
+    # a new history: the old .git set aside until the first commit is made, then removed
+    U="$(git -C "$H" config --local user.name)"; E="$(git -C "$H" config --local user.email)"
+    # the old .git set aside beside the hub (same filesystem: a rename, never a copy); undo puts it back, and runs no git
+    # command when it cannot (git would walk up into an enclosing repository and reset that)
+    BK="$(mktemp -d "$(dirname "$H")/.adopt-git.XXXXXX")" || rollback "could not make a folder beside $H for the old history"
+    undo() { trap '' INT TERM HUP
+      if [ -d "$BK/git" ]; then rm -rf "${H:?}/.git"
+        if ! mv "$BK/git" "$H/.git"; then
+          echo "adopt: $1; the old history could not be put back: it is in $BK/git (move it to $H/.git)" >&2; exit 1; fi
+      fi
+      rmdir "$BK" 2>/dev/null || echo "adopt: the old history's folder is left at $BK" >&2
+      rollback "$1"; }
+    trap 'undo "interrupted"' INT TERM HUP
+    mv "$H/.git" "$BK/git" || { rmdir "$BK"; trap - INT TERM HUP; rollback "could not set the old history aside"; }
+    { git -C "$H" init -q && git -C "$H" symbolic-ref HEAD refs/heads/main && git -C "$H" config core.hooksPath .githooks &&
+      { [ -z "$U" ] || git -C "$H" config user.name "$U"; } && { [ -z "$E" ] || git -C "$H" config user.email "$E"; }; } ||
+      undo "could not start the new history"
+    git -C "$H" add -A && git -C "$H" commit -q -m "$NEW_NAME: a new hub for $NEW_OWNER, copied by bin/adopt (story I2)" >/dev/null ||
+      undo "could not make the first commit (git commit)"
+    trap - INT TERM HUP; rm -rf "$BK" || echo "adopt: the old history is left at $BK (remove it)" >&2
+    # 6: the old name's claim on this machine (hub_name_claim), when it is this hub's
+    c="$HOME/.agent-hub/$OLD_NAME/hub-path"
+    [ -f "$c" ] && [ "$(cat "$c")" = "$(cd "$H" && pwd -P)" ] && rm -f "$c" && echo "freed $OLD_NAME's claim on this machine ($c)"
+    echo "cloned: $NEW_NAME is a new hub for $NEW_OWNER (one commit, no remote; add one: git remote add origin <url>)" ;;
+  --share) echo "shared: nothing in the hub changed; $OLD_OWNER stays the owner" ;;
+esac
+
+# what is left, by hand
+echo; echo "Left to do by hand:"
+[ -f "$H/.local/hub.conf" ] || echo "This machine: bin/setup"
+why="$(secret_store_refusal)"
+if [ -n "$why" ]; then echo "Secret store: $why"
+else
+  for s in ${HUB_SECRETS:-}; do "$H/bin/secret" --has "$s" 2>/dev/null || echo "Key missing here: $s (bin/secret --set $s)"; done
+  miss=""; for t in $(key_tools); do s="$(key_secret "$t" 2>/dev/null)" || continue; [ -n "$s" ] || continue
+    "$H/bin/secret" --has "$s" 2>/dev/null || miss="$miss $t"; done
+  [ -z "$miss" ] || echo "AI tool keys not stored here:$miss (bin/keys shows each; bin/keys set <tool>)"
+fi
+case "$MODE" in
+  --clone) echo "Keys: a new hub keeps its own (service $NEW_NAME): bin/keys set <tool>, bin/secret --set <name>" ;;
+  *) echo "Keys: bin/keys share <new person> --all   (they run: bin/keys receive)" ;;
+esac
+echo "Your own bot: ade setup --telegram"
+echo "The schedule: bin/schedule install"
+if [ "$MODE" = --handover ]; then
+  echo; echo "For $OLD_OWNER (the previous owner):"
+  echo "GitHub: transfer the hub's repo to $NEW_OWNER (repo Settings, Transfer ownership), or add them as an admin"
+  echo "Replace the shared keys at their source (each provider's console), then bin/keys forget <tool> for each."
+fi
+exit 0

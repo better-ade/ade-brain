@@ -403,6 +403,10 @@ this layout, `bin/setup` rewrites those values in place once and commits that al
 hand". A second run changes nothing.
 Then run `bin/schedule install`; `bin/doctor` says what is still missing.
 
+**Someone else's hub** (story I2): in your clone, after `bin/setup`, run `bin/adopt --share` (join it, nothing
+changes), `bin/adopt --handover --owner <you>` (it becomes yours; the previous owner's memory leaves the tree) or
+`bin/adopt --clone --owner <you> --name <new>` (a new hub with its own history). Each ends with what is left by hand.
+
 ## Deep work inside ADE
 
 Run from an ADE terminal (or a Claude Code session in one), `bin/work <folder>` opens the session as a sub-terminal of
