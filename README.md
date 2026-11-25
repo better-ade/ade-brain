@@ -261,6 +261,40 @@ bin/agent --role reviewer --folder projects/app < task.md  # the task comes on s
 - **The report is data.** It is printed between lines carrying a per-call nonce, capped at 20 KB, with the full text in
   `.local/agent-out/` (kept 30 days). `journal/delegations-YYYY-MM.md` records each run, never the task.
 
+## Handing keys to another person
+
+A handover or a share never sends keys in plain text. `bin/keys share` seals them with [age](https://age-encryption.org)
+to one person; only their private key opens the block, and `bin/keys receive` puts the keys straight into their own
+secret store. There is no server, and no value is printed, written to a file or put in git (story I4, contract
+`.ade/context/keys-share.md`).
+
+```bash
+bin/keys share <github-user> deepseek glm          # sealed to <github-user>'s ssh-ed25519/ssh-rsa keys on GitHub; asks first
+bin/keys share <github-user> --all > keys.age      # every key of this hub; --days N (1-30, default 7) sets the expiry
+bin/keys receive keys.age                    # the recipient: opens it with ~/.ssh/id_ed25519 or id_rsa (-i <identity>)
+bin/keys receive --new                       # an SSH key in 1Password or on a hardware key: prints an age1… key to send
+bin/keys share age1… deepseek                # the sender then seals to that key instead
+```
+
+- `share` shows the recipient's key fingerprints and asks before sealing, so a mistyped user is caught. The armored
+  block alone goes to stdout; send it any way (chat, email).
+- `receive` refuses a block sealed to someone else, an expired one, or one for another hub (`--any-hub` takes it
+  anyway). It shows what the block holds (each name new or replace, the sender marked not verified) and asks once
+  before storing anything, then again before replacing a key already stored. It lists the names it stored, never the
+  values.
+- A recipient is a GitHub user name or an `age1…` key, never a file. After a handover, replace the shared keys at their
+  source.
+- `age` is needed: `brew install age` (macOS) or `sudo apt-get install age` (Linux); `bin/doctor` and `bin/setup` say
+  when it is missing, and `bin/server install` installs it.
+
+### What this does not protect
+
+- The sender is not verified: anyone with your public key can seal a block that says it is from anyone. Check with
+  the person before you answer y.
+- The expiry binds only honest software: anyone with the identity can open the block with `age` directly, at any time.
+- The block reveals a tag of the recipient's key and its rough size.
+- For a GitHub user, the block is sealed to every ssh-ed25519 and ssh-rsa key on that account; any of them opens it.
+
 ## Providers behind Claude Code
 
 A focus session can run Claude Code against DeepSeek instead of Anthropic. The CLI stays Claude Code, so hooks,
@@ -445,4 +479,5 @@ After pulling these scripts into a hub made earlier:
 
 ## Tests
 
-`bash tests/run.sh` (macOS, Bash 3.2+). Every `bin/` script has a test run against a throwaway copy with stubbed tools.
+`bash tests/run.sh` (macOS, Bash 3.2+). Every `bin/` script has a test run against a throwaway copy with stubbed tools;
+`tests/e2e_*.sh` run too (offline). The key-sharing tests need `age` and `ssh-keygen`.

@@ -91,7 +91,7 @@ changes() { grep -vE -e '^sudo -v$' -e '^sudo -n (sshd -T|ufw status verbose$|ss
 
 installs_missing_from_fixed_list() {   # AC1
   reset; echo git > "$S/installed"; install; assert_eq "$rc" 0 "install: $(cat "$S/err" "$S/out")"
-  grep -q '^apt-get install -y -q --no-install-recommends python3 tmux gh curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify bat glow poppler-utils chafa$' "$S/calls" || fail "only the missing packages, ade's tools too: $(grep apt-get "$S/calls")"
+  grep -q '^apt-get install -y -q --no-install-recommends python3 tmux gh age curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify bat glow poppler-utils chafa$' "$S/calls" || fail "only the missing packages, ade's tools too: $(grep apt-get "$S/calls")"
   grep -q 'yazi: not packaged for this system; skipped' "$S/out" || fail "an extra that is not packaged is skipped with a note: $(cat "$S/out")"
   [ -x "$HOME/.local/bin/gitleaks" ] || fail "gitleaks installed"
   grep -q "^curl --proto =https --tlsv1.2 -fsSL -o .* https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz$" "$S/calls" || fail "gitleaks pinned, over https only: $(grep curl "$S/calls")"

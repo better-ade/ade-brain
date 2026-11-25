@@ -7,6 +7,8 @@ for t in claude gh git ssh node python3 curl gitleaks ${HUB_TOOLS:-}; do
   if command -v "$t" >/dev/null; then v=$("$t" --version 2>&1 | head -1); [ "$t" = ssh ] && v=$(ssh -V 2>&1); line OK "$t" "$(echo "$v" | cut -c1-60)"
   else line MISSING "$t" "not installed"; fi
 done
+# age: bin/keys share and receive seal a hub's keys to one person (story I4)
+if command -v age >/dev/null; then line OK age "$(age --version 2>&1 | head -1 | cut -c1-60)"; else line MISSING age "not installed: $(tool_install_line age)"; fi
 line OK "claude install" "$(claude_cmd) ($(claude_home))"
 # the secret store (story V1, HUB_SECRET_STORE): the Keychain, pass (tried without a terminal, as scheduled jobs and
 # delegated runs use it), or the weaker file store; names only, never a value

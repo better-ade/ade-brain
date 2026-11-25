@@ -619,6 +619,10 @@ dir_loose() { local m o; m="$(file_mode "$1")" || return 0; [ -n "$m" ] || retur
 script_is_util_linux() { script --version 2>/dev/null | grep -q util-linux; }
 # utc_epoch <YYYY-MM-DDTHH:MM:SS>: that UTC time in seconds (GNU date -d or BSD date -j); nothing when unreadable
 utc_epoch() { date -u -d "$1" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%S" "$1" +%s 2>/dev/null; }
+# utc_iso <epoch seconds>: that time as UTC ISO 8601, e.g. 2026-11-25T10:00:00Z (GNU date -d @ or BSD date -r)
+utc_iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; }
+# tool_install_line <tool>: how to install a needed tool here (story I4): Homebrew on macOS, apt-get on Linux
+tool_install_line() { if [ "$(platform)" = macos ]; then echo "brew install $1"; else echo "sudo apt-get install $1"; fi; }
 # Desktop notifications: macOS only (osascript); elsewhere nothing (bin/monitor writes an event instead).
 desktop_notify() { [ "$(platform)" = macos ] || return 0
   osascript -e "display notification \"$(printf '%s' "$2" | tr -d '"\\')\" with title \"$(printf '%s' "$1" | tr -d '"\\')\"" 2>/dev/null; }

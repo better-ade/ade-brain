@@ -20,7 +20,8 @@ elsewhere); never as root (exit 2); needs `sudo` (`sudo -v`, exit 2 without).
    - `listeners`: `sudo ss -Hltnu` shows nothing beyond loopback (`127.*`, `::1`, `%lo`) but TCP on an SSH port (and
      the UDP DHCP clients on 68 and 546)
    `--accept-risk` takes those row names only (exit 2 otherwise). The rows are checked, never changed.
-2. **Packages**: `server_packages` (apt, the distribution's versions): ade's tool set `git python3 tmux gh`, then
+2. **Packages**: `server_packages` (apt, the distribution's versions): ade's tool set `git python3 tmux gh age` (age:
+   `bin/keys share` and `receive`, story I4), then
    `curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify` (the last four for the browser
    sign-in view, V3); `server_extras` for ade's file viewer: `bat glow
    poppler-utils chafa yazi`, each only where the archive has it (`apt-cache show`; otherwise `<pkg>: not packaged for this

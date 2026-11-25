@@ -198,6 +198,7 @@ flowchart LR
       <tr><td><code>git</code>, <code>python3</code></td><td>the hub itself; <code>bin/init</code>, <code>bin/work</code>, <code>bin/changes</code>, <code>bin/brain</code></td><td>Yes</td></tr>
       <tr><td><code>gh</code></td><td>creating the hub from the template, cloning client repos, checking repo access</td><td>Yes, for GitHub use</td></tr>
       <tr><td><code>gitleaks</code></td><td>the secret check. Without it the pre-commit hook only warns, so hand and session-end commits go in unscanned, and <code>bin/sync --auto</code> refuses to run</td><td>Yes</td></tr>
+      <tr><td><code>age</code></td><td><code>bin/keys share</code> and <code>bin/keys receive</code>: a hub's keys sealed to one person (<code>brew install age</code>; <code>sudo apt-get install age</code> on Linux)</td><td>Yes, to share keys</td></tr>
       <tr><td><code>ssh</code>, <code>curl</code>, <code>node</code></td><td><code>bin/remote</code>, the staging check, and tools the agents may need. <code>bin/doctor</code> checks for all three</td><td>Checked</td></tr>
       <tr><td>Ollama + <code>nomic-embed-text</code></td><td>meaning-based search in <code>bin/brain</code></td><td>Optional (keyword search works without it)</td></tr>
       <tr><td><code>timeout</code> / <code>gtimeout</code></td><td>monitor and index time limits</td><td>Optional (a built-in fallback is used)</td></tr>
@@ -691,6 +692,10 @@ flowchart LR
   <ul>
     <li><b>Secrets live in the macOS Keychain</b> under the hub's service name. <code>bin/secret --set &lt;name&gt;</code> reads the value from a hidden prompt.
       <code>bin/secret &lt;name&gt;</code> prints it for <code>$(…)</code> use only. <code>--has</code>, <code>--forget</code> and <code>--list</code> (names only) do what they say.</li>
+    <li><b>Handing keys over:</b> <code>bin/keys share &lt;github-user|age1…&gt; [names…] [--all]</code> seals keys with <code>age</code> to that person's
+      GitHub SSH keys (it shows their fingerprints and asks first) and prints the armored block alone. <code>bin/keys receive [file]</code> opens it into
+      their own store, refusing a block for someone else, an expired one (7 days by default) or one for another hub, and asking before replacing a key.
+      <code>bin/keys receive --new</code> makes an <code>age1…</code> key for people whose SSH key age cannot use. No value is printed, written to a file or put in git.</li>
     <li><b>The pre-commit hook</b> (<code>.githooks/pre-commit</code>) refuses anything under <code>repos/</code>, files over 1 MB (unless listed in
       <code>.bigfiles-allow</code>) and anything gitleaks flags. <b>If gitleaks isn't installed, the hook only warns</b> and the commit goes through, so install it on every Mac.</li>
     <li><b>Auto sync</b> also scans every commit about to be pushed, including ones made with <code>--no-verify</code>, when the branch has an upstream. It never force-pushes.</li>
