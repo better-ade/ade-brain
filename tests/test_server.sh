@@ -61,7 +61,8 @@ STUB
 printf '#!/bin/bash\necho "npx $*" >> "$S/calls"; [ -e "$S/npxfail" ] && exit 0; c="$HOME/.cache/ms-playwright/chromium-1234/chrome-linux"; mkdir -p "$c"; printf "#!/bin/bash\\n" > "$c/chrome"; chmod +x "$c/chrome"\n' > "$S/bin/npx"
 # usermod, gpasswd (story V4): never run; a call is logged so a test can see it
 for c in usermod gpasswd; do printf '#!/bin/bash\necho "%s $*" >> "$S/calls"\n' "$c" > "$S/bin/$c"; done
-printf '#!/bin/bash\n[ "${1:-}" = -u ] && [ -e "$S/root" ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n' > "$S/bin/id"
+# id -nG answers from $S/groups (default: no docker group), so a runner whose user is in docker sees the same thing
+printf '#!/bin/bash\n[ "${1:-}" = -u ] && [ -e "$S/root" ] && { echo 0; exit 0; }\n[ "${1:-}" = -nG ] && { if [ -e "$S/groups" ]; then cat "$S/groups"; else /usr/bin/id -un; fi; exit 0; }\nexec /usr/bin/id "$@"\n' > "$S/bin/id"
 printf '#!/bin/bash\n[ "${1:-}" = -m ] && { cat "$S/arch"; exit 0; }\nexec /usr/bin/uname "$@"\n' > "$S/bin/uname"
 chmod +x "$S"/bin/*
 # a PATH that holds no real gitleaks, bun or claude: the fakes, then only the system tools the scripts use
@@ -236,6 +237,9 @@ docker_engine() {   # V4 AC3: the distribution's Docker packages (optional, wher
   grep -i 'docker' "$S/out" | grep -qi 'root-equivalent' || fail "says why it is not done for you: $(cat "$S/out")"
   grep -q 'Docker publishes ports on 127.0.0.1' "$S/out" || fail "the public-port line qualifies Docker: $(cat "$S/out")"
   : > "$S/calls"; install; assert_eq "$(changes)" "" "a rerun changes nothing (docker installed and enabled)"
+  # already in the docker group (id -nG): no group command
+  echo "$(id -un) docker" > "$S/groups"; install; rm -f "$S/groups"
+  grep -q 'usermod' "$S/out" && fail "no group command when already in docker: $(grep usermod "$S/out")"
   # an existing daemon.json is never overwritten: a note says what to set
   reset; mkdir -p "$S/docker"; echo '{"log-driver": "local"}' > "$S/docker/daemon.json"; install; assert_eq "$rc" 0 "own daemon.json"
   assert_eq "$(cat "$S/docker/daemon.json")" '{"log-driver": "local"}' "an existing daemon.json is left alone"
