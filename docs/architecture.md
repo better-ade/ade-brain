@@ -15,4 +15,5 @@ Lineage: generalized from two working hubs (a multi-client ops hub and a single-
 bash tests/run.sh
 ```
 
-Green means every `tests/test_*.sh` prints `ok` and the command exits 0. Changing it needs the owner's approval.
+Green means every `tests/test_*.sh` and `tests/e2e_*.sh` prints `ok` (run by `tests/run.sh`) and the command exits 0.
+The e2e scripts joined the gate with the owner's approval of story I1, AC7. Changing it needs the owner's approval.

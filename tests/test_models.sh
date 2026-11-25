@@ -7,7 +7,7 @@ printf '#!/bin/bash\nexport CLAUDE_CONFIG_DIR="%s"\nexec claude "$@"\n' "$CD" > 
 D="$(mktemp -d)/h1"
 PATH="$W:$PATH" bin/init --persona tech-lead --client "Acme" --owner "Sam" --dest "$D" --claude claude-work \
   --model opus --effort high --agent-model sonnet --briefing-model sonnet >/dev/null || fail "init with models failed"
-. "$D/hub.conf"
+. "$D/hub.conf"; . "$D/.local/hub.conf"   # the install is per machine (story I1)
 assert_eq "$HUB_CLAUDE_CONFIG_DIR" "$CD" "config dir read from the wrapper"
 assert_eq "$HUB_MODEL/$HUB_EFFORT/$HUB_AGENT_MODEL/$HUB_BRIEFING_MODEL" "opus/high/sonnet/sonnet" "model defaults"
 assert_contains "$D/.claude/agents/planning.md" "model: sonnet" "folder agents use the agent model"
@@ -22,14 +22,14 @@ out=$(cd "$D" && env -u HUB -u CLAUDE_HOME DOCTOR_OFFLINE=1 bin/doctor); echo "$
 echo "$out" | grep -qE "claude install +claude-work \($CD\)" || fail "doctor names the install"
 # an explicit --claude-config-dir wins; a plain claude command means ~/.claude
 D2="$(mktemp -d)/h2"; bin/init --persona qa-test-engineer --client B --owner C --dest "$D2" --claude-config-dir /x/cfg >/dev/null || fail "init 2"
-assert_eq "$(. "$D2/hub.conf"; echo "$HUB_CLAUDE_CONFIG_DIR")" "/x/cfg" "explicit config dir"
+assert_eq "$(. "$D2/.local/hub.conf"; echo "$HUB_CLAUDE_CONFIG_DIR")" "/x/cfg" "explicit config dir"
 D3="$(mktemp -d)/h3"; bin/init --persona qa-test-engineer --client B --owner C --dest "$D3" >/dev/null || fail "init 3"
-assert_eq "$(. "$D3/hub.conf"; echo "$HUB_CLAUDE_CONFIG_DIR")" "$HOME/.claude" "plain claude uses ~/.claude"
+assert_eq "$(. "$D3/.local/hub.conf"; echo "$HUB_CLAUDE_CONFIG_DIR")" "$HOME/.claude" "plain claude uses ~/.claude"
 bin/init --persona tech-lead --client B --owner C --model 'opus;rm' --dest "$(mktemp -d)/bad" >/dev/null 2>&1; assert_eq "$?" "2" "unsafe model refused"
 bin/init --persona tech-lead --client B --owner C --effort huge --dest "$(mktemp -d)/bad" >/dev/null 2>&1; assert_eq "$?" "2" "bad effort refused"
 # --- HUB_SUBAGENT_MODEL is a fallback only: no settings env (it would override ADE's); bin/work applies it at launch ---
 noenv() { python3 -c 'import json,sys; sys.exit("env" in json.load(open(sys.argv[1])))' "$1"; }
-for f in "$REPO/.claude/settings.json" "$REPO/templates/folder-settings.json" "$D3/.claude/settings.json" "$D3/projects/app/.claude/settings.json"; do
+for f in "$REPO/.claude/settings.json" "$REPO/templates/folder-settings.json" "$REPO/templates/folder-settings-local.json" "$D3/.claude/settings.json" "$D3/projects/app/.claude/settings.json" "$D3/projects/app/.claude/settings.local.json"; do
   noenv "$f" || fail "no env block in $f (a settings env replaces ADE's value)"; done
 assert_eq "$(. "$D3/hub.conf"; echo "$HUB_SUBAGENT_MODEL")" "sonnet" "subagent model default"
 D4="$(mktemp -d)/h4"; bin/init --persona qa-test-engineer --client B --owner C --dest "$D4" --subagent-model haiku >/dev/null || fail "init 4"

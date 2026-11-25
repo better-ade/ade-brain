@@ -23,3 +23,15 @@ _bmad/render/
 
 # bin/init: present only while a run has not finished (.ade/context/init.md)
 .init-pending
+
+# this machine's files (story I1, .ade/context/per-machine.md; bin/lib.sh hub_gitignore_ensure)
+projects/*/.claude/settings.local.json
+ops/*/.claude/settings.local.json
+projects/*/.claude/*.bak
+ops/*/.claude/*.bak
+projects/*/.mcp.json.bak
+ops/*/.mcp.json.bak
+projects/*/.claude/*.tmp
+ops/*/.claude/*.tmp
+projects/*/.mcp.json.*.tmp
+ops/*/.mcp.json.*.tmp

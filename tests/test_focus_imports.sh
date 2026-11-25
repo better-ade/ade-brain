@@ -39,8 +39,8 @@ while todo:
         else: todo.append(p)
 PY
 }
-# the ancestor CLAUDE.md files a session in <dir> loads, minus the ones its folder settings exclude
-ancestors() {  # <dir> <settings.json>
+# the ancestor CLAUDE.md files a session in <dir> loads, minus the ones its folder settings exclude (per machine, story I1: settings.local.json)
+ancestors() {  # <dir> <settings.local.json>
   python3 - "$@" <<'PY'
 import fnmatch, json, os, sys
 d = os.path.realpath(sys.argv[1]); ex = json.load(open(sys.argv[2])).get("claudeMdExcludes", [])
@@ -56,7 +56,7 @@ new_folder_has_no_outside_import() {
   bin/new projects/demo >/dev/null
   # the fixture is real: the hub root's own CLAUDE.md, loaded from the folder, has the three outside imports
   n=$(outside "$D" "$HUB/CLAUDE.md" | wc -l | tr -d ' '); assert_eq "$n" "3" "the hub root CLAUDE.md imports three hub files (outside a folder)"
-  [ -z "$(ancestors "$D" "$D/.claude/settings.json")" ] || fail "the folder's settings exclude the hub root CLAUDE.md: $(ancestors "$D" "$D/.claude/settings.json")"
+  [ -z "$(ancestors "$D" "$D/.claude/settings.local.json")" ] || fail "the folder's settings exclude the hub root CLAUDE.md: $(ancestors "$D" "$D/.claude/settings.local.json")"
   grep -qF '@.claude/hub/CLAUDE.md' "$D/CLAUDE.md" || fail "the folder's CLAUDE.md imports the hub's rules from inside the folder"
   out=$(start projects/demo 2>&1) || fail "work starts: $out"
   echo "$out" | grep -q "now imports" && fail "a new folder is not migrated: $out"
@@ -102,24 +102,24 @@ symlink_not_followed() {
 old_folder_migrated_once() {
   # a folder from before: no exclusion, no copies, the hub's files imported from outside, and lines of its own
   bin/new projects/old >/dev/null; O="$HUB/projects/old"; rm -rf "$O/.claude/hub"
-  python3 - "$O/.claude/settings.json" <<'PY'
+  python3 - "$O/.claude/settings.local.json" <<'PY'
 import json, sys
 s = json.load(open(sys.argv[1])); s.pop("claudeMdExcludes", None); json.dump(s, open(sys.argv[1], "w"), indent=2)
 PY
   printf '# old\n\nMy own line, kept.\nMention `@../../ACCESS.md` in code, kept.\n\n@../../ACCESS.md\n@%s/memory/MEMORY.md\n@../../.ade/rules.md\n@ACCESS.md\n@memory/MEMORY.md\n@STATE.md\n' "$HUB" > "$O/CLAUDE.md"
-  [ -n "$(ancestors "$O" "$O/.claude/settings.json")" ] && [ -n "$(outside "$O" "$O/CLAUDE.md")" ] || fail "fixture: the old folder has outside imports"
+  [ -n "$(ancestors "$O" "$O/.claude/settings.local.json")" ] && [ -n "$(outside "$O" "$O/CLAUDE.md")" ] || fail "fixture: the old folder has outside imports"
   out=$(start projects/old 2>&1) || fail "work starts on an old folder: $out"
   n=$(echo "$out" | grep -c "work: projects/old: .*now imports"); assert_eq "$n" "1" "the migration is said in one line: $out"
   o=$(outside "$O" "$O/CLAUDE.md"); [ -z "$o" ] || fail "no outside import after the migration: $o"
-  [ -z "$(ancestors "$O" "$O/.claude/settings.json")" ] || fail "the migration excludes the hub root CLAUDE.md"
+  [ -z "$(ancestors "$O" "$O/.claude/settings.local.json")" ] || fail "the migration excludes the hub root CLAUDE.md"
   for l in '# old' 'My own line, kept.' 'Mention `@../../ACCESS.md` in code, kept.' '@.claude/hub/ACCESS.md' '@.claude/hub/memory/MEMORY.md' \
     '@.claude/hub/.ade/rules.md' '@.claude/hub/CLAUDE.md' '@ACCESS.md' '@memory/MEMORY.md' '@STATE.md'; do
     grep -qxF -- "$l" "$O/CLAUDE.md" || fail "after the migration CLAUDE.md has the line [$l]: $(cat "$O/CLAUDE.md")"; done
   grep -qF '/bin/changes projects/old' "$O/.claude/settings.json" || fail "the folder's hooks are kept"
   # once: the next start changes nothing and says nothing
-  before="$(cat "$O/CLAUDE.md" "$O/.claude/settings.json")"
+  before="$(cat "$O/CLAUDE.md" "$O/.claude/settings.local.json")"
   out=$(start projects/old 2>&1); echo "$out" | grep -q "now imports" && fail "migrated once: $out"
-  assert_eq "$(cat "$O/CLAUDE.md" "$O/.claude/settings.json")" "$before" "a second start leaves the folder as it is"
+  assert_eq "$(cat "$O/CLAUDE.md" "$O/.claude/settings.local.json")" "$before" "a second start leaves the folder as it is"
 }
 stuck_start_reported() {
   export HUB_WORK_START_WAIT=1

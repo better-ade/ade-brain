@@ -1,0 +1,113 @@
+{
+  "claudeMdExcludes": [
+    "{{HUB}}/CLAUDE.md"
+  ],
+  "permissions": {
+    "ask": [
+      "Bash(*bin/dispatch --approve*)",
+      "Bash(*ade dispatch --approve*)",
+      "Bash(*bin/agent --live-test*)",
+      "Bash(script *)",
+      "Bash(*bin/chat send*)",
+      "Bash(*ade chat send*)",
+      "Bash(*ade shot screen*)",
+      "Bash(*ade shot*--tg*)",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_type",
+      "mcp__playwright__browser_fill_form",
+      "mcp__playwright__browser_file_upload",
+      "mcp__playwright__browser_press_key",
+      "mcp__playwright__browser_select_option",
+      "mcp__playwright__browser_evaluate",
+      "mcp__plugin_browser_playwright__browser_click",
+      "mcp__plugin_browser_playwright__browser_type",
+      "mcp__plugin_browser_playwright__browser_fill_form",
+      "mcp__plugin_browser_playwright__browser_file_upload",
+      "mcp__plugin_browser_playwright__browser_press_key",
+      "mcp__plugin_browser_playwright__browser_select_option",
+      "mcp__plugin_browser_playwright__browser_evaluate",
+      "Bash(*bin/browser login*)",
+      "Bash(*bin/browser forget*)",
+      "Bash(*ade browser*)",
+      "Edit(/{{HUB}}/hub.conf)",
+      "Bash(*hub.conf*)",
+      "Bash(*bin/learn feedback*)",
+      "Bash(*bin/learn profile*)",
+      "Bash(*bin/learn forget*)",
+      "Bash(*bin/learn confirm*)",
+      "Bash(*learn.py*)",
+      "Edit(/{{HUB}}/memory/users/**)",
+      "Write(/{{HUB}}/memory/users/**)"
+    ],
+    "deny": [
+      "Read(~/.config/ade/browser/**)",
+      "Edit(~/.config/ade/browser/**)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "playwright"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/context {{FOLDER}} --rules"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/journal {{FOLDER}} \"(compaction: STATE.md and this entry should say what was in progress)\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/changes {{FOLDER}}"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/inbox {{FOLDER}}"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/stop-check {{FOLDER}}"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{HUB}}\"/bin/session-end {{FOLDER}}"
+          }
+        ]
+      }
+    ]
+  },
+  "autoCompactEnabled": true
+}

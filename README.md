@@ -358,11 +358,16 @@ Does a checkout know my work? Yes, as far as the hub's files go: STATE.md, memor
 committed, so a fresh clone (plus `bin/setup`) starts with full context. Secrets, SSH keys and files outside the repo
 (downloads, PDFs) are not in it; `bin/doctor` says what is missing on a new Mac.
 
-**A new Mac: clone to the same absolute path.** Several committed files hold the first Mac's absolute paths: each
-folder's `.claude/settings.json` (the hook commands), `HUB_CLAUDE_CONFIG_DIR` in `hub.conf`, and `output_folder` in
-`_bmad/config.toml`. Use the same user name and folder. Otherwise fix those values: move each folder's
-`.claude/settings.json` aside and run `bin/new <folder>` again, edit `hub.conf` and `_bmad/config.toml`, then run
-`bin/setup` and `bin/schedule install`.
+**A new Mac: clone anywhere, then run `bin/setup`.** Nothing committed names a machine path (story I1): checkouts in
+`ACCESS.md` are stored as `~/...`, and BMAD's `output_folder` is relative. What is per machine lives in untracked
+files that `bin/setup` writes (and `bin/work` refreshes): `.local/hub.conf` (`HUB_CLAUDE`, `HUB_CLAUDE_CONFIG_DIR`,
+`HUB_REMOTE_KEY`, `HUB_BRAIN_PATHS`, and `HUB_USER` if you set one; a key there wins over `hub.conf`), and each
+folder's `.claude/settings.local.json` (only the exclusion of this clone's hub `CLAUDE.md`). A folder's committed
+hooks and `.mcp.json` name the hub as `"$CLAUDE_PROJECT_DIR"/../..`, so they hold on any path. On a hub made before
+this layout, `bin/setup` rewrites those values in place once and commits that alone when nothing else was staged
+(otherwise it prints the commit command); a machine key whose value is another machine's is printed under "set by
+hand". A second run changes nothing.
+Then run `bin/schedule install`; `bin/doctor` says what is still missing.
 
 ## Deep work inside ADE
 

@@ -3,6 +3,86 @@
 # --config-dir DIR: link into that Claude account instead of the hub's (a session that runs as another account; bin/doctor names it)
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; CH="$(claude_home)"
 if [ "${1:-}" = --config-dir ]; then [ -n "${2:-}" ] || { echo "usage: bin/setup [--config-dir DIR]" >&2; exit 2; }; CH="$2"; fi
+# this machine's files (story I1, .ade/context/per-machine.md): a hub cloned to any path is one bin/setup from working.
+# A hub from before I1 is migrated here, once (each change is one "migrated" line): the machine keys leave hub.conf (to
+# .local/hub.conf when the value is this machine's, else printed under "set by hand"), the folders' hooks, asks and
+# .mcp.json are rewritten in place to the portable form (folder_local_write --migrate), settings.local.json stops being
+# tracked, checkouts under $HOME in a Code table become ~/..., output_folder relative. When the index had nothing staged
+# before, the migration is committed as one commit; otherwise the command to commit it is printed.
+GITH=0; git -C "$H" rev-parse --is-inside-work-tree >/dev/null 2>&1 && GITH=1
+CLEAN=0; [ "$GITH" = 1 ] && git -C "$H" diff --cached --quiet 2>/dev/null && CLEAN=1
+MIG=(); RMC=0   # tracked files the migration changed (hub-relative); RMC: a file left the index
+LC="$H/.local/hub.conf"; mkdir -p "$H/.local"
+[ -f "$LC" ] || { local_conf_header > "$LC"; echo "wrote .local/hub.conf"; }
+# mine <key> <value>: the value names this machine (empty, or each word under $HOME, existing here, or a command here)
+mine() { local w; [ -n "$2" ] || return 0
+  for w in $2; do w="${w/#\~/$HOME}"
+    case "$w" in "$HOME"/*) [ -n "$HOME" ] && [ "$HOME" != / ] && continue ;; esac
+    compgen -G "$w" >/dev/null 2>&1 && continue
+    [ "$1" = HUB_CLAUDE ] && command -v -- "$w" >/dev/null 2>&1 && continue
+    return 1; done; }
+for k in $(machine_conf_keys); do
+  l="$(grep "^$k=" "$H/hub.conf" 2>/dev/null | tail -1)"; [ -n "$l" ] || continue
+  v="$(eval "$l" 2>/dev/null; printf '%s' "${!k:-}")"   # the value as hub.conf sets it (a subshell: nothing kept)
+  if grep -q "^$k=" "$LC"; then :
+  elif mine "$k" "$v"; then
+    [ ! -s "$LC" ] || [ -z "$(tail -c 1 "$LC")" ] || echo >> "$LC"
+    printf '%s\n' "$l" >> "$LC"; echo "migrated $k from hub.conf to .local/hub.conf"
+  else echo "set by hand: $l (another machine's value: set this machine's in .local/hub.conf)"; fi
+  grep -v "^$k=" "$H/hub.conf" > "$H/.local/hub.conf.tmp" && cat "$H/.local/hub.conf.tmp" > "$H/hub.conf" && rm -f "$H/.local/hub.conf.tmp"
+  MIG+=(hub.conf)
+done
+o="$(hub_gitignore_ensure)" || { echo "setup: could not write .gitignore" >&2; exit 1; }
+[ -z "$o" ] || { echo "$o"; MIG+=(.gitignore); }
+if [ "$GITH" = 1 ]; then
+  while IFS= read -r -d '' t; do git -C "$H" rm --cached -q -- "$t" && RMC=1 && echo "migrated $t: no longer tracked (this machine's file)"; done < <(
+    git -C "$H" ls-files -z -- ':(glob)projects/*/.claude/settings.local.json' ':(glob)ops/*/.claude/settings.local.json' ':(glob).claude/settings.local.json')
+fi
+o="$(python3 -I - "$H" "$HOME" <<'PY'
+import glob, os, re, sys
+hub, home = sys.argv[1:]
+def put(p, s):
+    tmp = os.path.join(hub, ".local", "setup.%d" % os.getpid()); open(tmp, "w").write(s); os.replace(tmp, p)
+    print("migrated %s" % os.path.relpath(p, hub))
+# a checkout under $HOME in a Code table's Checkout cell (the second column) is written ~/...
+if home and home != "/":
+    for a in [os.path.join(hub, "ACCESS.md")] + sorted(glob.glob(os.path.join(hub, "projects", "*", "ACCESS.md")) + glob.glob(os.path.join(hub, "ops", "*", "ACCESS.md"))):
+        if not os.path.isfile(a): continue
+        s = open(a).read(); out = []; code = False
+        for line in s.splitlines(True):
+            if line.startswith("## "): code = line.rstrip("\n") == "## Code"
+            if code and line.startswith("|"):
+                c = line.split("|")
+                if len(c) > 3:
+                    v = c[2].strip()
+                    if v.startswith(home + "/"): c[2] = c[2].replace(v, "~" + v[len(home):], 1); line = "|".join(c)
+            out.append(line)
+        n = "".join(out)
+        if n != s: put(a, n)
+# BMAD's output folder: relative to the hub (any absolute .../_bmad-output, this machine's or another's)
+c = os.path.join(hub, "_bmad", "config.toml")
+if os.path.isfile(c):
+    s = open(c).read(); n = re.sub(r'(?m)^output_folder = "/[^"\n]*/_bmad-output"$', 'output_folder = "_bmad-output"', s)
+    if n != s: put(c, n)
+PY
+)" || { echo "setup: could not rewrite ACCESS.md or _bmad/config.toml" >&2; exit 1; }
+[ -z "$o" ] || { echo "$o"; while IFS= read -r l; do MIG+=("${l#migrated }"); done <<<"$o"; }
+for f in $(folders); do
+  o="$(folder_local_write "$f" --migrate)" || { echo "setup: could not migrate $f's settings (folder_local_write $f --migrate)" >&2; exit 1; }
+  while IFS= read -r l; do case "$l" in
+    "migrated .gitignore"*) echo "$l"; MIG+=(.gitignore) ;;
+    "migrated "*|"wrote $f/.mcp.json") echo "$l"; MIG+=("${l#* }") ;;
+  esac; done <<<"$o"
+done
+if [ "$GITH" = 1 ] && { [ ${#MIG[@]} -gt 0 ] || [ "$RMC" = 1 ]; }; then
+  M=""; for p in $(printf '%s\n' "${MIG[@]}" | sort -u); do M="$M $(printf %q "$p")"; done
+  MSG="setup: this machine's paths out of git (story I1)"
+  if [ "$CLEAN" = 1 ] && { [ -z "$M" ] || eval "git -C \"\$H\" add --$M"; } && git -C "$H" commit -q -m "$MSG" >/dev/null 2>&1; then
+    echo "committed the migration: $MSG"
+  else
+    echo "commit the migration$([ "$CLEAN" = 1 ] || echo " (the index already held other changes)"): git -C $(printf %q "$H") add --$M && git -C $(printf %q "$H") commit -m $(printf %q "$MSG")"
+  fi
+fi
 link() { local r; r="$(link_memory "$CH" "$1" "${3:-}")" || return 1; echo "$r $2"; }   # absolute dir, label, [memory dir to link to]
 link "$H" "."
 CLAIMED=""

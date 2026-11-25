@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "playwright": { "command": "{{HUB}}/bin/browser", "args": ["run", "{{FOLDER}}"] }
+  }
+}
