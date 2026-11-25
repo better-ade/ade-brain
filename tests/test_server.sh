@@ -8,7 +8,7 @@
 make_hub; cd "$HUB"
 S="$(mktemp -d)"; S="$(cd "$S" && pwd -P)"; mkdir -p "$S/bin" "$S/home" "$S/state" "$S/apt" "$S/dl"
 export HOME="$S/home" AGENT_STATE="$S/state" AGENT_PLATFORM=linux AGENT_SYSTEMD_USER_DIR="$S/units" AGENT_SSHD_ETC="$S/ssh"
-export AGENT_SERVER_SHA_FILE="$S/pins"
+export AGENT_SERVER_SHA_FILE="$S/pins" AGENT_DOCKER_ETC="$S/docker"
 export PASSWORD_STORE_DIR="$S/no-pass" S
 trap 'rm -rf "$S" "$(dirname "$HUB")" "$CLAUDE_HOME" "$(dirname "$AGENT_SYNC_LOG")" "$(dirname "$AGENT_SYNC_LOCK")"' EXIT
 REAL_UID="$(id -u)"
@@ -39,7 +39,8 @@ cat > "$S/bin/systemctl" <<'STUB'
 #!/bin/bash
 echo "systemctl $*" >> "$S/calls"
 case " $* " in *" enable --now "*) for a; do u="$a"; done; echo "$u" >> "$S/active"; exit 0 ;; *" disable --now "*) for a; do u="$a"; done; grep -vx "$u" "$S/active" > "$S/active.t"; mv "$S/active.t" "$S/active"; exit 0 ;;
-  *" is-enabled apt-daily-upgrade.timer "*) cat "$S/uu" 2>/dev/null || echo disabled; exit 0 ;; *" is-active "*) for a; do u="$a"; done; grep -qx "$u" "$S/active" 2>/dev/null; exit ;; esac
+  *" is-enabled apt-daily-upgrade.timer "*) cat "$S/uu" 2>/dev/null || echo disabled; exit 0 ;;
+  *" is-enabled "*) for a; do u="$a"; done; grep -qx "$u" "$S/active" 2>/dev/null && echo enabled || echo disabled; exit 0 ;; *" is-active "*) for a; do u="$a"; done; grep -qx "$u" "$S/active" 2>/dev/null; exit ;; esac
 exit 0
 STUB
 printf '#!/bin/bash\necho "loginctl $*" >> "$S/calls"; [ "$1" = show-user ] && echo Linger=no; exit 0\n' > "$S/bin/loginctl"
@@ -58,7 +59,10 @@ esac
 STUB
 # npx @playwright/mcp install-browser --with-deps chromium (story V3): a Playwright-style Chromium under ~/.cache/ms-playwright
 printf '#!/bin/bash\necho "npx $*" >> "$S/calls"; [ -e "$S/npxfail" ] && exit 0; c="$HOME/.cache/ms-playwright/chromium-1234/chrome-linux"; mkdir -p "$c"; printf "#!/bin/bash\\n" > "$c/chrome"; chmod +x "$c/chrome"\n' > "$S/bin/npx"
-printf '#!/bin/bash\n[ "${1:-}" = -u ] && [ -e "$S/root" ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n' > "$S/bin/id"
+# usermod, gpasswd (story V4): never run; a call is logged so a test can see it
+for c in usermod gpasswd; do printf '#!/bin/bash\necho "%s $*" >> "$S/calls"\n' "$c" > "$S/bin/$c"; done
+# id -nG answers from $S/groups (default: no docker group), so a runner whose user is in docker sees the same thing
+printf '#!/bin/bash\n[ "${1:-}" = -u ] && [ -e "$S/root" ] && { echo 0; exit 0; }\n[ "${1:-}" = -nG ] && { if [ -e "$S/groups" ]; then cat "$S/groups"; else /usr/bin/id -un; fi; exit 0; }\nexec /usr/bin/id "$@"\n' > "$S/bin/id"
 printf '#!/bin/bash\n[ "${1:-}" = -m ] && { cat "$S/arch"; exit 0; }\nexec /usr/bin/uname "$@"\n' > "$S/bin/uname"
 chmod +x "$S"/bin/*
 # a PATH that holds no real gitleaks, bun or claude: the fakes, then only the system tools the scripts use
@@ -81,7 +85,7 @@ safe() { printf 'port 22\npasswordauthentication no\nkbdinteractiveauthenticatio
   echo enabled > "$S/uu"; printf 'APT::Periodic::Unattended-Upgrade "1";\n' > "$S/aptconf"; }
 # ufw_rules <rule>...: an active ufw (status verbose) that denies incoming by default, with those rules
 ufw_rules() { { printf 'Status: active\nLogging: on (low)\nDefault: %s (incoming), allow (outgoing), disabled (routed)\nNew profiles: skip\n\nTo Action From\n-- ------ ----\n' "${DEFAULT_IN:-deny}"; printf '%s\n' "$@"; } > "$S/ufw.status"; }
-reset() { echo yazi > "$S/unpackaged"; echo x86_64 > "$S/arch"; pins; rm -rf "$S/calls" "$S/installed" "$S/root" "$S/nosudo" "$S/units" "$HOME/.local" "$HOME/.bun" "$HOME/.cache" "$HOME/Project" "$S/active" "$S/curlfail" "$S/npxfail" "$S/bin/node" "$S/bin/npm"
+reset() { echo yazi > "$S/unpackaged"; echo x86_64 > "$S/arch"; pins; rm -rf "$S/calls" "$S/installed" "$S/root" "$S/nosudo" "$S/units" "$HOME/.local" "$HOME/.bun" "$HOME/.cache" "$HOME/Project" "$S/active" "$S/curlfail" "$S/npxfail" "$S/bin/node" "$S/bin/npm" "$S/bin/docker" "$S/docker"
   : > "$S/calls"; rm -f hub.conf; safe; }
 install() { bin/server install "$@" > "$S/out" 2> "$S/err"; rc=$?; }
 # changes: every call that is not one of the known read-only ones (a new kind of call counts as a change)
@@ -91,7 +95,7 @@ changes() { grep -vE -e '^sudo -v$' -e '^sudo -n (sshd -T|ufw status verbose$|ss
 
 installs_missing_from_fixed_list() {   # AC1
   reset; echo git > "$S/installed"; install; assert_eq "$rc" 0 "install: $(cat "$S/err" "$S/out")"
-  grep -q '^apt-get install -y -q --no-install-recommends python3 tmux gh age curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify bat glow poppler-utils chafa$' "$S/calls" || fail "only the missing packages, ade's tools too: $(grep apt-get "$S/calls")"
+  grep -q '^apt-get install -y -q --no-install-recommends python3 tmux gh age curl ca-certificates nodejs npm ufw unattended-upgrades xvfb x11vnc novnc websockify docker.io docker-compose-v2 docker-buildx bat glow poppler-utils chafa$' "$S/calls" || fail "only the missing packages, ade's tools too: $(grep apt-get "$S/calls")"
   grep -q 'yazi: not packaged for this system; skipped' "$S/out" || fail "an extra that is not packaged is skipped with a note: $(cat "$S/out")"
   [ -x "$HOME/.local/bin/gitleaks" ] || fail "gitleaks installed"
   grep -q "^curl --proto =https --tlsv1.2 -fsSL -o .* https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz$" "$S/calls" || fail "gitleaks pinned, over https only: $(grep curl "$S/calls")"
@@ -219,7 +223,46 @@ dry_run_changes_nothing() {   # AC6
   grep -q '^+ sudo apt-get install' "$S/out" && grep -q "^+ $HUB/bin/schedule install" "$S/out" && grep -q riscv64 "$S/out" || fail "prints its plan on an unsupported arch: $(cat "$S/out")"
   assert_eq "$(changes)" "" "still changes nothing"
 }
+docker_engine() {   # V4 AC3: the distribution's Docker packages (optional, where the archive has them), loopback-only
+  # published ports, the service enabled; the group command printed, never run
+  reset; install; assert_eq "$rc" 0 "install: $(cat "$S/err")"
+  local a; a="$(grep '^apt-get install' "$S/calls")"
+  for p in docker.io docker-compose-v2 docker-buildx; do echo "$a" | grep -qw "$p" || fail "$p from apt: $a"; done
+  assert_eq "$(cat "$S/docker/daemon.json" 2>/dev/null)" '{"ip": "127.0.0.1"}' "daemon.json publishes on loopback"
+  assert_eq "$(stat -c %a "$S/docker/daemon.json" 2>/dev/null || stat -f %Lp "$S/docker/daemon.json")" 644 "daemon.json mode"
+  grep -n '' "$S/calls" | grep -E 'daemon.json$|enable --now docker$' | head -2 | grep -q 'daemon.json$' || fail "daemon.json before the service starts: $(cat "$S/calls")"
+  grep -q '^sudo systemctl enable --now docker$' "$S/calls" || fail "the docker service enabled: $(grep systemctl "$S/calls")"
+  grep -qE '(^| )(usermod|gpasswd)( |$)' "$S/calls" && fail "never adds anyone to a group: $(grep -E 'usermod|gpasswd' "$S/calls")"
+  grep -qF "sudo usermod -aG docker $(printf %q "$(id -un)")" "$S/out" || fail "prints the group command: $(cat "$S/out")"
+  grep -i 'docker' "$S/out" | grep -qi 'root-equivalent' || fail "says why it is not done for you: $(cat "$S/out")"
+  grep -q 'Docker publishes ports on 127.0.0.1' "$S/out" || fail "the public-port line qualifies Docker: $(cat "$S/out")"
+  : > "$S/calls"; install; assert_eq "$(changes)" "" "a rerun changes nothing (docker installed and enabled)"
+  # already in the docker group (id -nG): no group command
+  echo "$(id -un) docker" > "$S/groups"; install; rm -f "$S/groups"
+  grep -q 'usermod' "$S/out" && fail "no group command when already in docker: $(grep usermod "$S/out")"
+  # an existing daemon.json is never overwritten: a note says what to set
+  reset; mkdir -p "$S/docker"; echo '{"log-driver": "local"}' > "$S/docker/daemon.json"; install; assert_eq "$rc" 0 "own daemon.json"
+  assert_eq "$(cat "$S/docker/daemon.json")" '{"log-driver": "local"}' "an existing daemon.json is left alone"
+  grep -q '"ip": "127.0.0.1"' "$S/out" "$S/err" || fail "a note says to set ip: $(cat "$S/out" "$S/err")"
+  # docker running already without a daemon.json: written, then the service restarted so it applies
+  reset; echo docker.io > "$S/installed"; echo docker > "$S/active"; install; assert_eq "$rc" 0 "docker running already"
+  grep -q '^sudo systemctl restart docker$' "$S/calls" || fail "restarted after writing daemon.json: $(grep systemctl "$S/calls")"
+  reset; bin/server install --dry-run > "$S/out" 2>&1; grep -q '^+ sudo systemctl enable --now docker$' "$S/out" || fail "the dry run prints the service step: $(cat "$S/out")"
+  grep -q '^+ sudo .*daemon.json$' "$S/out" || fail "the dry run prints the daemon.json step: $(cat "$S/out")"
+  assert_eq "$(changes)" "" "the dry run changes nothing"; [ ! -e "$S/docker" ] || fail "the dry run wrote daemon.json"
+  # the archive lacks one: skipped with a note, the install still succeeds
+  reset; echo docker-compose-v2 >> "$S/unpackaged"; install; assert_eq "$rc" 0 "no docker-compose-v2 in the archive: $(cat "$S/err")"
+  grep '^apt-get install' "$S/calls" | grep -qw docker-compose-v2 && fail "an unpackaged docker package is not asked for"
+  grep -q 'docker-compose-v2: not packaged for this system; skipped' "$S/out" || fail "says so: $(cat "$S/out")"
+  # a docker from elsewhere (docker-ce, snap, podman): the distribution's packages would clash; no packages, no service step
+  reset; printf '#!/bin/bash\necho "docker $*" >> "$S/calls"\n' > "$S/bin/docker"; chmod +x "$S/bin/docker"; install; assert_eq "$rc" 0 "docker already here: $(cat "$S/err")"
+  grep '^apt-get install' "$S/calls" | grep -qwE 'docker.io|docker-compose-v2|docker-buildx' && fail "a docker already on PATH is left alone: $(grep apt-get "$S/calls")"
+  grep -qE 'systemctl (enable|restart).*docker' "$S/calls" && fail "no service step for a foreign docker: $(grep systemctl "$S/calls")"
+  [ ! -e "$S/docker" ] || fail "no daemon.json for a foreign docker"
+  grep -qi 'could not enable' "$S/err" && fail "no warning noise for a foreign docker: $(cat "$S/err")"
+  rm -f "$S/bin/docker"
+}
 
-ALL="installs_missing_from_fixed_list downloads_verified refuses_root_needs_sudo safety_rows manual_step_printed status_report dry_run_changes_nothing"
+ALL="installs_missing_from_fixed_list downloads_verified refuses_root_needs_sudo safety_rows manual_step_printed status_report dry_run_changes_nothing docker_engine"
 for t in ${@:-$ALL}; do "$t"; done
 echo ok

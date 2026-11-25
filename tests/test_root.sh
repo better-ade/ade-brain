@@ -20,5 +20,8 @@ for d in README.md docs/index.html templates/hub/README.md; do
 n=$(ls personas/*.md | wc -l | tr -d ' '); [ "$n" -ge 10 ] || fail "persona library has $n personas"
 for p in personas/*.md; do for k in title folders briefing_focus; do grep -q "^$k: ." "$p" || fail "$p has no $k"; done
   grep -q "{{CLIENT}}" "$p" && grep -q "{{OWNER}}" "$p" || fail "$p does not name the client and owner"; done
+# Docker is documented as recommended, with the macOS install line (story V4)
+for d in README.md docs/index.html .ade/context/server.md; do
+  grep -qi "docker.*recommended\|recommended.*docker" "$d" && grep -q "colima docker docker-compose" "$d" || fail "$d does not name Docker as recommended"; done
 # the ADE rules are ade-method's own (story C1): test_method.sh keeps .ade/rules.md equal to the pinned ref
 echo ok
