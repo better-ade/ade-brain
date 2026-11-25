@@ -623,6 +623,15 @@ utc_epoch() { date -u -d "$1" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%
 utc_iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; }
 # tool_install_line <tool>: how to install a needed tool here (story I4): Homebrew on macOS, apt-get on Linux
 tool_install_line() { if [ "$(platform)" = macos ]; then echo "brew install $1"; else echo "sudo apt-get install $1"; fi; }
+# Docker (story V4): recommended, never needed (isolated local tests in containers). macOS: colima, the free headless
+# engine, with Homebrew's CLI; Linux: the distribution's packages. These only say what to run; nothing here runs it.
+docker_install_line() { if [ "$(platform)" = macos ]; then echo "brew install colima docker docker-compose && colima start"
+  else echo "sudo apt-get install docker.io docker-compose-v2 && sudo systemctl enable --now docker"; fi; }
+docker_start_line() { if [ "$(platform)" = macos ]; then echo "colima start (or open Docker Desktop)"; else echo "sudo systemctl enable --now docker"; fi; }
+# docker_group_line: the command that lets this user reach the daemon on Linux; printed, never run (the group is
+# root-equivalent). Nothing on macOS, which has no usermod (colima and Docker Desktop run as the user).
+docker_group_line() { [ "$(platform)" = linux ] || return 0
+  echo "sudo usermod -aG docker $(printf %q "$(id -un)"), then log in again (the docker group is root-equivalent)"; }
 # Desktop notifications: macOS only (osascript); elsewhere nothing (bin/monitor writes an event instead).
 desktop_notify() { [ "$(platform)" = macos ] || return 0
   osascript -e "display notification \"$(printf '%s' "$2" | tr -d '"\\')\" with title \"$(printf '%s' "$1" | tr -d '"\\')\"" 2>/dev/null; }

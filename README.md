@@ -80,6 +80,19 @@ no secret names to check. `push -u` also sets the upstream auto sync needs. Comm
 
 Or locally, without GitHub: `bin/init ... --dest ~/Project/acme-sre` copies the template to a new folder first.
 
+Docker is recommended, not needed: it runs isolated system integration tests locally, in containers (story V4). On macOS,
+`brew install colima docker docker-compose && colima start` (colima is the free, headless engine; Docker Desktop is not
+required). If `docker` already works (Docker Desktop, OrbStack), install nothing. On Linux, `bin/server install` adds
+the distribution's `docker.io`, `docker-compose-v2` and `docker-buildx` where the archive has them (a missing one is
+skipped with a note), enables the service, and leaves a `docker` that is not the distribution's alone. Docker's published
+ports bypass ufw, so when `/etc/docker/daemon.json` does not exist it writes `{"ip": "127.0.0.1"}` first: `-p` publishes
+on loopback (reach it over an SSH tunnel). An existing daemon.json is never changed; set `"ip": "127.0.0.1"` there
+yourself. It never adds you to the `docker` group (that is root-equivalent) and prints the command instead. Docker's
+default bridge, `172.17.0.0/16`, can clash with a VPN range: set `"default-address-pools": [{"base": "10.200.0.0/16",
+"size": 24}]` in daemon.json and restart docker. `bin/setup` warns when Docker is missing; `bin/doctor` says `OK docker`
+when `docker info` works, and otherwise `WARN docker` with the install line, the group command, or how to start the
+engine.
+
 ### Bring an existing project
 
 ```bash

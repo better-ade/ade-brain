@@ -201,13 +201,13 @@ roles_lists_and_never_reads_a_key() {
   grep -q '^reviewer  *deepseek:sonnet' "$S/roles" || fail "chosen: $(cat "$S/roles")"; assert_eq "$(grep -vc -- '--has' "$RT_CALLS")" 0 "only --has is used"; no_secret_in "$S/roles"
 }
 orchestrator_warning() {
-  ANTHROPIC_BASE_URL=https://api.other.example/x DOCTOR_OFFLINE=1 bin/doctor > "$S/d"; assert_eq "$?" 0 "doctor still exits 0"; grep -q '^WARN .*api.other.example' "$S/d" || fail "doctor warning"
+  ANTHROPIC_BASE_URL=https://api.other.example/x DOCTOR_OFFLINE=1 bin/doctor > "$S/d"; assert_eq "$?" 0 "doctor still exits 0"; grep -q '^WARN  *orchestrator .*api.other.example' "$S/d" || fail "doctor warning"
   ANTHROPIC_BASE_URL=https://api.other.example/x bin/context | grep -q 'WARNING.*api.other.example' || fail "hub-root context warning"
   ANTHROPIC_BASE_URL=https://api.other.example/x bin/context projects/demo | grep -q WARNING && fail "a folder's context does not warn"
-  local u; for u in https://api.anthropic.com https://api.anthropic.com/ ; do ANTHROPIC_BASE_URL=$u DOCTOR_OFFLINE=1 bin/doctor | grep -q '^WARN' && fail "warned on $u"; done
-  ANTHROPIC_BASE_URL=https://api.anthropic.com.evil.example DOCTOR_OFFLINE=1 bin/doctor | grep -q '^WARN' || fail "lookalike host not warned"
+  local u; for u in https://api.anthropic.com https://api.anthropic.com/ ; do ANTHROPIC_BASE_URL=$u DOCTOR_OFFLINE=1 bin/doctor | grep -q '^WARN  *orchestrator ' && fail "warned on $u"; done
+  ANTHROPIC_BASE_URL=https://api.anthropic.com.evil.example DOCTOR_OFFLINE=1 bin/doctor | grep -q '^WARN  *orchestrator .*api.anthropic.com.evil.example' || fail "lookalike host not warned"
   ANTHROPIC_BASE_URL=https://user:pw@other.example DOCTOR_OFFLINE=1 bin/doctor | grep -q 'pw' && fail "credentials in a URL printed"
-  DOCTOR_OFFLINE=1 bin/doctor | grep -q '^WARN' && fail "no base URL, no warning"; return 0
+  DOCTOR_OFFLINE=1 bin/doctor | grep -q '^WARN  *orchestrator ' && fail "no base URL, no warning"; return 0
 }
 
 ALL="default_hub_runs_routine_on_anthropic reviewer_on_owner_hub_runs_deepseek client_hub_never_reaches_deepseek missing_key_skips_before_any_call empty_key_skips_too no_usable_candidate_exits_2 bad_input_exits_2 gate_matches_bin_work environment_cannot_configure_roles task_and_secrets_stay_out_of_argv_and_env frame_nonce_marks_the_true_end output_is_capped_with_full_text_kept engine_failure_exits_1_without_fallback timeout_kills_the_process_group timeout_is_capped signals_kill_the_group journal_has_no_task_and_stays_out_of_context roles_lists_and_never_reads_a_key orchestrator_warning"
