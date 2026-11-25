@@ -290,10 +290,15 @@ bin/keys receive --new                       # an SSH key in 1Password or on a h
 bin/keys share age1… deepseek                # the sender then seals to that key instead
 bin/keys share <github-user> glm --as <you> -i ~/.ssh/work_ed25519   # sign as your GitHub user with another key
 bin/keys receive keys.age --from <github-user>     # take only a block signed by that GitHub user
+bin/keys share <github-user> --all --link   # prints a one-time https link instead (HUB_ONETIME_URL in hub.conf)
+bin/keys receive https://us.onetimesecret.com/secret/…   # the recipient: fetches it once, then as above
 ```
 
 - `share` shows the recipient's key fingerprints and asks before sealing, so a mistyped user is caught. The armored
   block alone goes to stdout; send it any way (chat, email).
+- `share --link` puts the sealed block (never a value) on a Onetime Secret instance (`HUB_ONETIME_URL`, default
+  `https://us.onetimesecret.com`; no account) and prints one link, which opens once and expires with the block (at most
+  7 days). If the service fails, the block is printed as before. Whoever opens the link first uses it up.
 - `share` signs with `~/.ssh/id_ed25519` (or `-i <key>`; a `.pub` whose key is in ssh-agent works) as your GitHub
   user (`--as <github-user>`, else the user `gh` is signed in as), and only with a key that user publishes on GitHub
   (`-i` with one that is not: refused). With no key or no user it says so and seals the block unsigned; `--unsigned`

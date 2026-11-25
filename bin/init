@@ -255,6 +255,9 @@ HUB_BASH_MAX_CHARS=$(q "$BMAX")
 HUB_AUTO_SYNC=$([ "$ASYNC" = off ] && echo 0 || echo 1)
 # the ade-method tag this hub's .ade/rules.md and _bmad/custom/ come from (bin/method sync; the template's pin)
 HUB_METHOD_REF=$(q "$(method_pin)")
+# bin/keys share --link (story I6): the Onetime Secret instance a sealed keys block goes to as a one-time link (https
+# only; a location, no account)
+HUB_ONETIME_URL=https://us.onetimesecret.com
 CONF
 # this machine's values (story I1, .ade/context/per-machine.md): gitignored, read after hub.conf; bin/setup writes them
 # on a clone

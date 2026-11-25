@@ -58,6 +58,7 @@ grep -rq "{{" "$D2/CLAUDE.md" "$D2/.claude/agents" "$D2"/ops/*/CLAUDE.md "$D2"/o
 bin/init --persona staff-software-engineer --client "Beta Inc" --owner "Pat" >/dev/null || fail "init in place failed"
 assert_contains hub.conf "HUB_NAME=beta-inc-staff-software-engineer" "derived name"
 assert_contains hub.conf "HUB_AUTO_SYNC=1" "auto sync on by default"
+assert_contains hub.conf "HUB_ONETIME_URL=https://us.onetimesecret.com" "the one-time link service (story I6)"
 for f in projects/app projects/proposals projects/client ops/environments; do [ -f "$f/STATE.md" ] || fail "default folder $f"
   grep -qF "/bin/changes $f\"" "$f/.claude/settings.json" || fail "$f hears hub changes (UserPromptSubmit)"; done
 
