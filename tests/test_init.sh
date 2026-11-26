@@ -44,6 +44,14 @@ bin/init --persona tech-lead --client X --owner Y --dest "$D" >/dev/null 2>&1; a
 bin/init --persona tech-lead --client X --owner Y --secret 'sk-ABC123=' --dest "$(mktemp -d)/s" >/dev/null 2>&1; assert_eq "$?" "2" "secret value refused"
 bin/init --persona tech-lead --client X --owner Y --briefing 25:00 --dest "$(mktemp -d)/b" >/dev/null 2>&1; assert_eq "$?" "2" "bad briefing time"
 bin/init --persona tech-lead --client X --owner Y --auto-sync maybe --dest "$(mktemp -d)/a" >/dev/null 2>&1; assert_eq "$?" "2" "bad --auto-sync"
+# --ollama-url: written as the brain's Ollama URL; a value that is no http(s) URL is refused (story C2 init_ollama_url)
+O="$(mktemp -d)/o"; bin/init --persona tech-lead --client X --owner Y --ollama-url http://127.0.0.1:11999 --dest "$O" >/dev/null || fail "init --ollama-url failed"
+assert_eq "$(. "$O/hub.conf"; echo "$HUB_OLLAMA_URL")" "http://127.0.0.1:11999" "init_ollama_url: hub.conf"
+for u in "not a url" "ftp://127.0.0.1:11999" "http://" "http://h /x" ""; do
+  ou="$(mktemp -d)/ou"; bin/init --persona tech-lead --client X --owner Y --ollama-url "$u" --dest "$ou" >/dev/null 2>&1; assert_eq "$?" "2" "init_ollama_url: bad [$u] refused"
+  [ ! -e "$ou" ] || fail "init_ollama_url: a refused [$u] wrote $ou"; done
+for u in "http://[::1]:11434" "https://o.example.test/api?x=1"; do   # IPv6 and a query still pass
+  bin/init --persona tech-lead --client X --owner Y --ollama-url "$u" --dest "$(mktemp -d)/ok" >/dev/null || fail "init_ollama_url: [$u] refused"; done
 bin/init --persona tech-lead --client X --owner Y --folders "projects/Bad" --dest "$(mktemp -d)/f" >/dev/null 2>&1; assert_eq "$?" "2" "bad folder"
 # names with sed metacharacters (& and #) and a hub path with & render as written, everywhere
 D2="$(mktemp -d)/r&d hub"

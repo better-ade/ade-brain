@@ -49,6 +49,10 @@ printf -- '---\nname: sms-feedback\ndescription: content team on SMS lead alerts
 AGENT_OLLAMA_URL="$U" bin/brain index >/dev/null
 out=$(AGENT_OLLAMA_URL="$U" bin/brain search "sms feedback noisy"); echo "$out" | head -1 | grep -q "memory/sms-feedback.md:1  sms-feedback: content team on SMS lead alerts" || fail "front matter is the heading: [$out]"
 echo "$out" | head -2 | tail -1 | grep -q "metadata" && fail "front matter left in the snippet"
+# 3b2. -n N caps the results (story C2 brain_search_n): "sms" hits STATE.md and the memory file
+cnt() { python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'; }
+all=$(bin/brain search --json sms | cnt); one=$(bin/brain search -n 1 --json sms | cnt)
+[ "$all" -gt 1 ] || fail "brain_search_n: the plain search returns more than one [$all]"; assert_eq "$one" 1 "brain_search_n: -n 1"
 # 3c. a glob path indexes only matching files (top-level briefs, not whole checkouts beside them)
 G="$(mktemp -d)"; printf '# Brief\nquokka strategy\n' > "$G/brief one.md"; mkdir -p "$G/repo"; printf '# Deep\nquokka internals\n' > "$G/repo/deep.md"
 AGENT_OLLAMA_URL="$U" AGENT_BRAIN_PATHS="$X $G/*.md" bin/brain index >/dev/null
