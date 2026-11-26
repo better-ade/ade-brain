@@ -75,7 +75,7 @@ never here.
 
 ## Tools
 - **Hub:** `bin/brain search`, `bin/journal`, `bin/context`, `bin/work`, `bin/agent`, `bin/roles`, `bin/keys`, `bin/doctor`, `bin/secret`, `bin/remote`, `bin/sync`, `bin/models` (show or set every model: root, focus, agents, subagents, briefing, all).
-- **AI tool keys:** {{OWNER}} stores them with `bin/keys set <tool>` in their own terminal. Never ask for a key in chat.
+- **AI tool keys:** {{OWNER}} stores them with `bin/keys set <tool>` in their own terminal. Never ask for a key in chat; never read or print a key's value.
 - **Browser:** the `browser` plugin's ask-first rules hold unchanged: no form submit, purchase or message without
   {{OWNER}}'s word. On the server that word comes over Telegram. A folder's logged-in profile is opt-in
   (`HUB_BROWSER_PROFILE_<FOLDER>=1` in hub.conf, e.g. `..._PROJECTS_ACME`); {{OWNER}} signs in with `bin/browser login
