@@ -280,12 +280,13 @@ bin/agent --role reviewer --folder projects/app < task.md  # the task comes on s
   a key on a command line, in a chat with an agent, or in a file such as `.env`: agents are told never to ask for one.
 - **It lives in a real secret store.** The macOS Keychain by default; on Linux a file store only you can read
   (folders `0700`, files `0600`; `bin/doctor` calls it the weaker store). Choose `pass` with `HUB_SECRET_STORE` in
-  `hub.conf`, the only place that can set it.
-- **It is never shown or copied out.** A value moves only on stdin or in the script's own variables: never the
-  environment, a log, git, or a file outside the store. `bin/keys` shows only stored or missing;
-  `bin/keys forget <tool>` removes one.
-- **Agents can't read it.** Delegated agents have read-only tools, and deny rules keep secret files (`.env`, `.env.*`,
-  `*.pem`, `.ssh/` and others) from them.
+  `hub.conf`, the only place that can set it (pass commits the encrypted entry to its own git repo, if you keep one).
+- **`bin/keys` never prints it.** A value moves only on stdin or in the script's own variables: never the environment,
+  a log, git, or a file outside the store. `bin/keys` shows only stored or missing; `bin/keys forget <tool>` removes
+  one.
+- **Agents are kept away from it.** Agents are told never to read or ask for a key. Delegated agents get read-only
+  tools, and on another provider's model, deny rules also keep secret files (`.env`, `.env.*`, `*.pem`, `.ssh/` and
+  others) from them.
 - **To give a key to someone, seal it.** Use `bin/keys share` (below), never a chat message or an email with the
   value in it.
 

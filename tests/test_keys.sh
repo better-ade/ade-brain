@@ -42,17 +42,18 @@ readme_keys_safe() {
   grep -n '^## ' README.md | grep -A1 -x '[0-9]*:## Keeping your keys safe' | tail -n 1 | grep -q ':## Handing keys to another person$' ||
     fail "README: 'Keeping your keys safe' comes just before 'Handing keys to another person'"
   sec="$(awk '/^## Keeping your keys safe$/{x=1; next} /^## /{x=0} x' README.md)"
-  for p in "Type a key once, in your own terminal." "It lives in a real secret store." "It is never shown or copied out." \
-           "Agents can't read it." "To give a key to someone, seal it."; do printf '%s' "$sec" | grep -qF -- "$p" || fail "README section says: $p"; done
+  for p in "Type a key once, in your own terminal." "It lives in a real secret store." "\`bin/keys\` never prints it." \
+           "Agents are kept away from it." "Agents are told never to read or ask for a key." "To give a key to someone, seal it."; do printf '%s' "$sec" | grep -qF -- "$p" || fail "README section says: $p"; done
   # every command and setting it names exists
   for n in set forget share; do printf '%s' "$sec" | grep -qF "bin/keys $n" || fail "README names bin/keys $n"
     grep -q "^  $n) " bin/keys || fail "bin/keys has no $n command"; done
   printf '%s' "$sec" | grep -qF 'HUB_SECRET_STORE' && grep -q 'HUB_SECRET_STORE:-' bin/lib.sh || fail "HUB_SECRET_STORE is named and read by bin/lib.sh"
   printf '%s' "$sec" | grep -qF '`0700`' && printf '%s' "$sec" | grep -qF '`0600`' || fail "README names 0700 and 0600"
   grep -q 'dirs 0700, files 0600' bin/lib.sh && grep -q '= 700 \]' bin/lib.sh && grep -q '= 600 \]' bin/lib.sh || fail "0700/0600 match bin/lib.sh"
+  grep -q 'never read or print a key' templates/hub/CLAUDE.md || fail "the hub rules tell agents never to read a key, as the README says"
   printf '%s' "$sec" | grep -qF 'weaker store' && grep -q 'the weaker store' bin/doctor || fail "bin/doctor calls the file store the weaker store"
   # each deny pattern it names is one of the hub's deny rules (bin/agent's secret-file names; a folder/ is folder/**)
-  rest="$(printf '%s' "$sec" | tr '\n' ' ' | sed -n 's/.*deny rules keep secret files (\([^)]*\)).*/\1/p')"
+  rest="$(printf '%s' "$sec" | tr '\n' ' ' | sed -n 's/.*deny rules also keep secret files (\([^)]*\)).*/\1/p')"
   [ -n "$rest" ] || fail "README names the deny patterns"
   for p in $(printf '%s' "$rest" | grep -o '`[^`]*`' | tr -d '`'); do case "$p" in */) p="$p**" ;; esac
     grep -E '^names = \[' bin/agent | grep -qF "\"$p\"" || fail "README deny pattern $p is not in bin/agent's deny names"; done
