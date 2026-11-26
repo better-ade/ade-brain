@@ -9,7 +9,8 @@ body() { python3 -c 'import sys; n=int(sys.argv[1]); a=sys.argv[2]; print("".joi
   "$1" "${2:-AbCdEfGhJkLmNpQrStUvWxYz0123456789aBcDeFgHiJkMnPqRsTuVwXy}"; }
 HEX=0123456789abcdef; UP=ABCDEFGHIJKLMNOPQRSTUVWXYZ234567
 # the hook's input, as Claude Code sends it (python, so any text is quoted right)
-inp() { python3 -c 'import json, sys; print(json.dumps({"session_id": "s1", "hook_event_name": "UserPromptSubmit", "prompt": sys.argv[1]}))' "$1"; }
+# the prompt goes in on stdin (printf is a builtin): one argv argument is capped at 128 KB on Linux, and one case is ~180 KB
+inp() { printf '%s' "$1" | python3 -c 'import json, sys; print(json.dumps({"session_id": "s1", "hook_event_name": "UserPromptSubmit", "prompt": sys.stdin.read()}))'; }
 # guard <prompt> [env...]: runs the hook; OUT, ERR, RC
 guard() { local p="$1" e; shift; e="$(mktemp)"; OUT="$(inp "$p" | env "$@" "$G" 2>"$e")"; RC=$?; ERR="$(cat "$e")"; rm -f "$e"; }
 # blocked <prompt> <kind> <what>: a block decision (exit 0, JSON on stdout) whose reason names the kind, never the prompt
