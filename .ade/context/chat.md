@@ -63,8 +63,13 @@
 - **Token: a short-lived 0600 file, deleted once read** (owner decision 2026-11-21). At each start `bin/secret` reads it
   into a shell variable, and the printf builtin writes `TELEGRAM_BOT_TOKEN=<t>` under `umask 077` to
   `<channel state dir>/.env`, which the plugin loads. A watcher (no token in its environment) deletes `.env` once the
-  plugin writes a new `bot.pid` there (an old one is removed first), or after 60 s at most (`AGENT_CHAT_ENV_TTL`, tests,
-  never more than 60). The token is never in the session's environment (so tools and hooks never see it), an
+  plugin writes a new `bot.pid` there (an old one is removed first), which may be only after the owner answers Claude
+  Code's startup questions; or once the session has ended (the start's pid, which execs it, is gone; checked every
+  0.5 s); or after 900 s at most (`AGENT_CHAT_ENV_TTL`, default and cap 900, story K3, owner 2026-11-26),
+  whichever comes first. Each start writes its pid to `env.owner` first; a watcher leaves a `.env` a later start owns. A
+  signal to the session's process group does not end the watcher first (HUP and INT ignored, TERM deletes at once),
+  and `bin/chat stop` deletes a `.env` whose owner is no live session (one killed outright). The
+  token is never in the session's environment (so tools and hooks never see it), an
   argument or the log. A token in the caller's shell is ignored; none in the Keychain exits 1 ("run bin/keys set
   telegram") before launch.
 - **Never skips permissions:** `dangerously` or `bypassPermissions` in an argument, any `HUB_*` setting or
@@ -83,9 +88,12 @@
   `~/.bun/bin`, `TERM=xterm-256color`, log `<state dir>/logs/chat.log`; the logs folder is 0700), installed and
   `launchctl enable`d by `bin/schedule install` only with `HUB_CHAT=telegram`, removed otherwise. `bin/chat stop`
   disables and unloads it, then deletes the pid file only once the process is gone.
-- **status:** running (the plugin wrote a live `bot.pid` since the session started) or "running, channel not connected",
-  or stopped; pid, since; each channel's line `<type>: policy <name>, groups: <N>, <locked to you|not locked>` (the
-  policy from `access.json` `dmPolicy`, shown only when it is `pairing`, `allowlist` or `disabled`, else
+- **status:** running (the plugin wrote a live `bot.pid` since the session started) or "running, channel not connected
+  (<why>)" (story K3), the first unconnected channel's reason, in fixed words: `the plugin has not started: answer any
+  question in the chat session's terminal` (no new `bot.pid`, `.env` still there), `the plugin did not get the token:
+  stop the session and run bin/chat start again` (no new `bot.pid`, `.env` gone), `the bot stopped: bin/chat logs`
+  (a new `bot.pid` whose process is gone); or stopped; pid, since; each channel's line
+  `<type>: policy <name>, groups: <N>, <locked to you|not locked>` (the policy from `access.json` `dmPolicy`, shown only when it is `pairing`, `allowlist` or `disabled`, else
   `unknown`; the lock by the rule above), or `<type>: not paired yet (...)`; then the last line, the mode a start
   would use: `mode: auto (<channels> is locked to you; HUB_CHAT_MODE=manual in hub.conf turns it off)`,
   `mode: manual (not locked: <type>: <why>; in the session: /telegram:access policy allowlist)`, `mode: <mode>

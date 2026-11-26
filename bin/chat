@@ -10,7 +10,7 @@
 #           One at a time. Without a terminal (launchd: bin/schedule install with HUB_CHAT=telegram) it starts only
 #           when each channel is locked the same way, whatever HUB_CHAT_MODE says.
 #   stop    end it, and disable and unload the launchd job, which would restart it (bin/schedule install enables it again)
-#   status  running or stopped, since when, whether the channel connected, each channel's policy, group count and
+#   status  running or stopped, since when, whether the channel connected (and why not), each channel's policy, group count and
 #           "locked to you" or "not locked", and "mode: <mode> (<why>)", the mode a start would use (never ids or the token)
 #   setup   the one-time steps: bot, token, plugin, pairing, allowlist, a test message
 #   test    (story H1) one test message to the paired owner (access.json allowFrom, exactly one id) through the Bot API, then
@@ -62,7 +62,8 @@
 # --sender is the user_id of the inbound channel message: only a paired owner (access.json allowFrom) counts.
 # Never skips permissions: dangerously/bypassPermissions in an argument, a HUB setting or the claude wrapper exits 2.
 # Each channel's token goes from the Keychain (bin/secret) into a 0600 .env in that channel's own state folder, which a
-# watcher deletes once the plugin has read it (it writes bot.pid), or after 60 s. Never the environment, argv or log.
+# watcher deletes once the plugin has read it (it writes bot.pid), once the session has ended, or after 15 minutes at
+# most (story K3). Never the environment, argv or log.
 set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; S="$(state_dir)"; PIDF="$S/chat/chat.pid"; LOCK="$S/chat/lock"
 LA="${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}"; LABEL="ai.agent-hub.$(hub_name).chat"
 NAME="${HUB_ORCHESTRATOR:-$(hub_name)}"
@@ -83,6 +84,11 @@ since() { awk '{print $2; exit}' "$PIDF"; }
 # connected <channel>: the plugin wrote a bot.pid since this session started, and that process lives
 connected() { local b; b="$(channel_dir "$1")/bot.pid"; [ -f "$b" ] && [ ! "$PIDF" -nt "$b" ] || return 1
   b="$(awk '{print $1; exit}' "$b")"; case "$b" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$b" 2>/dev/null; }
+# why_not <channel>: why it is not connected, in fixed words (story K3; never anything read from the .env)
+why_not() { local d; d="$(channel_dir "$1")"
+  if [ -f "$d/bot.pid" ] && [ ! "$PIDF" -nt "$d/bot.pid" ]; then echo "the bot stopped: bin/chat logs"
+  elif [ -f "$d/.env" ]; then echo "the plugin has not started: answer any question in the chat session's terminal"
+  else echo "the plugin did not get the token: stop the session and run bin/chat start again"; fi; }
 # access_of <channel>: "<policy> <groups>" from the plugin's access.json, for status (dmPolicy only, as the plugin reads
 # it, and only when a known name), else nothing
 access_of() { local f; f="$(channel_dir "$1")/access.json"; [ -f "$f" ] || return 1
@@ -260,16 +266,24 @@ case "${1:-}" in
             if [ -n "$p" ]; then kill -0 "$p" || break; else i=$((i+1)); [ "$i" -lt 30 ] || break; fi; fi; sleep 1; done)
       if [ "$UL" = 1 ]; then cmd=(script -q -e -c "echo \$\$ > $(printf '%q' "$SP"); exec $(printf '%q ' "${cmd[@]}")" /dev/null)
       else cmd=(script -q /dev/null "${cmd[@]}"); fi; fi
-    ttl="${AGENT_CHAT_ENV_TTL:-60}"; case "$ttl" in ''|*[!0-9]*) ttl=60 ;; esac; [ "$ttl" -le 60 ] || ttl=60
+    ttl="${AGENT_CHAT_ENV_TTL:-900}"; case "$ttl" in ''|*[!0-9]*|?????*) ttl=900 ;; esac; ttl=$((10#$ttl)); [ "$ttl" -le 900 ] || ttl=900
     for c in $CHANNELS; do d="$(channel_dir "$c")"; mkdir -p "$d" && chmod 700 "$d" || refuse "cannot make $d"
       export "$(channel_state_env "$c")=$d"; rm -f "$d/bot.pid" "$d/.env"
       t="$("$H/bin/secret" "$(channel_secret "$c")" 2>/dev/null)" && [ -n "$t" ] || refuse "could not read the $c bot token: run bin/keys set $c"
       # the token goes to a 0600 file only (printf is a builtin: no argument of any process carries it)
+      # this start owns the .env now: an earlier session's watcher leaves it alone (a stop, then a start)
+      echo $$ > "$d/env.owner" || { unset t; refuse "cannot write $d/env.owner"; }
       ( umask 077; printf '%s=%s\n' "$(channel_token_env "$c")" "$t" > "$d/.env" ) || { unset t; rm -f "$d/.env"; refuse "cannot write $d/.env"; }
       unset t
-      # deleted once the plugin has read it (it writes bot.pid when it starts), or after the time limit; started apart
-      # (not a child of script after the exec: util-linux script would wait for it)
-      ( ( exec </dev/null >/dev/null 2>&1; i=0; while [ "$i" -lt $((ttl * 2)) ] && [ ! -f "$d/bot.pid" ]; do sleep 0.5; i=$((i+1)); done; rm -f "$d/.env" ) & )
+      # deleted once the plugin has read it (it writes bot.pid when it starts, maybe only after the owner answers the
+      # startup questions), once the session has ended (this pid, which execs it, is gone), or after the time limit
+      # (ticks and wall clock, whichever ends first); started apart (not a child of script after the exec:
+      # util-linux script would wait for it). A signal to the session's process group (launchd or systemd stopping
+      # the job, a closed terminal) does not end it first: HUP and INT are ignored, TERM deletes at once.
+      ( ( exec </dev/null >/dev/null 2>&1; gone() { o="$(cat "$d/env.owner" 2>/dev/null)"; [ -n "$o" ] && [ "$o" != $$ ] || rm -f "$d/.env"; }
+        trap '' HUP INT; trap 'gone; exit 0' TERM; SECONDS=0; i=0
+        while [ "$i" -lt $((ttl * 2)) ] && [ "$SECONDS" -lt "$ttl" ] && [ ! -f "$d/bot.pid" ] && kill -0 $$; do sleep 0.5; i=$((i+1)); done
+        gone ) & )
     done
     # the forwarder: the agents' events to main reach the chat while the session lives (story C7)
     fe="${AGENT_CHAT_FORWARD_EVERY:-15}"; case "$fe" in ''|*[!0-9]*) fe=15 ;; esac
@@ -303,12 +317,15 @@ case "${1:-}" in
     if p="$(running_pid)"; then kill "$p" 2>/dev/null; i=0
       while kill -0 "$p" 2>/dev/null; do i=$((i+1)); [ $i -lt 100 ] || { echo "chat: pid $p still runs after 10 s; the pid file is kept" >&2; exit 1; }; sleep 0.1; done
       rm -f "$PIDF"; rm -rf "$LOCK"; echo "stopped (pid $p)"
-    else echo "not running"; fi ;;
+    else echo "not running"; fi
+    # a session killed outright (KILL) takes its .env watcher with it: the .env goes unless a live session owns it
+    for c in $CHANNELS; do d="$(channel_dir "$c")"; o="$(cat "$d/env.owner" 2>/dev/null)"
+      case "$o" in ''|*[!0-9]*) ;; *) is_session "$o" || rm -f "$d/.env" ;; esac; done ;;
   status) if [ "${2:-}" = --card ] && [ $# -eq 2 ]; then st=stopped; running_pid >/dev/null && st=running
       agents_view card "$NAME · $st"; exit; fi
     [ $# -eq 1 ] || usage
-    if p="$(running_pid)"; then ok=1; for c in $CHANNELS; do connected "$c" 2>/dev/null || ok=0; done
-      if [ "$ok" = 1 ]; then echo "$NAME: running (pid $p, since $(since))"; else echo "$NAME: running, channel not connected (pid $p, since $(since))"; fi
+    if p="$(running_pid)"; then why=""; for c in $CHANNELS; do connected "$c" 2>/dev/null || { why="$(why_not "$c")"; break; }; done
+      if [ -z "$why" ]; then echo "$NAME: running (pid $p, since $(since))"; else echo "$NAME: running, channel not connected ($why) (pid $p, since $(since))"; fi
     else echo "$NAME: stopped"; fi
     for c in $CHANNELS; do case " $(channel_types) " in *" $c "*) ;; *) echo "$c: unknown channel type"; continue ;; esac
       if a="$(access_of "$c")"; then l="not locked"; [ "$(lock_of "$c")" != locked ] || l="locked to you"
