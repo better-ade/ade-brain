@@ -13,7 +13,11 @@ printf '%s' "${TELEGRAM_BOT_TOKEN:-}" > "$FAKE_REC/envtoken"; printf '%s' "${TEL
 printf '%s' "${CLAUDE_CONFIG_DIR:-}" > "$FAKE_REC/configdir"; d="${TELEGRAM_STATE_DIR:-/nonexistent}"
 if [ -f "$d/.env" ]; then python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$d/.env" > "$FAKE_REC/envmode"; sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$d/.env" > "$FAKE_REC/filetoken"; fi
 bash -c env > "$FAKE_REC/childenv"
-[ -n "${FAKE_NOBOT:-}" ] || echo $$ > "$d/bot.pid"
+[ -n "${FAKE_NOBOT:-}${FAKE_BOT_AFTER:-}" ] || echo $$ > "$d/bot.pid"
+# FAKE_BOT_AFTER=<n> (story K3): the plugin starts late, after n ticks of the stand-in clock, then reads the .env
+if [ -n "${FAKE_BOT_AFTER:-}" ]; then i=0; while [ "$(wc -c < "$FAKE_TICKS" | tr -d ' ')" -lt "$FAKE_BOT_AFTER" ]; do
+    i=$((i+1)); [ "$i" -lt 600 ] || break; "$REAL_SLEEP" 0.05; done
+  [ ! -f "$d/.env" ] || sed -n 's/^TELEGRAM_BOT_TOKEN=//p' "$d/.env" > "$FAKE_REC/latetoken"; echo $$ > "$d/bot.pid"; fi
 # FAKE_STDIN: whether its stdin is still open after 2 s (open), or ended (eof); Python, as Bash 3.2's read -t says 1 for both
 [ -z "${FAKE_STDIN:-}" ] || python3 -c 'import os, select; r = select.select([0], [], [], 2)[0]
 print("open" if not r else ("eof" if not os.read(0, 1) else "data"))' > "$FAKE_REC/stdin"
@@ -24,6 +28,12 @@ STUB
 printf '#!/bin/bash\nexit 0\n' > "$FAKE/bin/bun"
 printf '#!/bin/bash\necho "$*" >> "$FAKE/launchctl.log"\nexit 0\n' > "$FAKE/bin/launchctl"
 chmod +x "$FAKE/bin/claude" "$FAKE/bin/bun" "$FAKE/bin/launchctl"; export FAKE PATH="$FAKE/bin:$PATH"
+# the stand-in clock (story K3): on PATH only for fast_start, where each half-second tick of the .env watcher costs
+# nothing and is counted in $FAKE/ticks, so the old 60 s (120 ticks) and the 15-minute cap (1800) are counted, not waited
+export REAL_SLEEP="$(command -v sleep)"; mkdir -p "$FAKE/clock"
+# (FAKE_SLOW_TICKS: each tick takes 2 s instead, so only the wall clock can hold the cap)
+printf '#!/bin/bash\n[ "$1" != 0.5 ] || [ -z "${FAKE_SLOW_TICKS:-}" ] || exec "$REAL_SLEEP" 2\nif [ "$1" = 0.5 ] && [ -n "${FAKE_TICKS:-}" ]; then printf . >> "$FAKE_TICKS"; exit 0; fi\nexec "$REAL_SLEEP" "$@"\n' > "$FAKE/clock/sleep"
+chmod +x "$FAKE/clock/sleep"
 unset TELEGRAM_BOT_TOKEN TELEGRAM_STATE_DIR HUB_CHAT HUB_CHANNELS HUB_CHAT_MODE CLAUDE_CONFIG_DIR
 CH="$AGENT_STATE/channels/telegram"
 # access state as the plugin keeps it after pairing; a start without a terminal needs allowlist and no groups
@@ -797,9 +807,83 @@ one_check_runs_alone() {
 # bash tests/test_chat.sh <check>: run one check on its own (story T1), after the state no check makes for itself and,
 # for stop_and_status, the check whose session it reads; --each runs every check that way. CHAT_CHECK_RAN=<file> lists
 # each check run (one_check_runs_alone reads it).
+# ---- story K3: the token waits for the plugin (or the session's end, or 15 minutes), and status says why the bot is
+# not connected. fast_start runs a session in the background on the stand-in clock (its env assignments as arguments).
+ticks() { wc -c < "$FAKE/ticks" | tr -d ' '; }
+fast_start() { : > "$FAKE/ticks"; env PATH="$FAKE/clock:$PATH" FAKE_TICKS="$FAKE/ticks" AGENT_CHAT_FORWARD_EVERY=0 "$@" bin/chat start </dev/null >/dev/null 2>&1; }
+# gone_within <tenths of a second> <file>
+gone_within() { local i=0; while [ -e "$2" ]; do i=$((i+1)); [ "$i" -le "$1" ] || return 1; sleep 0.1; done; }
+session_up() { wait_for "[ -f '$FAKE_REC/argv' ] && [ -s '$PIDF' ]" || fail "the session did not start"; }
+env_kept_until_bot_pid() {
+  reset_rec; rm -f "$CH/.env" "$CH/bot.pid"; fast_start FAKE_BOT_AFTER=200 FAKE_SLEEP=30 & bg=$!
+  wait_for "[ -f '$CH/bot.pid' ]" || fail "the late plugin did not start [ticks $(ticks)]"
+  assert_eq "$(cat "$FAKE_REC/latetoken" 2>/dev/null)" "$K" "the .env is there for a plugin that starts after the old 60 s (200 ticks)"
+  gone_within 10 "$CH/.env" || fail "the .env outlived bot.pid by 1 s"
+  bin/chat stop >/dev/null 2>&1; wait "$bg" 2>/dev/null; true
+}
+env_gone_when_session_ends() {
+  # the session ends by itself (/exit, a refused question): the start returns then
+  reset_rec; rm -f "$CH/.env"; FAKE_NOBOT=1 FAKE_SLEEP=2 bin/chat start </dev/null >/dev/null 2>&1 || fail "start"
+  assert_eq "$(cat "$FAKE_REC/filetoken")" "$K" "the session had the .env"
+  gone_within 20 "$CH/.env" || fail "the .env outlived the ended session by 2 s"
+  # the session is killed (bin/chat stop)
+  reset_rec; FAKE_NOBOT=1 FAKE_SLEEP=30 bin/chat start </dev/null >/dev/null 2>&1 & bg=$!; session_up
+  [ -e "$CH/.env" ] || fail "the .env went while the session waits for the plugin"
+  bin/chat stop >/dev/null 2>&1; wait "$bg" 2>/dev/null
+  gone_within 20 "$CH/.env" || fail "the .env outlived the stopped session by 2 s"
+  # its whole process group is signalled (launchd or systemd stopping the job, a closed terminal): the watcher too
+  local sig g; for sig in TERM HUP; do reset_rec; FAKE_NOBOT=1 FAKE_SLEEP=30 perl -e 'setpgrp(0,0); exec @ARGV' bin/chat start </dev/null >/dev/null 2>&1 & g=$!
+    session_up; [ -e "$CH/.env" ] || fail "no .env before the $sig"; kill -"$sig" -- -"$g" 2>/dev/null; wait "$g" 2>/dev/null
+    gone_within 20 "$CH/.env" || fail "the .env outlived a $sig to the session's process group"; done
+  # the session is killed outright (no watcher can act): bin/chat stop removes the .env it owned
+  reset_rec; FAKE_NOBOT=1 FAKE_SLEEP=30 perl -e 'setpgrp(0,0); exec @ARGV' bin/chat start </dev/null >/dev/null 2>&1 & g=$!
+  session_up; kill -KILL -- -"$g" 2>/dev/null; wait "$g" 2>/dev/null; [ -e "$CH/.env" ] || fail "no .env left to test after a KILL"
+  bin/chat stop >/dev/null 2>&1; [ -e "$CH/.env" ] && fail "bin/chat stop left a dead session's .env"
+  # a start right after a session ends: the ended session's watcher leaves the new .env alone
+  for i in 1 2 3; do reset_rec; FAKE_NOBOT=1 FAKE_SLEEP=1 bin/chat start </dev/null >/dev/null 2>&1
+    assert_eq "$(cat "$FAKE_REC/filetoken" 2>/dev/null)" "$K" "start $i right after another: the plugin got the token"; done
+  gone_within 20 "$CH/.env" || fail "the last .env outlived its session"; true
+}
+env_hard_cap() {
+  # a session that lives on with no plugin: the .env goes at the cap, 900 s by default and at most (1800 ticks)
+  local ttl n p; for ttl in "" 5000; do
+    reset_rec; fast_start FAKE_NOBOT=1 FAKE_SLEEP=120 AGENT_CHAT_ENV_TTL="$ttl" & bg=$!; session_up; p="$(awk '{print $1}' "$PIDF")"
+    gone_within 900 "$CH/.env" || fail "the .env outlived the cap [TTL '$ttl', ticks $(ticks)]"; n="$(ticks)"
+    [ "$n" -ge 1798 ] && [ "$n" -le 1802 ] || fail "AGENT_CHAT_ENV_TTL='$ttl' kept the .env $n ticks, not 1800 (900 s)"
+    kill -0 "$p" 2>/dev/null || fail "the session ended first (the cap was not what removed it)"
+    bin/chat stop >/dev/null 2>&1; wait "$bg" 2>/dev/null; done
+  # ticks slower than real time (a loaded or sleeping machine): the wall clock still holds the cap (2 s; 8 s by ticks)
+  reset_rec; env PATH="$FAKE/clock:$PATH" FAKE_SLOW_TICKS=1 FAKE_NOBOT=1 FAKE_SLEEP=30 AGENT_CHAT_ENV_TTL=2 bin/chat start </dev/null >/dev/null 2>&1 & bg=$!
+  session_up; gone_within 45 "$CH/.env" || fail "slow ticks kept the .env past the wall-clock cap"; running_pid_t || fail "the session ended first"
+  bin/chat stop >/dev/null 2>&1; wait "$bg" 2>/dev/null
+  # in real time: a 1 s cap removes it while the session runs; still 0600 in a 0700 folder, read by the plugin
+  reset_rec; FAKE_NOBOT=1 FAKE_SLEEP=30 AGENT_CHAT_ENV_TTL=1 bin/chat start </dev/null >/dev/null 2>&1 & bg=$!; session_up
+  gone_within 25 "$CH/.env" || fail "a 1 s cap"; running_pid_t || fail "the session ended first"
+  assert_eq "$(cat "$FAKE_REC/envmode")" "600" "the .env is 0600"
+  assert_eq "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$CH")" "700" "its folder is 0700"
+  grep -qF "$K" "$FAKE_REC/argv" "$FAKE_REC/childenv" && fail "the token is in an argument or the environment"
+  bin/chat stop >/dev/null 2>&1; wait "$bg" 2>/dev/null; true
+}
+running_pid_t() { kill -0 "$(awk '{print $1}' "$PIDF")" 2>/dev/null; }
+# status_in waiting|no_token|bot_died: the status of a running session in that state (the session is stopped after)
+status_in() { local ttl=900 out; [ "$1" != no_token ] || ttl=1
+  reset_rec; rm -f "$CH/bot.pid"; FAKE_NOBOT=1 FAKE_SLEEP=30 AGENT_CHAT_ENV_TTL=$ttl bin/chat start </dev/null >/dev/null 2>&1 & bg=$!; session_up
+  case "$1" in no_token) gone_within 25 "$CH/.env" || fail "the 1 s cap" ;;
+    bot_died) sleep 0 & local dead=$!; wait "$dead"; echo "$dead" > "$CH/bot.pid"; gone_within 20 "$CH/.env" || fail "bot.pid ends the .env" ;; esac
+  out="$(bin/chat status 2>&1)"; bin/chat stop >/dev/null 2>&1; wait "$bg" 2>/dev/null; printf '%s\n' "$out"; }
+status_reason_waiting() { local out; out="$(status_in waiting)"
+  echo "$out" | grep -qF "running, channel not connected (the plugin has not started: answer any question in the chat session's terminal)" || fail "waiting [$out]"; true; }
+status_reason_no_token() { local out; out="$(status_in no_token)"
+  echo "$out" | grep -qF "running, channel not connected (the plugin did not get the token: stop the session and run bin/chat start again)" || fail "no token [$out]"; true; }
+status_reason_bot_died() { local out; out="$(status_in bot_died)"
+  echo "$out" | grep -qF "running, channel not connected (the bot stopped: bin/chat logs)" || fail "bot died [$out]"; true; }
+status_never_shows_token() { local s out part
+  for s in waiting no_token bot_died; do out="$(status_in "$s")"; echo "$out" | grep -q "channel not connected (the " || fail "$s gave no reason [$out]"
+    for part in "$K" 123456789 TEST-telegram-token VALUE-abc; do echo "$out" | grep -qF "$part" && fail "status ($s) showed the token [$out]"; done; done; true; }
+
 CHECKS="start_launches_channel_session token_short_lived_file missing_token_refuses skip_permissions_refused \
   single_instance stop_and_status start_lock_and_access mode_follows_lock no_terminal_session_ends same_folder_name schedule_installs_chat_job claude_md_forwarded_content_rule channels_from_conf state_per_orchestrator \
-  telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder auto_notice_once lost_lock_noticed approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api one_check_runs_alone done_after_queued_notes done_without_waiting_when_nothing_queued done_holds_back_no_other_notes done_after_a_failed_note"
+  telegram_style_rule answer_needs_owner_permission status_card_golden to_agent_notifies forward_agent_events_once forward_partial_failure forward_cap_per_run forward_after_rotation forward_lock start_runs_forwarder auto_notice_once lost_lock_noticed approvals_buttons_or_numbered agents_list bot_send_token_on_stdin_only no_terminal_stand_in_api one_check_runs_alone done_after_queued_notes done_without_waiting_when_nothing_queued done_holds_back_no_other_notes done_after_a_failed_note env_kept_until_bot_pid env_gone_when_session_ends env_hard_cap status_reason_waiting status_reason_no_token status_reason_bot_died status_never_shows_token"
 run_check() { [ -z "${CHAT_CHECK_RAN:-}" ] || echo "$1" >> "$CHAT_CHECK_RAN"; "$1"; }
 if [ "${1:-}" = --each ]; then
   for c in $CHECKS; do
@@ -816,6 +900,7 @@ fi
 start_launches_channel_session; token_short_lived_file; missing_token_refuses; skip_permissions_refused
 single_instance; stop_and_status; start_lock_and_access; mode_follows_lock; no_terminal_session_ends; same_folder_name; schedule_installs_chat_job; claude_md_forwarded_content_rule; channels_from_conf
 state_per_orchestrator
+env_kept_until_bot_pid; env_gone_when_session_ends; env_hard_cap; status_reason_waiting; status_reason_no_token; status_reason_bot_died; status_never_shows_token
 telegram_style_rule; answer_needs_owner_permission; status_card_golden; to_agent_notifies; forward_agent_events_once; forward_partial_failure; forward_cap_per_run; forward_after_rotation; forward_lock; start_runs_forwarder; auto_notice_once; lost_lock_noticed; approvals_buttons_or_numbered; agents_list; bot_send_token_on_stdin_only; no_terminal_stand_in_api; one_check_runs_alone
 done_after_queued_notes; done_without_waiting_when_nothing_queued; done_holds_back_no_other_notes; done_after_a_failed_note
 echo ok
