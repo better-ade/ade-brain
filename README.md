@@ -9,6 +9,43 @@ Each brain is one **hub**: a private repo of Bash and Markdown that holds the **
 work. Every session starts with what is live, open and waiting; agents keep it up to date; the client's code stays in
 its own repos.
 
+## Quick start
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh | bash
+ade setup        # the guide, 7 steps: Claude Code, Claude, GitHub, your hub, your tools, a project, Telegram
+ade claude       # your persona, at the hub root
+```
+
+`ade setup` makes your hub from this template; rerun it to resume where you stopped. Your keys go in at a hidden
+prompt: `ade keys`. Nothing is sent to an AI until you start a session.
+
+### Bring your existing projects
+
+```bash
+ade project add ~/code/api                     # a repo you already have
+ade project add acme/web                       # or one on GitHub (owner/repo or a URL): cloned into ~/Project
+ade project add --scan ~/code                  # or pick from every repo in a folder: 1 3 4, 1-3, all
+ade project list
+```
+
+Each repo gets a folder in the hub (`projects/<name>`, with its remote, checkout and CI). Its README and `docs/` go
+into the hub's memory. You're also offered `ade init`, which adds the ADE method to the repo and never overwrites a
+file. Your code stays in its own repo, never in the hub.
+
+### Bring an existing hub
+
+```bash
+ade hub import github.com/acme/acme-sre-hub --share      # join a teammate's hub
+ade hub import <url> --handover                          # become its new owner
+ade hub import <url> --clone                             # start your own hub from it
+```
+
+No key is copied with a hub: each person sets their own (`ade keys`). To hand one over, see
+[Handing keys to another person](#handing-keys-to-another-person).
+
+The full manual setup, with `bin/init` and its flags, is below in [Make a hub](#make-a-hub).
+
 ## How it works
 
 - **The main agent is the orchestrator.** A Claude session at the hub root reads every folder's state, proposes the
