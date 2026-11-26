@@ -15,6 +15,8 @@ bin/new projects/acme >/dev/null; bin/new projects/beta >/dev/null
 # a stub gitleaks: `stdin` finds a "secret" when the input holds FAKELEAK (exit 1), else none (exit 0)
 GL="$(mktemp -d)"; printf '#!/bin/bash\n[ "$1" = stdin ] || exit 2\ngrep -q FAKELEAK && exit 1\nexit 0\n' > "$GL/gitleaks"; chmod +x "$GL/gitleaks"
 REALGL="$(command -v gitleaks || true)"; export PATH="$GL:$PATH"
+# CI installs gitleaks (ci.yml setup), so there the real secret scan below must run, never skip (story C2)
+[ "${CI:-}" = true ] && [ -z "$REALGL" ] && fail "gitleaks is not installed in CI: the real secret scan cannot run"
 U="memory/users/owner-one"; TODAY="$(date -u +%Y-%m-%d)"
 fresh() { rm -rf memory/users "$AGENT_STATE/learn"; }
 fb() { bin/learn feedback "$@"; }   # bin/learn feedback with the given flags
@@ -302,7 +304,7 @@ learn_refuses_secrets_and_contacts() {
   fi
   # dates and plain numbers are not phone numbers; "at" in a sentence is no email
   ok4 "Deploy after 2026-12-01 only, port 8080" "from 2026-12-01 at 09:30" "look at the logs first" >/dev/null || fail "a date was refused"
-  # the real secret scan, when gitleaks is installed (CI runs it): a fake token built from parts
+  # the real secret scan, when gitleaks is installed (always in CI: ci.yml installs it): a fake token built from parts
   if [ -n "$REALGL" ]; then
     fresh; bin/learn profile "seed" >/dev/null; S0="$(snap)"
     RG="$(mktemp -d)"; ln -s "$REALGL" "$RG/gitleaks"
