@@ -485,10 +485,11 @@ orchestrator_endpoint_warning() {
 method_pin() { echo v2.1.0; }
 method_repo() { echo "${AGENT_METHOD_REPO:-https://github.com/better-ade/ade-method}"; }
 # the keys only the committed hub.conf sets (never the environment, never .local/hub.conf)
-hub_policy_vars() { echo HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE $(compgen -v HUB_ROLE_) $(compgen -v HUB_BROWSER_PROFILE_); }
+hub_policy_vars() { echo HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE HUB_PASTE_GUARD $(compgen -v HUB_ROLE_) $(compgen -v HUB_BROWSER_PROFILE_); }
 # hub.conf (written by bin/init): who this agent is and what it can reach. Names and locations only, never secrets.
-# AGENT_* environment variables override it (tests use them). Provider choice, role tables, hub ownership and HUB_AGENT_ANTHROPIC_KEY come only from hub.conf.
-unset HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE
+# AGENT_* environment variables override it (tests use them). Provider choice, role tables, hub ownership, HUB_AGENT_ANTHROPIC_KEY
+# and HUB_PASTE_GUARD (bin/paste-guard, story K2) come only from hub.conf.
+unset HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE HUB_PASTE_GUARD
 for _v in $(compgen -v HUB_ROLE_) $(compgen -v HUB_BROWSER_PROFILE_); do unset "$_v"; done; unset _v   # role tables and browser profile switches too
 unset HUB_USER   # story L1: <user> comes from hub.conf or the system user, never the environment
 [ -f "$(hub_root)/hub.conf" ] && . "$(hub_root)/hub.conf"

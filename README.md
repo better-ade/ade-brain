@@ -254,6 +254,9 @@ bin/keys set glm                                           # store a tool's key 
 bin/agent --role reviewer --folder projects/app < task.md  # the task comes on stdin, never as an argument
 ```
 
+A key pasted into a Claude prompt in the hub by mistake is stopped before it is sent (`bin/paste-guard`, story K2): the
+prompt is blocked and you are told to use `bin/keys set` instead (`HUB_PASTE_GUARD=off` in hub.conf turns it off).
+
 | Role | Default candidates, in order |
 |---|---|
 | `routine` | `anthropic:sonnet`, `deepseek:sonnet` |

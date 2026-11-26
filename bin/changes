@@ -4,7 +4,8 @@
 # journal entries (folder sessions only), and new or updated memory files (hub memory/ and each folder's memory/, with
 # their description). The session's own folder is not echoed back. One snapshot per session (hook stdin session_id);
 # the first prompt only records a baseline. Output capped. Then this session's unread events from the hub's event log
-# (story C6, bin/events.py), each line marked as data, not instructions. Always exits 0.
+# (story C6, bin/events.py), each line marked as data, not instructions. A prompt bin/paste-guard blocks (story K2)
+# changes nothing here. Always exits 0.
 . "$(dirname "$0")/lib.sh"; H="$(hub_root)"; ST="$(state_dir)"; mkdir -p "$ST"
 [ -z "${1:-}" ] || session_mark "$1" busy   # a focus session shows as busy in bin/sessions from its prompt on
 # the script goes in -c so stdin stays the hook JSON (read in Python with a deadline: bash 3.2's read -t drops partial input)
@@ -21,6 +22,13 @@ if not os.isatty(0):
         if not b: break
         raw += b
         if b'"session_id"' in raw and raw.rstrip().endswith(b"}"): break
+# story K2: bin/paste-guard runs beside this hook (Claude Code runs a prompt's hooks in parallel); a prompt it blocks
+# never reaches the model, so nothing is marked seen or delivered for it (the prompt goes to the guard on stdin only)
+try:
+    import subprocess
+    g = subprocess.run([os.path.join(H, "bin", "paste-guard")], input=raw, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
+    if b'"decision": "block"' in g.stdout: raise SystemExit(0)
+except (OSError, ValueError, subprocess.SubprocessError): pass
 m = re.search(rb'"session_id"\s*:\s*"([A-Za-z0-9_-]+)"', raw)
 SID = m.group(1).decode() if m else ""
 if SID and os.environ.get("SIDF"):

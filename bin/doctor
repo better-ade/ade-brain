@@ -73,6 +73,8 @@ tev=$(grep -oE '"[A-Za-z]+": \[' "$H/templates/folder-settings.json" 2>/dev/null
 for f in $(folders); do s="$H/$f/.claude/settings.json"; [ -f "$s" ] || continue; miss=""
   for e in $tev; do grep -q "\"$e\"" "$s" || miss="$miss $e"; done
   [ -z "$miss" ] || line WARN "settings $f" "no${miss} hook from the template (bin/new --settings $f)"
+  # story K2: a folder from before the paste guard has a UserPromptSubmit hook, but not this one
+  grep -q '/bin/paste-guard' "$s" || line WARN "settings $f" "no paste guard (a key pasted into a prompt would be sent): bin/new --settings $f"
   if grep -qE '"command": "\\"/[^"\\]*\\"/bin/' "$s" || grep -qE '"(Edit|Write)\(/[^/*"][^"]*/(hub\.conf|memory/users/\*\*)\)"' "$s"; then
     line WARN "settings $f" "settings.json names a hub path (a folder from before story I1): bin/setup"
   else miss=""; for a in 'Edit(//**/hub.conf)' 'Edit(//**/memory/users/**)' 'Write(//**/memory/users/**)'; do grep -qF "\"$a\"" "$s" || miss="$miss $a"; done

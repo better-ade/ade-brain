@@ -1,0 +1,83 @@
+#!/bin/bash
+# bin/paste-guard: UserPromptSubmit hook in every hub session (root and folders; story K2). A prompt that holds a key is
+# blocked before the model sees it: JSON {"decision": "block", ...} on stdout, exit 0, with suppressOriginalPrompt so
+# Claude Code's block message does not repeat the prompt. The reason names only the kind of key and where it belongs
+# (ade keys set <tool>); the key is never printed, logged or written. Anything else passes untouched (exit 0, no output).
+# HUB_PASTE_GUARD=off in the committed hub.conf turns it off (never the environment, never .local/hub.conf). A malformed
+# hook input, a missing python3 or any error lets the prompt through: the guard never blocks normal work.
+# The key shapes are one list, KEYS below; .ade/context/paste-guard.md.
+# The switch is read from this hub's committed hub.conf alone, in a subshell: never the environment, never one $HUB
+# names, never .local/hub.conf (a per-machine file could otherwise keep it set past bin/lib.sh's policy restore).
+unset HUB_PASTE_GUARD
+H="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)" || exit 0
+SW="$(unset HUB_PASTE_GUARD; [ -f "$H/hub.conf" ] && . "$H/hub.conf" >/dev/null 2>&1; printf '%s' "${HUB_PASTE_GUARD:-}")"
+[ "$SW" != off ] || exit 0
+command -v python3 >/dev/null 2>&1 || { echo "paste-guard: python3 not found, prompt not checked" >&2; exit 0; }
+# the script goes in -c so stdin stays the hook JSON; any failure inside is silent and lets the prompt through
+PY_SRC=$(cat <<'PY'
+import json, os, re, select, sys, time, unicodedata
+try:
+    # the hook JSON: read until it parses or stdin closes, 10 s at most (a stdin that never closes is not waited on)
+    raw = bytearray(); d = None; end = time.time() + 10
+    if not os.isatty(0):
+        while time.time() < end and len(raw) < 64 << 20:
+            r, _, _ = select.select([0], [], [], max(0, end - time.time()))
+            if not r: break
+            b = os.read(0, 1 << 20)
+            if not b: break
+            raw += b
+            if bytes(raw[-8:]).rstrip().endswith(b"}"):
+                try: d = json.loads(raw.decode("utf-8")); break
+                except ValueError: pass
+    if d is None: d = json.loads(raw.decode("utf-8"))
+    prompt = d.get("prompt") if isinstance(d, dict) else None
+    if not isinstance(prompt, str) or not prompt: sys.exit(0)
+    # (kind, tool for `ade keys set`, pattern); the first kind that matches names the key. No generic "long random
+    # string" rule: git SHAs, UUIDs and hashes must pass.
+    # (kind, tool for `ade keys set`, pattern, check); the first kind that matches names the key. A check refines a
+    # match (no lookahead that rescans the text: the scan stays linear). No generic "long random string" rule: git SHAs,
+    # UUIDs and hashes must pass.
+    def opaque(m):   # a random part, not kebab-case words: a digit, and a run of 20 or more with no "-"
+        k = m.group(0); return any(c.isdigit() for c in k) and any(len(x) >= 20 for x in k.split("-")[1:])
+    def digit(m): return any(c.isdigit() for c in m.group(0))
+    KEYS = [
+        ("Anthropic key", "anthropic", r"sk-ant-[A-Za-z0-9_-]{20,}", None),
+        ("OpenAI-style key", None, r"(?<![A-Za-z0-9])sk-(?!ant-)[A-Za-z0-9_-]{20,}", opaque),
+        ("GitHub token", None, r"(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})", None),
+        ("GitLab token", None, r"glpat-[A-Za-z0-9_-]{20,}", None),
+        ("Slack token", None, r"(?<![A-Za-z0-9])xox[abprse]-[A-Za-z0-9.-]{10,}", digit),
+        ("AWS access key", None, r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])", lambda m: not m.group(0).endswith("EXAMPLE")),
+        ("Google API key", "gemini", r"AIza[A-Za-z0-9_-]{35}", None),
+        ("Telegram bot token", "telegram", r"(?<![0-9])[0-9]{6,12}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])", None),
+        ("private key", None, r"-----BEGIN[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----", None),
+        ("GLM key", "glm", r"(?<![A-Za-z0-9])[0-9a-fA-F]{32}\.[A-Za-z0-9]{16}(?![A-Za-z0-9])", None),
+    ]
+    # what a paste does to a key: terminal escapes and zero-width or control characters inside it, fullwidth or other
+    # compatibility lookalikes (NFKC), dash lookalikes; and a key hard-wrapped over two lines
+    ESC = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]?")
+    INVIS = re.compile("[­͏؜ᅟᅠ឴឵᠋-᠏​-‏‪-‮⁠-⁯"
+                       "ㅤ︀-️﻿ﾠ\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+    DASH = re.compile("[‐-―−﹘﹣－]")
+    t = unicodedata.normalize("NFKC", INVIS.sub("", ESC.sub("", prompt)))
+    t = DASH.sub("-", t)
+    wrapped = re.sub(r"(?<=[A-Za-z0-9_:.-])[ \t]*\r?\n[ \t]*(?=[A-Za-z0-9_-])", "", t)
+    found = []
+    for kind, tool, pat, ok in KEYS:
+        p = re.compile(pat)
+        if any(ok is None or ok(m) for x in (t, wrapped) for m in p.finditer(x)): found.append((kind, tool))
+    if not found: sys.exit(0)
+    tools = {f[1] for f in found}
+    tool = found[0][1] if len(tools) == 1 and found[0][1] else "<tool>"
+    reason = ("That looks like a key (%s), so it was not sent. Store it at a hidden prompt: ade keys set %s "
+              "(or bin/keys set %s). If it was real and already shared somewhere, rotate it." % (", ".join(f[0] for f in found), tool, tool))
+    sys.stdout.write(json.dumps({"decision": "block", "reason": reason,
+                                 "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "suppressOriginalPrompt": True}}) + "\n")
+    sys.stdout.flush()
+except SystemExit:
+    raise
+except BaseException:
+    os._exit(0)   # never a traceback: it could quote the input
+PY
+)
+python3 -I -c "$PY_SRC" 2>/dev/null
+exit 0
