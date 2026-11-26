@@ -1,7 +1,7 @@
 #!/bin/bash
 # bin/keys: the key for each AI tool, in this hub's Keychain. Never prints a value, and a stored key enables nothing.
 #   bin/keys                 each tool: stored or missing, and what it still needs
-#   bin/keys set <tool>      store or replace its key (hidden prompt, or stdin; never an argument)
+#   bin/keys set <tool>      store or replace its key (hidden prompt or stdin, never an argument), then says where
 #   bin/keys forget <tool>   remove its key
 #   bin/keys share <github-user|age1…> [<tool|secret> …] [--all] [--days N] [-i <ssh key>] [--as <github-user>] [--unsigned]
 #                            seal keys with age to one person (story I4): their GitHub ssh-ed25519/ssh-rsa keys or an age1…
@@ -381,7 +381,9 @@ case "${1:-}" in
     done ;;
   set) [ $# -eq 2 ] || bad; s="$(tool_name "$2")" || exit 2; keychain
     [ "$2" != anthropic ] || echo "keys: the Anthropic key is used by bin/agent --live-test; role runs use it only with HUB_AGENT_ANTHROPIC_KEY=1 in hub.conf (else the Claude login)" >&2
-    exec "$H/bin/secret" --set "$s" ;;
+    # exec, so a signal reaches the store itself; bin/secret reads the value (never this script) and prints the note only
+    # once the key is stored and read back. A failed, refused or cancelled store says nothing of the kind (story K1)
+    exec "$H/bin/secret" --set "$s" --note "keys: $2 stored in $(secret_store_label); agents never see it. Share it sealed: bin/keys share <github-user> $2" ;;
   forget) [ $# -eq 2 ] || bad; s="$(tool_name "$2")" || exit 2; keychain
     "$H/bin/secret" --has "$s" || { echo "keys: no key stored for $2" >&2; exit 1; }
     exec "$H/bin/secret" --forget "$s" ;;

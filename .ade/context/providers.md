@@ -71,6 +71,9 @@ same table, never a copy. Findings: `engines.md`. Decision and terms: `decisions
   engine (story E1) and shows what it still needs (a sign-in counts as well as a key).
 - `bin/keys set <tool>` reads the key from a hidden prompt or stdin through `bin/secret --set`; `bin/keys forget <tool>` removes
   it. Exit 2 for an unknown tool or extra argument, so a key on the command line is refused. Storing a key enables nothing.
+  `set` execs `bin/secret --set <name> --note <line>`: bin/secret prints the line (where the key went, `secret_store_label`,
+  and how to share it sealed; story K1) on stderr only after the key is stored and read back; a failed, refused or
+  cancelled store exits non-zero with no such line.
 - `bin/secret --set` passes the value to `security -i` on stdin, never as an argument, and reads it back to confirm; a failed store exits 1.
 
 ## A provider session (`bin/work --provider <p>`)

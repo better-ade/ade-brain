@@ -9,6 +9,43 @@ Each brain is one **hub**: a private repo of Bash and Markdown that holds the **
 work. Every session starts with what is live, open and waiting; agents keep it up to date; the client's code stays in
 its own repos.
 
+## Quick start
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh | bash
+ade setup        # the guide, 7 steps: Claude Code, Claude, GitHub, your hub, your tools, a project, Telegram
+ade claude       # your persona, at the hub root
+```
+
+`ade setup` makes your hub from this template; rerun it to resume where you stopped. Your keys go in at a hidden
+prompt: `ade keys`. Nothing is sent to an AI until you start a session.
+
+### Bring your existing projects
+
+```bash
+ade project add ~/code/api                     # a repo you already have
+ade project add acme/web                       # or one on GitHub (owner/repo or a URL): cloned into ~/Project
+ade project add --scan ~/code                  # or pick from every repo in a folder: 1 3 4, 1-3, all
+ade project list
+```
+
+Each repo gets a folder in the hub (`projects/<name>`, with its remote, checkout and CI). Its README and `docs/` go
+into the hub's memory. You're also offered `ade init`, which adds the ADE method to the repo and never overwrites a
+file. Your code stays in its own repo, never in the hub.
+
+### Bring an existing hub
+
+```bash
+ade hub import github.com/acme/acme-sre-hub --share      # join a teammate's hub
+ade hub import <url> --handover                          # become its new owner
+ade hub import <url> --clone                             # start your own hub from it
+```
+
+No key is copied with a hub: each person sets their own (`ade keys`). To hand one over, see
+[Handing keys to another person](#handing-keys-to-another-person).
+
+The full manual setup, with `bin/init` and its flags, is below in [Make a hub](#make-a-hub).
+
 ## How it works
 
 - **The main agent is the orchestrator.** A Claude session at the hub root reads every folder's state, proposes the
@@ -276,6 +313,22 @@ prompt is blocked and you are told to use `bin/keys set` instead (`HUB_PASTE_GUA
   is not retried elsewhere, so client data never moves to another vendor unnoticed.
 - **The report is data.** It is printed between lines carrying a per-call nonce, capped at 20 KB, with the full text in
   `.local/agent-out/` (kept 30 days). `journal/delegations-YYYY-MM.md` records each run, never the task.
+
+## Keeping your keys safe
+
+- **Type a key once, in your own terminal.** `bin/keys set <tool>` asks at a hidden prompt, or reads stdin. Never put
+  a key on a command line, in a chat with an agent, or in a file such as `.env`: agents are told never to ask for one.
+- **It lives in a real secret store.** The macOS Keychain by default; on Linux a file store only you can read
+  (folders `0700`, files `0600`; `bin/doctor` calls it the weaker store). Choose `pass` with `HUB_SECRET_STORE` in
+  `hub.conf`, the only place that can set it (pass commits the encrypted entry to its own git repo, if you keep one).
+- **`bin/keys` never prints it.** A value moves only on stdin or in the script's own variables: never the environment,
+  a log, git, or a file outside the store. `bin/keys` shows only stored or missing; `bin/keys forget <tool>` removes
+  one.
+- **Agents are kept away from it.** Agents are told never to read or ask for a key. Delegated agents get read-only
+  tools, and on another provider's model, deny rules also keep secret files (`.env`, `.env.*`, `*.pem`, `.ssh/` and
+  others) from them.
+- **To give a key to someone, seal it.** Use `bin/keys share` (below), never a chat message or an email with the
+  value in it.
 
 ## Handing keys to another person
 

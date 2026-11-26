@@ -1,5 +1,7 @@
 #!/bin/bash
 . "$(dirname "$0")/helpers.sh"
+# CI installs gitleaks (ci.yml setup), so there the secret block below must run, never skip (story C2)
+[ "${CI:-}" = true ] && ! command -v gitleaks >/dev/null && fail "gitleaks is not installed in CI: the pre-commit secret block cannot run"
 make_hub; cd "$HUB"; git config core.hooksPath .githooks
 mkdir -p repos/x && echo code > repos/x/a.py && git add -f repos/x/a.py
 git commit -qm t 2>err && fail "a repos/ file was committed"; assert_contains err "REFUSED" "repos guard"

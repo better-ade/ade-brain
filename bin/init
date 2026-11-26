@@ -114,6 +114,7 @@ SUBRE='^[][A-Za-z0-9._:/-]+$'; [[ "$SMODEL" =~ $SUBRE ]] || { echo "init: bad mo
 [[ "$BMAX" =~ ^[0-9]+$ ]] && { [ "$BMAX" = 0 ] || { [ "$BMAX" -ge 1000 ] && [ "$BMAX" -le 150000 ]; }; } ||
   { echo "init: --bash-max-chars must be 0 or 1000-150000 characters" >&2; exit 2; }
 case "$ASYNC" in on|off) ;; *) echo "init: --auto-sync must be on or off" >&2; exit 2 ;; esac
+[[ "$OURL" =~ ^https?://[^[:space:]/?#]+([/?#][^[:space:]]*)?$ ]] || { echo "init: --ollama-url must be an http(s) URL" >&2; exit 2; }
 case "$EFFORT" in ""|low|medium|high|xhigh|max) ;; *) echo "init: --effort must be low|medium|high|xhigh|max" >&2; exit 2 ;; esac
 for f in $FOLDERS; do [[ "$f" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || { echo "init: bad folder '$f'" >&2; exit 2; }; done
 RHOST=""; RUSER=""; RPORT=22
