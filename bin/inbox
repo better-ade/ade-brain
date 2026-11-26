@@ -31,6 +31,34 @@ fi
 F="${1:-}"; IN=""; IFS= read -r -d '' -t 1 IN
 re='"session_id"[[:space:]]*:[[:space:]]*"([A-Za-z0-9_-]{1,80})"'; SID=""; [[ "$IN" =~ $re ]] && SID="${BASH_REMATCH[1]}"
 ST="$(state_dir)"; E="$ST/events.jsonl"; C="$ST/events-seen/$SID"
+# Check-in (story S1, .ade/context/events.md): a folder session is told once per HUB_CHECKIN_MINUTES of work to update
+# its STATE.md, then note main. Bash builtins, date and touch only: <state>/checkin/<folder>.start (period start),
+# .seen (last call), .nudged; each holds one epoch. A missing start, an idle gap of N minutes, or a STATE.md newer than
+# .start restarts the period (bin/notify main from the session does too). A call mentioning push or /.ade/context/ (a
+# push or contract call) is never nudged (its event goes to python below); a nudge is the whole output of its call
+# (delivery waits for the next call).
+if [ -n "$F" ]; then
+  CN=$(checkin_minutes)
+  if [ "$CN" -gt 0 ] && { [ -d "$ST/checkin" ] || mkdir -p "$ST/checkin" 2>/dev/null; }; then
+    K="$ST/checkin/${F//[^A-Za-z0-9]/-}"; HR="$(hub_root)"; now=$(date +%s); cs=""; cw=""; cg=""
+    [ -f "$K.start" ] && read -r cs < "$K.start"; [[ "$cs" =~ ^[0-9]{1,12}$ ]] || cs=""
+    [ -f "$K.seen" ] && read -r cw < "$K.seen"; [[ "$cw" =~ ^[0-9]{1,12}$ ]] || cw=""
+    [ -f "$K.nudged" ] && read -r cg < "$K.nudged"; [[ "$cg" =~ ^[0-9]{1,12}$ ]] || cg=0
+    if [ -z "$cs" ] || { [ -n "$cw" ] && [ $(( now - cw )) -ge $(( CN * 60 )) ]; } || [ "$HR/$F/STATE.md" -nt "$K.start" ]; then
+      cs=$now; printf '%s\n' "$now" > "$K.start" 2>/dev/null
+    fi
+    printf '%s\n' "$now" > "$K.seen" 2>/dev/null
+    case "$IN" in *push*|*/.ade/context/*) ;; *)
+      if [ $(( now - cs )) -ge $(( CN * 60 )) ] && ! [ "$cg" -gt "$cs" ]; then
+        printf '%s\n' "$now" > "$K.nudged" 2>/dev/null
+        js() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"; }
+        printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}\n' \
+          "[hub check-in, from the hub's PostToolUse hook, not from the owner] About $(( (now - cs) / 60 )) minutes of work since your last check-in. Check in now: update $(js "$HR/$F/STATE.md") (progress, next step, blockers), then run: $(js "$HR/bin/notify") main \\\"<progress, next step, blocker if any>\\\" (one line). Do not commit the hub for this: bin/sync picks the files up."
+        exit 0
+      fi ;;
+    esac
+  fi
+fi
 case "$IN" in
   *push*|*/.ade/context/*) ;;
   *) [ -n "$SID" ] || exit 0

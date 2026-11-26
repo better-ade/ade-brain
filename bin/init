@@ -254,6 +254,8 @@ HUB_COMPACT_WINDOW=$(q "$CWIN")
 HUB_BASH_MAX_CHARS=$(q "$BMAX")
 # 1: bin/sync --auto pushes the hub every 30 minutes (bin/schedule) and at each focus session end; 0: off
 HUB_AUTO_SYNC=$([ "$ASYNC" = off ] && echo 0 || echo 1)
+# story S1: a focus session checks in (STATE.md, then a note to main) every this many minutes of work; 0: off
+HUB_CHECKIN_MINUTES=30
 # the ade-method tag this hub's .ade/rules.md and _bmad/custom/ come from (bin/method sync; the template's pin)
 HUB_METHOD_REF=$(q "$(method_pin)")
 # bin/keys share --link (story I6): the Onetime Secret instance a sealed keys block goes to as a one-time link (https

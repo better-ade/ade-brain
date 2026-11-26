@@ -121,7 +121,7 @@
   `{"chat_id", "text" (max 4096), "reply_markup"?}`, no parse mode. `AGENT_CHAT_SEND` (tests) is a command that gets
   each payload as JSON on stdin; otherwise the Bot API `sendMessage` at `AGENT_TELEGRAM_API` (default
   `https://api.telegram.org`), the token read by `bin/secret` and passed on the helper's stdin (never argv or env).
-- **Forward:** `bin/chat forward` sends each `idle`, `ended` or `note` event from a folder to `main`/`all` as
+- **Forward:** `bin/chat forward` sends each `idle`, `ended`, `note` or `quiet` event from a folder to `main`/`all` as
   `[<folder name>] <kind>: <text>` (a note's text JSON-quoted, a secret-looking text withheld). Cursor
   `<state dir>/chat/forward.cursor` (`<inode> <offset>`), moved after each sent line (`events.py ack`): a failed send
   exits 1 and is retried next run; a sent one is never repeated. No cursor: the last 24 h of the log. A rotated log

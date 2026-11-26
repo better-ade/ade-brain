@@ -1,0 +1,50 @@
+#!/bin/bash
+# bin/checkin --missed (story S1, .ade/context/events.md): tell main about focus sessions that went quiet. Run by
+# bin/monitor (every 30 minutes); nothing else schedules it. For each live, busy bin/work session (its registry entry in
+# $(state_dir)/sessions/, launcher alive) one `quiet` event to main per folder when:
+#   (a) the folder hook nudged it to check in (bin/inbox), in this turn, at least 10 minutes ago and nothing came since (no note to main
+#       from the session, no STATE.md change): not repeated for the same nudge; or
+#   (b) no hook call and no status change for HUB_CHECKIN_MINUTES (stuck at a prompt?): not repeated until activity
+#       resumes and stops again.
+# The event carries the folder (from), the minutes quiet and the folder's last STATE line. State in
+# $(state_dir)/checkin/<folder>.{start,seen,nudged,quiet}, one epoch each. HUB_CHECKIN_MINUTES=0 turns it off.
+# Never commits, never fails the caller: exit 0 (2 on a usage error).
+set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
+[ $# -eq 1 ] && [ "$1" = --missed ] || { echo "usage: bin/checkin --missed" >&2; exit 2; }
+N=$(checkin_minutes); [ "$N" -gt 0 ] || exit 0
+ST="$(state_dir)"; SD="$ST/sessions"; K="$ST/checkin"; [ -d "$SD" ] || exit 0
+now=$(date +%s); DONE=" "
+num() { local v=""; [ -f "$1" ] && read -r v < "$1" 2>/dev/null; [[ "$v" =~ ^[0-9]{1,12}$ ]] && echo "$v" || echo 0; }
+# the folder's last STATE line, as events.py last_state_line: the last non-empty line not starting with #, a leading
+# "- " or "* " removed
+state_line() { awk '{ sub(/^[ \t\r]+/, ""); sub(/[ \t\r]+$/, "") } $0 != "" && substr($0, 1, 1) != "#" { l = $0 }
+  END { sub(/^[-*][ \t]*/, "", l); print l }' "$H/$1/STATE.md" 2>/dev/null; }
+for e in "$SD"/*; do
+  [ -f "$e" ] || continue
+  get() { sed -n "s/^$1=//p" "$e" | head -1; }
+  [ "$(get status)" = busy ] || continue
+  f="$(get folder)"; [[ "$f" =~ ^(projects|ops)/[A-Za-z0-9._-]+$ ]] && [ "${f##*/}" != . ] && [ "${f##*/}" != .. ] || continue
+  case "$DONE" in *" $f "*) continue ;; esac
+  launcher_alive "$(get launcher)" "$(get start)" || continue
+  DONE="$DONE$f "
+  k="$K/${f//[^A-Za-z0-9]/-}"
+  s=$(num "$k.start"); seen=$(num "$k.seen"); nd=$(num "$k.nudged"); q=$(num "$k.quiet")
+  sm=$(file_mtime "$H/$f/STATE.md"); [[ "$sm" =~ ^[0-9]+$ ]] || sm=0
+  last="$(get last)"; la=""; [ -z "$last" ] || la=$(utc_epoch "${last%Z}"); [[ "$la" =~ ^[0-9]+$ ]] || la=0
+  act=$seen; [ "$la" -gt "$act" ] && act=$la
+  why=""
+  # (a) only for a nudge in this turn (last= is set when the status turns busy): an older one is stale
+  if [ "$nd" -gt "$s" ] && [ "$nd" -ge "$la" ] && [ "$sm" -le "$nd" ] && [ $(( now - nd )) -ge 600 ] && ! [ "$q" -ge "$nd" ]; then
+    why="quiet $(( (now - s) / 60 )) min: no check-in $(( (now - nd) / 60 )) min after the nudge"
+  elif [ $(( now - act )) -ge $(( N * 60 )) ] && ! [ "$q" -ge "$act" ]; then
+    why="quiet $(( (now - act) / 60 )) min: no hook activity for $(( (now - act) / 60 )) min (waiting at a prompt?)"
+  fi
+  [ -n "$why" ] || continue
+  sl="$(state_line "$f")"
+  w() { H="$H" ST="$ST" python3 -I "$(dirname "$0")/events.py" write --auto --from "$f" --to main --kind quiet --text "$1" >/dev/null 2>&1; }
+  # a STATE line that looks like a secret is refused: the event goes without it
+  # marked reported only once written: a busy log (exit 1) is retried on the next run
+  { w "$why; last STATE: ${sl:-(no STATE line)}" || { [ $? = 2 ] && w "$why; last STATE: (withheld)"; }; } &&
+    { mkdir -p "$K" 2>/dev/null; printf '%s\n' "$now" > "$k.quiet" 2>/dev/null; }
+done
+exit 0

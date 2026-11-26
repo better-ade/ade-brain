@@ -86,6 +86,11 @@ done
 w="$(orchestrator_endpoint_warning)"; [ -z "$w" ] || line WARN "orchestrator" "$w"
 # crash recovery (story R1): what bin/recover would repair, one row per check, read-only
 "$H/bin/recover" --check 2>/dev/null
+# focus sessions' check-in interval (story S1, .ade/context/events.md)
+ck="${HUB_CHECKIN_MINUTES:-30}"
+if ! [[ "$ck" =~ ^[0-9]{1,4}$ ]]; then line WARN "check-in" "HUB_CHECKIN_MINUTES='$ck' in hub.conf is not a number of minutes: 30 used"
+elif [ $(( 10#$ck )) = 0 ]; then line OK "check-in" "off (HUB_CHECKIN_MINUTES=0)"
+else line OK "check-in" "every $(( 10#$ck )) min (HUB_CHECKIN_MINUTES)"; fi
 [ "${DOCTOR_OFFLINE:-}" = 1 ] && exit 0
 command -v gh >/dev/null && { gh auth status >/dev/null 2>&1 && line OK "github login" "$(gh api user --jq .login 2>/dev/null)" || line MISSING "github login" "gh auth login"; }
 for r in ${HUB_REPOS:-}; do gh api "repos/$r" >/dev/null 2>&1 && line OK "repo $r" "readable" || line MISSING "repo $r" "ask for access"; done

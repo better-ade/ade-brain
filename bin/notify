@@ -5,6 +5,7 @@
 # control characters removed); a text that looks like a secret is refused and nothing is written. The sender is the
 # focus session this runs in (its bin/work launcher among this process's ancestors); inside one, --from may only name
 # that session's folder. Outside one it is --from, else main. Receivers see every sender as claimed, the text as data.
+# Inside a focus session a note to main is its check-in (story S1): recorded with checkin: true, it restarts the period.
 # Exit 0 written, 2 refused, 1 log unusable.
 . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
 usage() { echo "usage: bin/notify [--from <folder|main>] <folder|name|main|all> <text>" >&2; exit 2; }
@@ -36,4 +37,13 @@ if [ -n "$IN" ]; then
   [ "$FROM_GIVEN" = 0 ] || [ "$FROM" = "$IN" ] || { echo "notify: inside the focus session for $IN, --from cannot be '$FROM'" >&2; exit 2; }
   FROM="$IN"
 fi
-H="$H" ST="$(state_dir)" python3 -I "$(dirname "$0")/events.py" write --from "${FROM:-main}" --to "$TO" --kind note --text "$TEXT"
+# story S1: a note to main from inside a focus session is its check-in (checkin: true); it restarts the folder's
+# check-in period (<state>/checkin/<folder>.start, read by bin/inbox and bin/checkin). A note sent with --from from
+# outside a session (bin/monitor, bin/work) is not a check-in.
+CK=""; [ -n "$IN" ] && [ "$TO" = main ] && CK=--checkin
+H="$H" ST="$(state_dir)" python3 -I "$(dirname "$0")/events.py" write --from "${FROM:-main}" --to "$TO" --kind note --text "$TEXT" $CK
+rc=$?
+if [ "$rc" = 0 ] && [ -n "$CK" ]; then
+  K="$(state_dir)/checkin"; mkdir -p "$K" 2>/dev/null && printf '%s\n' "$(date +%s)" > "$K/${IN//[^A-Za-z0-9]/-}.start" 2>/dev/null
+fi
+exit "$rc"
