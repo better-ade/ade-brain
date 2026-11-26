@@ -620,6 +620,9 @@ dir_loose() { local m o; m="$(file_mode "$1")" || return 0; [ -n "$m" ] || retur
 script_is_util_linux() { script --version 2>/dev/null | grep -q util-linux; }
 # utc_epoch <YYYY-MM-DDTHH:MM:SS>: that UTC time in seconds (GNU date -d or BSD date -j); nothing when unreadable
 utc_epoch() { date -u -d "$1" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%S" "$1" +%s 2>/dev/null; }
+# checkin_minutes (story S1, .ade/context/events.md): a focus session's check-in interval, HUB_CHECKIN_MINUTES from
+# hub.conf (0 = off); default 30, and a value that is not a whole number of at most 4 digits counts as 30. Builtins only
+checkin_minutes() { local n="${HUB_CHECKIN_MINUTES:-30}"; [[ "$n" =~ ^[0-9]{1,4}$ ]] || n=30; echo $(( 10#$n )); }
 # utc_iso <epoch seconds>: that time as UTC ISO 8601, e.g. 2026-11-25T10:00:00Z (GNU date -d @ or BSD date -r)
 utc_iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; }
 # tool_install_line <tool>: how to install a needed tool here (story I4): Homebrew on macOS, apt-get on Linux

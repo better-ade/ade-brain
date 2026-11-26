@@ -14,11 +14,15 @@ How focus sessions and the main session notify each other. Code: `bin/events.py`
   commits and the hub commit outcome), `pushed` (PostToolUse on a Bash `git push`: `repo`, `branch`; none for a
   rejected, failed or up-to-date push, `-n`/`--dry-run`, `-d`/`--delete`, a `:branch` refspec, or a `cd` before the
   push in the same command), `contract` (PostToolUse on Edit/Write/MultiEdit/NotebookEdit under
-  `<checkout>/.ade/context/`: `repo`, `path`); all four have `to: main`. `note` comes only from
+  `<checkout>/.ade/context/`: `repo`, `path`), `quiet` (story S1, `bin/checkin --missed`: a busy focus session that
+  missed its check-in or made no hook call; text `quiet <M> min: <reason>; last STATE: <line>`); all five have
+  `to: main`. `note` comes only from
   `bin/notify <folder|name|main|all> <text>`: a bare name must name exactly one folder (else exit 2) and is stored as
   that folder. Sender: inside a bin/work focus session (its launcher among the caller's ancestors) always that
   session's folder (`--from` anything else: exit 2); outside one `--from <folder|main>`, else `main`. Senders are not
-  authenticated: delivery labels every one "(claimed)". Exit 0 written, 2 refused, 1 log unusable.
+  authenticated: delivery labels every one "(claimed)". Exit 0 written, 2 refused, 1 log unusable. A note to `main`
+  sent from inside a focus session is its check-in and carries `checkin: true` (a JSON boolean; `events.py write
+  --checkin`, notes only).
 - **Refused, never written:** a text with a newline (notify; hook texts are joined to one line and trimmed to 500),
   over 500 characters (notify), empty, or any field matching a secret pattern (AWS, GitHub, GitLab, `sk-`, Slack,
   Google API, private key, JWT, bearer tokens, credentials in a URL, and after `password|secret|token|api key` plus
@@ -51,3 +55,13 @@ How focus sessions and the main session notify each other. Code: `bin/events.py`
   that file, keeping the old one as `settings.json.bak`.
 - **Count (story H1):** `bin/inbox --count [main|folder|name]` reads `$(state_dir)/events-read/<main|folder>` (written
   by every delivery) and writes nothing; details in `.ade/context/hub-interface.md`.
+- **Check-in (story S1):** `HUB_CHECKIN_MINUTES` in hub.conf (N, default 30; 0 = off; not a number of at most 4 digits:
+  30, and `bin/doctor` warns). State per folder in `$(state_dir)/checkin/<folder, non-alphanumerics as ->` with
+  `.start` (period start), `.seen` (last folder PostToolUse), `.nudged`, `.quiet` (last report), one epoch each.
+  `bin/inbox <folder>` (bash only, no python) restarts the period when `.start` is missing, after an idle gap of N
+  minutes, or when STATE.md is newer than `.start`; once N minutes into a period it prints one additionalContext nudge
+  (update STATE.md, then `bin/notify main "<progress, next step, blocker if any>"`; never on a call that mentions `push` or `/.ade/context/`).
+  The session's note to main (`checkin: true`) restarts the period. `bin/checkin --missed`, run by the 30-minute
+  `bin/monitor`, writes one `quiet` event per folder with a live busy session: nudged at least 10 minutes ago with no
+  check-in since (once per nudge), or no hook call and no `last=` change for N minutes (once until activity resumes).
+  The hub root is never nudged or reported. Nothing here commits: `bin/sync --auto` picks up the files.

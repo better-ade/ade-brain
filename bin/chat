@@ -27,7 +27,7 @@
 #                                 unknown or ambiguous (as bin/notify): exit 2 with the agents listed
 #   forward                       (first: a running auto session whose lock no longer holds is told to the owner,
 #                                 once per change, and journaled)
-#                                 send the agents' idle/ended/note events to main to the chat, tagged [<agent>], once
+#                                 send the agents' idle/ended/note/quiet events to main to the chat, tagged [<agent>], once
 #                                 each (start runs it every AGENT_CHAT_FORWARD_EVERY s, default 15, 0 = never)
 #   ask                           the question on stdin: Approve/Deny buttons where the channel takes them, else "reply
 #                                 1 <ref> to approve, 2 <ref> to deny"; prints the ref. A secret-looking question: exit 2
