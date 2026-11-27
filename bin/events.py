@@ -368,7 +368,7 @@ def hook_tool(own):
 def last_state_line(own):
     try:
         ls = [l.strip() for l in open(os.path.join(H, own, "STATE.md"), encoding="utf-8", errors="replace")]
-        ls = [l for l in ls if l and not l.startswith("#")]
+        ls = [l for l in ls if l and not l.startswith("#") and not re.match(r"[^:]{1,40}: \(.*\)$", l)]   # not the template's placeholder
         return re.sub(r"^[-*]\s*", "", ls[-1]) if ls else ""
     except Exception: return ""
 
@@ -398,7 +398,7 @@ def hook_stop(own):
         elif not os.path.exists(cursor_path(sid)) and not evs:
             save_cursor(sid, cur)                         # the first stop with nothing waiting is a baseline
     if not root and not blocked and not cont:
-        write(own, "main", "idle", "idle: " + (last_state_line(own) or "(no STATE line)"), True)
+        write(own, "main", "idle", "idle: " + (last_state_line(own) or "(no STATE yet)"), True)
     return 3 if blocked else 0
 
 
