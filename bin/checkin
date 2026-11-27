@@ -16,8 +16,9 @@ ST="$(state_dir)"; SD="$ST/sessions"; K="$ST/checkin"; [ -d "$SD" ] || exit 0
 now=$(date +%s); DONE=" "
 num() { local v=""; [ -f "$1" ] && read -r v < "$1" 2>/dev/null; [[ "$v" =~ ^[0-9]{1,12}$ ]] && echo "$v" || echo 0; }
 # the folder's last STATE line, as events.py last_state_line: the last non-empty line not starting with #, a leading
-# "- " or "* " removed
-state_line() { awk '{ sub(/^[ \t\r]+/, ""); sub(/[ \t\r]+$/, "") } $0 != "" && substr($0, 1, 1) != "#" { l = $0 }
+# "- " or "* " removed; a "Key: (placeholder)" line (the template's own) is not a state
+state_line() { awk '{ sub(/^[ \t\r]+/, ""); sub(/[ \t\r]+$/, "") } $0 != "" && substr($0, 1, 1) != "#" &&
+  !(index($0, ":") > 1 && index($0, ":") <= 41 && $0 ~ /^[^:]+: \(.*\)$/) { l = $0 }
   END { sub(/^[-*][ \t]*/, "", l); print l }' "$H/$1/STATE.md" 2>/dev/null; }
 for e in "$SD"/*; do
   [ -f "$e" ] || continue
@@ -44,7 +45,7 @@ for e in "$SD"/*; do
   w() { H="$H" ST="$ST" python3 -I "$(dirname "$0")/events.py" write --auto --from "$f" --to main --kind quiet --text "$1" >/dev/null 2>&1; }
   # a STATE line that looks like a secret is refused: the event goes without it
   # marked reported only once written: a busy log (exit 1) is retried on the next run
-  { w "$why; last STATE: ${sl:-(no STATE line)}" || { [ $? = 2 ] && w "$why; last STATE: (withheld)"; }; } &&
+  { w "$why; last STATE: ${sl:-(no STATE yet)}" || { [ $? = 2 ] && w "$why; last STATE: (withheld)"; }; } &&
     { mkdir -p "$K" 2>/dev/null; printf '%s\n' "$now" > "$k.quiet" 2>/dev/null; }
 done
 exit 0

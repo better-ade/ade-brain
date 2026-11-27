@@ -51,6 +51,15 @@ last text | grep -q "commits: none" && last text | grep -q "hub: " || f "ended t
 stop_in sm | bin/stop-check >/dev/null; [ "$(count)" = 2 ] || f "the hub root's Stop wrote an idle event"
 stop_in sa true | bin/stop-check projects/a >/dev/null; [ "$(count)" = 2 ] || f "a stop-hook continuation wrote an idle event"
 
+CHECK=placeholder_skipped_events; setup
+printf '# State: a\n\nUpdated: (UTC date and time, by whom)\n\n## Live\n' > projects/a/STATE.md
+stop_in sa | bin/stop-check projects/a >/dev/null
+[ "$(last text)" = "idle: (no STATE yet)" ] || f "a placeholder-only STATE.md is not a state: $(last text)"
+CHECK=real_line_kept_events; setup
+printf '# State: a\n\nUpdated: 2026-11-27 13:40Z, by monitoring\n\n## Live\n' > projects/a/STATE.md
+stop_in sa | bin/stop-check projects/a >/dev/null
+[ "$(last text)" = "idle: Updated: 2026-11-27 13:40Z, by monitoring" ] || f "a filled line is kept: $(last text)"
+
 CHECK=push_event_written; setup
 bash_in sa "git push origin feat-x" "$R" | bin/inbox projects/a >/dev/null
 [ "$(count)" = 1 ] && [ "$(last kind)" = pushed ] || f "push not written: $(cat "$E" 2>/dev/null)"

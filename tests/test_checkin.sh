@@ -115,6 +115,14 @@ old_state; bin/checkin --missed; assert_eq "$(quiets)" "$((q0 + 1))" "checkin_mi
 tail -1 "$LOG" | python3 -c 'import json,sys; e=json.load(sys.stdin); assert e["kind"]=="quiet" and e["from"]=="projects/demo" and e["to"]=="main", e; assert e["text"].startswith("quiet 35 min:") and "nudge" in e["text"] and "last STATE: wiring the login form" in e["text"], e' \
   || fail "checkin_missed_reported: quiet event fields: $(tail -1 "$LOG")"
 bin/checkin --missed; assert_eq "$(quiets)" "$((q0 + 1))" "checkin_missed_reported: not repeated for the same nudge"
+# S2: the template's own placeholder line is not a state; a filled one is. Each case reports once (quiet marker reset)
+laststate() { setk quiet 0; old_state; bin/checkin --missed; tail -1 "$LOG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["text"].split("last STATE: ",1)[1])'; }
+keep=$(cat "$SM")
+printf '# State: demo\n\nUpdated: (UTC date and time, by whom)\n\n## Live\n\n## Open\n' > "$SM"
+assert_eq "$(laststate)" "(no STATE yet)" "placeholder_skipped: headings and a placeholder give (no STATE yet)"
+printf '# State: demo\n\nUpdated: 2026-11-27 13:40Z, by monitoring\n\n## Live\n' > "$SM"
+assert_eq "$(laststate)" "Updated: 2026-11-27 13:40Z, by monitoring" "real_line_kept: a filled Updated line is used"
+printf '%s\n' "$keep" > "$SM"; old_state; q0=$((q0 + 2))   # the two events above
 # a nudge from an earlier turn: a new turn began since, so not missed
 setk quiet 0; setlast $(( $(now) - 60 ))
 bin/checkin --missed; assert_eq "$(quiets)" "$((q0 + 1))" "checkin_missed_reported: a nudge before this turn is not missed"
