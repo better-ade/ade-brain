@@ -18,6 +18,7 @@ usage() { echo "usage: bin/new projects/<name>|ops/<name> (a-z 0-9 -) [--repo <c
 if [ "$F" = --settings ]; then SETTINGS=1; F="${1:-}"; [ $# = 0 ] || shift; fi
 while [ $# -gt 0 ]; do [ "$1" = --repo ] && [ "$SETTINGS" = 0 ] && [ -n "${2:-}" ] || usage; REPOS+=("$2"); shift 2; done
 [[ "$F" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || usage
+[ "$F" != ops/access ] || { echo "new: ops/access is the access registry (bin/ssh), not a folder" >&2; exit 2; }
 [ "$SETTINGS" = 0 ] || [ -d "$H/$F" ] || { echo "new: no folder $F" >&2; exit 2; }
 NAME="${F#*/}"; AGENT="$(agent_name "$F")"
 # --repo rows, every one checked before anything is written

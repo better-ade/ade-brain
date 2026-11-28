@@ -19,3 +19,6 @@
   text passes; AWS documentation ids ending in EXAMPLE pass. Prose quoting a PEM private key header is blocked.
 - `bin/doctor` warns for a folder whose settings lack it; `bin/new --settings <folder>` adds it.
 - Limit (Claude Code): a blocked prompt can still be in local files such as the session transcript and prompt history.
+- `bin/paste-guard --scan` (story X1): the same `KEYS` over plain text on stdin, for bin/ code (the access registry):
+  exit 10 when it holds a key shape, 0 when not, anything else when it cannot tell (no python3, an error: callers
+  refuse); prints nothing. It never reads hub.conf: the `HUB_PASTE_GUARD` switch does not apply to it.

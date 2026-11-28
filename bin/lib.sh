@@ -25,7 +25,8 @@ link_memory() { local mem="$1/projects/$(encode_path "$2")/memory" tgt="${3:-$2/
   rm -f "$mem"; ln -s "$tgt" "$mem" && echo linked; }
 utc_today() { date -u +%Y-%m-%d; }
 utc_now() { date -u +%H:%M; }
-folders() { local h; h="$(hub_root)"; for d in "$h"/projects/* "$h"/ops/*; do [ -d "$d" ] && echo "${d#$h/}"; done; }
+# (ops/access is the access registry, story X1: never a folder)
+folders() { local h; h="$(hub_root)"; for d in "$h"/projects/* "$h"/ops/*; do [ -d "$d" ] && [ "$d" != "$h/ops/access" ] && echo "${d#$h/}"; done; }
 agent_name() { case "$1" in projects/*) echo "${1#projects/}";; ops/*) echo "ops-${1#ops/}";; esac; }
 state_dir() { echo "${AGENT_STATE:-$HOME/.agent-hub/$(hub_name)}"; }
 # session_mark <folder> <busy|idle> [session id]: (with an id, from the prompt hook, it is kept as session_id= for
@@ -757,6 +758,67 @@ secret_names() {
   esac
   return 0
 }
+# The access registry (story X1, .ade/context/access.md): ops/access/<name>.conf, one KEY=value a line, names and
+# locations only. Never sourced: access_read parses it and refuses anything else; a refusal names the line, never a value.
+# KIND (default ssh) picks the keys a file may hold, so another kind (X2: db) adds a row to access_keys.
+access_name_ok() { local re='^[a-z0-9][a-z0-9-]{0,31}$'; [[ "$1" =~ $re ]]; }
+access_dir() { echo "$(hub_root)/ops/access"; }
+access_keys() { case "$1" in ssh) echo "KIND HOST USER PORT JUMP AUTH PROD" ;; *) return 1 ;; esac; }
+access_host_ok() { local re='^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$' re6='^[0-9A-Fa-f:]{2,39}$'
+  [[ "$1" =~ $re ]] || { [[ "$1" =~ $re6 ]] && [[ "$1" == *:* ]]; }; }
+access_user_ok() { local re='^[A-Za-z_][A-Za-z0-9_.-]{0,31}$'; [[ "$1" =~ $re ]]; }
+access_port_ok() { local re='^[1-9][0-9]{0,4}$'; [[ "$1" =~ $re ]] && [ "$1" -le 65535 ]; }
+# a jump host: [user@]host[:port], a host name or IPv4 address (no IPv6: its colons would read as a port)
+access_jump_ok() { local u="" h="$1" p="" re='^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$'
+  case "$h" in *@*) u="${h%%@*}"; h="${h#*@}"; access_user_ok "$u" || return 1 ;; esac
+  case "$h" in *:*) p="${h#*:}"; h="${h%%:*}"; access_port_ok "$p" || return 1 ;; esac
+  [[ "$h" =~ $re ]]; }
+_access_no() { echo "access: $*" >&2; return 2; }
+# access_read <name> <kind>: ACC_KIND ACC_HOST ACC_USER ACC_PORT ACC_JUMP ACC_AUTH ACC_PROD from ops/access/<name>.conf
+# (PROD missing counts as 1); exit 2 with the reason on stderr when the name or the file is not one it accepts
+access_read() {
+  local n="$1" want="$2" f i=0 line k v ks seen=" " K=() V=() L=() j re='^([A-Z][A-Z_]*)=(.*)$' blank='^[[:space:]]*(#.*)?$' rc
+  ACC_KIND="" ACC_HOST="" ACC_USER="" ACC_PORT="" ACC_JUMP="" ACC_AUTH="" ACC_PROD=""
+  access_name_ok "$n" || { _access_no "not an access name (a-z, 0-9 and -, at most 32, ops/access/<name>.conf)"; return 2; }
+  f="$(access_dir)/$n.conf"
+  [ -f "$f" ] && [ ! -L "$f" ] || { _access_no "no ops/access/$n.conf (a plain file, not a link)"; return 2; }
+  [ "$(wc -c < "$f")" -le 4096 ] || { _access_no "ops/access/$n.conf is over 4 KB"; return 2; }
+  "$(dirname "${BASH_SOURCE[0]}")/paste-guard" --scan < "$f"; rc=$?
+  case "$rc" in 0) ;; 10) _access_no "ops/access/$n.conf holds a key: remove it (rotate it if it was real); keys and passwords live in bin/secret, never here"; return 2 ;;
+    *) _access_no "ops/access/$n.conf could not be checked for keys (needs python3)"; return 2 ;; esac
+  while IFS= read -r line || [ -n "$line" ]; do i=$((i + 1))
+    [[ "$line" =~ $blank ]] && continue
+    [[ "$line" =~ $re ]] || { _access_no "ops/access/$n.conf line $i is not KEY=value"; return 2; }
+    k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+    case "$seen" in *" $k "*) _access_no "ops/access/$n.conf line $i: $k is given twice"; return 2 ;; esac
+    seen="$seen$k "; K+=("$k"); V+=("$v"); L+=("$i")
+  done < "$f"
+  ACC_KIND=ssh; for ((j = 0; j < ${#K[@]}; j++)); do [ "${K[$j]}" = KIND ] && ACC_KIND="${V[$j]}"; done
+  ks="$(access_keys "$ACC_KIND")" || { ACC_KIND=""; _access_no "ops/access/$n.conf: KIND is not a kind this hub knows"; return 2; }
+  [ "$ACC_KIND" = "$want" ] || { _access_no "ops/access/$n.conf is KIND=$ACC_KIND, not $want"; ACC_KIND=""; return 2; }
+  for ((j = 0; j < ${#K[@]}; j++)); do k="${K[$j]}"; v="${V[$j]}"; i="${L[$j]}"
+    case " $ks " in *" $k "*) ;; *) _access_no "ops/access/$n.conf line $i: $k is not a $want key (only: $ks); keys and passwords live in bin/secret"; return 2 ;; esac
+    case "$k" in
+      KIND) ;;
+      HOST) access_host_ok "$v" || { _access_no "ops/access/$n.conf line $i: HOST is not a host name or address"; return 2; }; ACC_HOST="$v" ;;
+      USER) access_user_ok "$v" || { _access_no "ops/access/$n.conf line $i: USER is not a user name"; return 2; }; ACC_USER="$v" ;;
+      PORT) access_port_ok "$v" || { _access_no "ops/access/$n.conf line $i: PORT is not 1-65535"; return 2; }; ACC_PORT="$v" ;;
+      JUMP) access_jump_ok "$v" || { _access_no "ops/access/$n.conf line $i: JUMP is not [user@]host[:port]"; return 2; }; ACC_JUMP="$v" ;;
+      AUTH) case "$v" in key|password) ACC_AUTH="$v" ;; *) _access_no "ops/access/$n.conf line $i: AUTH is key or password"; return 2 ;; esac ;;
+      PROD) case "$v" in 0|1) ACC_PROD="$v" ;; *) _access_no "ops/access/$n.conf line $i: PROD is 0 or 1"; return 2 ;; esac ;;
+    esac
+  done
+  [ -n "$ACC_HOST" ] || { _access_no "ops/access/$n.conf has no HOST"; return 2; }
+  [ -n "$ACC_AUTH" ] || { _access_no "ops/access/$n.conf has no AUTH (key or password)"; return 2; }
+  ACC_PROD="${ACC_PROD:-1}"
+}
+# access_login (after access_read): user@host as ssh names them in its password prompt (ssh -G: the user, and the host
+# key alias or the host name), so bin/askpass answers that prompt alone
+access_login() { local g u h a=(); [ -z "$ACC_USER" ] || a+=(-l "$ACC_USER"); [ -z "$ACC_PORT" ] || a+=(-p "$ACC_PORT")
+  g="$(ssh -G ${a[@]+"${a[@]}"} -- "$ACC_HOST" 2>/dev/null)" || return 1
+  u="$(printf '%s\n' "$g" | sed -n 's/^user //p' | head -1)"; h="$(printf '%s\n' "$g" | sed -n 's/^hostkeyalias //p' | head -1)"
+  [ -n "$h" ] || h="$(printf '%s\n' "$g" | sed -n 's/^hostname //p' | head -1)"
+  [ -n "$u" ] && [ -n "$h" ] || return 1; printf '%s@%s' "$u" "$h"; }
 # Browser profiles (story V3, .ade/context/browser.md): one per folder, opt-in in hub.conf, never shared.
 browser_root() { echo "${AGENT_BROWSER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ade/browser}"; }
 # browser_profile_key <folder>: the full folder path with / as - (projects/acme -> projects-acme, ops/x -> ops-x), so

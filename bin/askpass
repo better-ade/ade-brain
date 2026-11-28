@@ -1,0 +1,31 @@
+#!/bin/bash
+# bin/askpass <prompt>: ssh's SSH_ASKPASS for bin/ssh's AUTH=password hosts (story X1, .ade/context/access.md). It prints
+# ssh.<name> from the hub's store on stdout, which is ssh's own pipe, and nothing else, ever. It refuses (exit 1, nothing
+# on stdout) unless ssh started it with bin/ssh's variables, and unless the prompt is that host's password prompt: a jump
+# host's, a host key question or a key passphrase gets nothing. Never run it by hand.
+set -u
+H="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
+no() { echo "askpass: $* (only ssh, started by bin/ssh, may run it)" >&2; exit 1; }
+[ $# -eq 1 ] || no "one prompt expected"
+[ "${SSH_ASKPASS_REQUIRE:-}" = force ] || no "not started by bin/ssh"
+[ "${SSH_ASKPASS:-}" = "$H/bin/askpass" ] || no "not started by bin/ssh"
+N="${ADE_SSH_ASKPASS_NAME:-}"
+re='^[a-z0-9][a-z0-9-]{0,31}$'; [[ "$N" =~ $re ]] || no "not started by bin/ssh"
+[ ! -t 1 ] || no "its output is a terminal"
+# the parent is ssh (a fake ssh script on the tests' PATH counts only under the test flag)
+c="$(ps -o comm= -p "$PPID" 2>/dev/null)"; c="${c##*/}"; c="${c#-}"
+if [ "$c" != ssh ]; then
+  a="$(ps -o args= -p "$PPID" 2>/dev/null)"; set -f; set -- "$1" $a; set +f; w="${3:-}"
+  [ "${AGENT_PLATFORM_TEST:-}" = 1 ] && { [ "$c" = bash ] || [ "$c" = sh ]; } && [ "${w##*/}" = ssh ] || no "its parent is not ssh"
+fi
+P="$1"
+# the host it answers for comes from the registry, never the environment: a password goes to its own host alone
+export HUB="$H"; . "$H/bin/lib.sh"
+access_read "$N" ssh 2>/dev/null && [ "$ACC_AUTH" = password ] || no "ops/access/$N.conf is not a password host"
+FOR="$(access_login)" || no "could not read ssh's settings"
+case "$P" in
+  "$FOR's password: ") ;;
+  "($FOR) "*[Pp]assword:\ |"($FOR) "*[Pp]assword:) ;;
+  *) no "not the password prompt of the host bin/ssh named" ;;
+esac
+secret_get "ssh.$N"

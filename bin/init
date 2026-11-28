@@ -116,7 +116,7 @@ SUBRE='^[][A-Za-z0-9._:/-]+$'; [[ "$SMODEL" =~ $SUBRE ]] || { echo "init: bad mo
 case "$ASYNC" in on|off) ;; *) echo "init: --auto-sync must be on or off" >&2; exit 2 ;; esac
 [[ "$OURL" =~ ^https?://[^[:space:]/?#]+([/?#][^[:space:]]*)?$ ]] || { echo "init: --ollama-url must be an http(s) URL" >&2; exit 2; }
 case "$EFFORT" in ""|low|medium|high|xhigh|max) ;; *) echo "init: --effort must be low|medium|high|xhigh|max" >&2; exit 2 ;; esac
-for f in $FOLDERS; do [[ "$f" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || { echo "init: bad folder '$f'" >&2; exit 2; }; done
+for f in $FOLDERS; do [[ "$f" =~ ^(projects|ops)/[a-z0-9-]+$ ]] && [ "$f" != ops/access ] || { echo "init: bad folder '$f' (ops/access is the access registry)" >&2; exit 2; }; done
 RHOST=""; RUSER=""; RPORT=22
 if [ -n "$REMOTE" ]; then
   [[ "$REMOTE" =~ ^(([A-Za-z0-9._-]+)@)?([A-Za-z0-9.-]+)(:([0-9]+))?$ ]] || { echo "init: --remote must be user@host[:port]" >&2; exit 2; }
@@ -172,7 +172,7 @@ P="$T/personas/$PERSONA.md"
 [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "init: --name must be a-z 0-9 -" >&2; exit 2; }
 TITLE="$(fm "$P" title)"; [ -n "$MODEL" ] || MODEL="$(fm "$P" model)"; [ -n "$FOLDERS" ] || FOLDERS="$(fm "$P" folders)"; FOCUS="$(fm "$P" briefing_focus)"
 [ -z "$MODEL" ] || [[ "$MODEL" =~ ^[A-Za-z0-9._:/-]+$ ]] || { echo "init: bad model name '$MODEL'" >&2; exit 2; }   # the persona's
-for f in $FOLDERS; do [[ "$f" =~ ^(projects|ops)/[a-z0-9-]+$ ]] || { echo "init: bad folder '$f'" >&2; exit 2; }; done
+for f in $FOLDERS; do [[ "$f" =~ ^(projects|ops)/[a-z0-9-]+$ ]] && [ "$f" != ops/access ] || { echo "init: bad folder '$f' (ops/access is the access registry)" >&2; exit 2; }; done
 # the install's config dir: --claude-config-dir, else the CLAUDE_CONFIG_DIR its wrapper exports, else ~/.claude
 if [ -z "$CFG" ]; then CFG="$(wrapper_config_dir "$CLAUDE_CMD")"; [ -n "$CFG" ] || CFG="$HOME/.claude"; fi
 # from here on the copy is written: .init-pending first (the values, so a run again finishes with them), removed last

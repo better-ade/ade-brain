@@ -94,7 +94,7 @@ python3 - "$MSF" "$HB" <<'PY' || fail "AC4: the session's settings lack the fold
 import json, sys
 s, hub = json.load(open(sys.argv[1])), sys.argv[2]
 cmds = [h["command"] for gs in s["hooks"].values() for g in gs for h in g["hooks"]]
-assert len(cmds) == 7 and all(c.startswith('"%s"/bin/' % hub) for c in cmds), cmds
+assert len(cmds) == 8 and '"%s"/bin/ssh-guard' % hub in cmds and all(c.startswith('"%s"/bin/' % hub) for c in cmds), cmds
 ask = s["permissions"]["ask"]
 assert "Edit(//**/hub.conf)" in ask and "Write(//**/memory/users/**)" in ask and "Bash(*bin/dispatch --approve*)" in ask, ask
 assert s["permissions"]["deny"] and s["enabledMcpjsonServers"] == ["playwright"] and "%s/CLAUDE.md" % hub in s["claudeMdExcludes"]
@@ -109,7 +109,7 @@ python3 - "$MSF" "$HB" <<'PY' || fail "AC4: the in-folder session's hooks are no
 import json, sys
 s, hub = json.load(open(sys.argv[1])), sys.argv[2]
 cmds = [h["command"] for gs in s["hooks"].values() for g in gs for h in g["hooks"]]
-assert len(cmds) == 7 and all(c.startswith('"$CLAUDE_PROJECT_DIR"/../../bin/') for c in cmds), cmds
+assert len(cmds) == 8 and '"$CLAUDE_PROJECT_DIR"/../../bin/ssh-guard' in cmds and all(c.startswith('"$CLAUDE_PROJECT_DIR"/../../bin/') for c in cmds), cmds
 assert "%s/CLAUDE.md" % hub in s["claudeMdExcludes"], s["claudeMdExcludes"]
 PY
 rm -f "$L" "$MSF"
