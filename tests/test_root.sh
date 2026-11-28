@@ -9,7 +9,8 @@ grep -rqi "orillia\|arjuns57\|jared" bin templates personas docs README.md CLAUD
 [ -z "$(ls -A .claude/agents 2>/dev/null)" ] || fail "the template ships agents in .claude/agents (bin/init renders a hub's agents)"
 # every relative link in an llms.txt index points at a file the hub actually has
 [ ! -f llms.txt ] || for l in $(grep -oE '\]\([^)]+\)' llms.txt | sed -E 's/^\]\(//; s/\)$//' | grep -v '://'); do [ -e "$l" ] || fail "llms.txt links to missing $l"; done
-python3 -c "import json; d=json.load(open('.claude/settings.json')); assert 'attribution' not in d and 'includeCoAuthoredBy' not in d" || fail "the template overrides commit attribution for every hub"
+# .ade/rules.md "Commit as the user": every hub turns Claude Code's AI attribution off, in commits and in PRs
+python3 -c "import json; d=json.load(open('.claude/settings.json')); assert d.get('attribution')=={'commit':'','pr':''} and 'includeCoAuthoredBy' not in d" || fail "the template leaves AI attribution on for every hub"
 grep -rni "alvin" templates && fail "a person's name is hard-coded in templates/ (use {{OWNER}})"
 grep -rniI --exclude-dir=__pycache__ "alvin" bin tests | grep -v "^tests/test_root.sh:" && fail "a person's name in bin/ or tests/ (test fixtures say Owner)"
 grep -rnE "[A-Z]{4,}_STATE=" tests | grep -vqE "(AGENT|HUB)_STATE=" && fail "a test sets another hub's state variable (only AGENT_STATE)"
