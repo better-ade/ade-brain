@@ -344,7 +344,7 @@ ac6_no_value_leaks() {
 ac7_doctor_and_setup() {
   local NS c; NS="$T/noage"; mkdir -p "$NS"
   for c in bash sh dirname basename sed grep awk tr cat cut head tail date uname id python3 git stat readlink ls mkdir chmod sort wc ln rm env mktemp find; do
-    command -v "$c" >/dev/null && ln -sf "$(command -v "$c")" "$NS/$c"; done
+    type -P "$c" >/dev/null && ln -sf "$(type -P "$c")" "$NS/$c"; done
   PATH="$NS" DOCTOR_OFFLINE=1 bin/doctor > "$T/d" 2>&1; grep -E '^MISSING +age ' "$T/d" | grep -q "brew install age" || fail "doctor (macOS): age missing, with the brew line: $(cat "$T/d")"
   PATH="$NS" AGENT_PLATFORM=linux DOCTOR_OFFLINE=1 bin/doctor > "$T/d" 2>&1; grep -E '^MISSING +age ' "$T/d" | grep -q "apt-get install age" || fail "doctor (Linux): the apt line: $(grep age "$T/d")"
   DOCTOR_OFFLINE=1 bin/doctor > "$T/d" 2>&1; grep -qE '^OK +age ' "$T/d" || fail "doctor: age OK when installed: $(grep age "$T/d")"

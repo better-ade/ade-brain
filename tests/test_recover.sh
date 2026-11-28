@@ -117,7 +117,7 @@ agent_died_blocked_not_done() {   # row 3, with the real ticket runtime
 ticket_mark_retried() {   # review 6: no node, or a failing mark: the entry is kept and retried
   reset; entry b2 projects/demo "$(dead_pid)" "$CK" builder "ticket=1.2"
   NP="$(mktemp -d)"; for c in bash sh dirname basename sed grep awk tr cat python3 git ps date mkdir chmod rm wc id sleep stat mv cp df head tail env cut find sort uniq shasum mktemp ls touch; do
-    ln -s "$(command -v "$c")" "$NP/$c" 2>/dev/null; done
+    ln -s "$(type -P "$c")" "$NP/$c" 2>/dev/null; done
   PATH="$NP" bin/recover >/dev/null 2>&1
   J | grep -q "ticket 1.2 could not be marked blocked (node not found)" || fail "the failure is journaled [$(J)]"
   assert_eq "$(tstatus 1.2)" "in-progress -" "not marked without node"

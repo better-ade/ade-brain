@@ -31,6 +31,19 @@ kill -KILL "$kp"; wait "$kp" 2>/dev/null
 n=0; while [ -n "$(ls_new)" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
 [ -z "$(ls_new)" ] || fail "tmp_killed_clean: left $(ls_new)"
 
+# regression (X2 fix round): macOS's TMPDIR ends in "/", so run.sh's "$TMPDIR/ade-test.X" held "T//ade-test.X" and test
+# paths differed from the same paths as bin/ scripts print them (cd && pwd). helpers.sh resolves TMPDIR: no "//", no
+# trailing "/", no symlink (/var is /private/var). And bin/ scripts run as users run them: helpers.sh's mktemp stays in
+# the test's own shell, never exported into the scripts under test.
+mkdir -p "$OUT/link-target"; ln -s "$OUT/link-target" "$OUT/link"
+mk norm 'printf "%s\n" "$TMPDIR"; d="$(mktemp -d)"; printf "%s\n" "${d%/*}"; bash -c "declare -F mktemp" >/dev/null && echo exported || echo plain'
+got="$(ADE_TEST_TMP_OWNED=1 TMPDIR="$OUT/link//" bash "$OUT/norm.sh" </dev/null)"
+want="$(cd "$OUT/link-target" && pwd -P)"
+assert_eq "$got" "$want
+$want
+plain" "TMPDIR resolved, a bare mktemp lands in it, mktemp not exported"
+rm -rf "$OUT/link" "$OUT/link-target" "$OUT/norm.sh"
+
 # 3. tmp_all_files_source_helpers: every test file sources helpers.sh, or is listed here with a reason
 EXEMPT=""   # "name.sh:reason" entries; none today
 for f in "$REPO"/tests/test_*.sh "$REPO"/tests/e2e_*.sh; do

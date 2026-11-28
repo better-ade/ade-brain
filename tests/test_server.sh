@@ -68,7 +68,7 @@ chmod +x "$S"/bin/*
 # a PATH that holds no real gitleaks, bun or claude: the fakes, then only the system tools the scripts use
 mkdir -p "$S/sys"; for c in bash sh env cat grep sed awk tr cut head tail sort uniq wc mkdir rm mv cp ln chmod ls date dirname basename \
   mktemp printf python3 git tar gzip find df stat touch sleep ps pgrep tee xargs readlink id uname shasum sha256sum; do
-  p="$(PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v "$c" 2>/dev/null)"; [ -n "$p" ] && [ ! -e "$S/sys/$c" ] && ln -s "$p" "$S/sys/$c"; done
+  p="$(PATH=/usr/bin:/bin:/usr/sbin:/sbin type -P "$c")"; [ -n "$p" ] && [ ! -e "$S/sys/$c" ] && ln -s "$p" "$S/sys/$c"; done
 rm -f "$S/sys/id" "$S/sys/uname"; export PATH="$S/bin:$S/sys"
 # the fake releases: gitleaks's tarball, bun's zip, Claude Code's binary (which installs itself with `install <version>`)
 sha() { python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"; }

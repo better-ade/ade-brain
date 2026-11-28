@@ -1,10 +1,12 @@
 #!/bin/bash
 set -u
 # macOS's `mktemp` with no template ignores $TMPDIR (it uses its own per-user folder), so those folders would escape the
-# test's TMPDIR. Exported, so the bash scripts a test runs (bin/*) get the same: a bare `mktemp [-d]` lands in $TMPDIR.
+# test's TMPDIR. Not exported: the bin/ scripts a test runs keep the system's own mktemp, as users run them.
 mktemp() { local a bare=1; for a in "$@"; do case "$a" in -*) ;; *) bare=0 ;; esac; done
   if [ "$bare" = 1 ]; then command mktemp "$@" "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX"; else command mktemp "$@"; fi; }
-export -f mktemp
+# macOS's TMPDIR ends in "/" and sits under a symlink (/var is /private/var), so "$TMPDIR/x" would read ".../T//x" and
+# differ from the same path as bin/ scripts print it (cd && pwd): TMPDIR is resolved first, as one physical path.
+[ -d "${TMPDIR:-}" ] && { TMPDIR="$(cd "$TMPDIR" && pwd -P)"; export TMPDIR; }
 # story X2: this test process gets its own TMPDIR, removed when the process ends however it ends (exit, failure, SIGKILL).
 # A detached watcher (streams on /dev/null, so a caller capturing the test's output is never held) waits for the PID.
 # tests/run.sh already does this per file and sets ADE_TEST_TMP_OWNED, so nothing is added there.
