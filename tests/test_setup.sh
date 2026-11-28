@@ -51,4 +51,15 @@ done
 printf '#!/bin/bash\nexit 0\n' > "$D/fake/docker"; chmod +x "$D/fake/docker"
 out=$(PATH="$D/fake:$D/sys" bin/setup 2>&1); assert_eq "$?" 0 "setup with docker"; echo "$out" | grep -qi docker && fail "no docker line when docker is here: $out"   # AC4
 rm -rf "$D"
+# ade_setup_doctor (story T1): doctor shows ade MISSING with the install line; setup installs it in the foreground via
+# the installer; doctor then shows it OK with its version; a second setup finds it
+ade_sandbox; touch "$ADE_FAKE_RELEASE"
+bin/doctor | grep -qF "MISSING  ade                    not installed: curl -fsSL $ADE_CLI_INSTALL_URL | bash" || fail "ade_setup_doctor: doctor MISSING: [$(bin/doctor | grep ade)]"
+out=$(bin/setup 2>&1); assert_eq "$?" 0 "ade_setup_doctor: setup"
+assert_eq "$(runs_of "$ADE_FAKE_RUNS")" 1 "ade_setup_doctor: setup ran the installer once"
+[ -x "$HOME/.local/bin/ade" ] || fail "ade_setup_doctor: setup installed no ade: [$out]"
+echo "$out" | grep -q "^installed ade (ade 9.9.9)" || fail "ade_setup_doctor: setup says so: [$out]"
+bin/doctor | grep -q "^OK       ade                    ade 9.9.9" || fail "ade_setup_doctor: doctor OK: [$(bin/doctor | grep ade)]"
+bin/setup 2>&1 | grep -q "^ok ade (ade 9.9.9)" || fail "ade_setup_doctor: a second setup finds it"
+assert_eq "$(runs_of "$ADE_FAKE_RUNS")" 1 "ade_setup_doctor: no second install"
 echo ok

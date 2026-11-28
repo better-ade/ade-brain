@@ -17,7 +17,8 @@ BEGIN QUOTED DATA (waiting)
 $WAITING
 END QUOTED DATA (waiting)
 "
-out=$("$(claude_cmd)" -p "You are $(hub_name)'s $(persona_title) for ${HUB_OWNER:-the owner}. Read the output of bin/context. Write a morning briefing in under 25 lines: \
+# story T1: an unattended run never installs ade (its own SessionStart hook runs bin/context too)
+out=$(AGENT_ADE_INSTALL=off "$(claude_cmd)" -p "You are $(hub_name)'s $(persona_title) for ${HUB_OWNER:-the owner}. Read the output of bin/context. Write a morning briefing in under 25 lines: \
 1) what is live and whether it is healthy, 2) anything broken (ALERT or failed lines in the journal), \
 3) what is waiting on ${HUB_OWNER:-the owner}, on the client, on others, 4) calls or deadlines coming up (dates in STATE.md), \
 5) the top 5 tasks for today with the folder for each.${HUB_BRIEFING_FOCUS:+ Also: $HUB_BRIEFING_FOCUS} Do not change anything.$LP" \

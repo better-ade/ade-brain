@@ -637,6 +637,55 @@ docker_start_line() { if [ "$(platform)" = macos ]; then echo "colima start (or 
 # root-equivalent). Nothing on macOS, which has no usermod (colima and Docker Desktop run as the user).
 docker_group_line() { [ "$(platform)" = linux ] || return 0
   echo "sudo usermod -aG docker $(printf %q "$(id -un)"), then log in again (the docker group is root-equivalent)"; }
+# ade, the hub's command-line front end (story T1, .ade/context/ade-install.md). Its published installer puts the tagged
+# release in ~/.local/bin. ADE_CLI_INSTALL_URL is for tests only; AGENT_ADE_INSTALL (tests, bin/briefing's unattended
+# run) overrides HUB_ADE_INSTALL.
+ade_install_url() { echo "${ADE_CLI_INSTALL_URL:-https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh}"; }
+ade_install_line() { echo "curl -fsSL $(ade_install_url) | bash"; }
+ade_install_mode() { if [ "${AGENT_ADE_INSTALL:-${HUB_ADE_INSTALL:-on}}" = off ]; then echo off; else echo on; fi; }
+ade_path() { command -v ade 2>/dev/null && return 0; [ -x "$HOME/.local/bin/ade" ] && echo "$HOME/.local/bin/ade"; }
+ade_version() { local v; v="$(timeout 5 "$1" --version 2>/dev/null | head -1 | cut -c1-60)"; echo "${v:-ade}"; }   # a hung ade never blocks a start
+ade_state() { echo "$(state_dir)/ade"; }
+# ade_install_running: a background install holds the lock (install.lock/, its pid inside). A lock whose pid is gone,
+# or with no pid after 10 minutes, is stale and removed.
+ade_install_running() { local l p; l="$(ade_state)/install.lock"; [ -d "$l" ] || return 1
+  p="$(cat "$l/pid" 2>/dev/null)"
+  if [[ "$p" =~ ^[0-9]+$ ]]; then kill -0 "$p" 2>/dev/null && return 0
+  elif [ -z "$(find "$l" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then return 0; fi
+  rm -rf "$l"; return 1; }
+# ade_session_line: the one line a session start prints. ade here: its version and `ade help`. Missing: start the
+# installer in the background (one at a time, never waited for, no terminal so no sudo prompt), logging to
+# $(ade_state)/install.log; a failed install is reported on the next start with the log's last line, and tried again.
+ade_session_line() { local a d log last="" lock m
+  a="$(ade_path)"
+  if [ -n "$a" ] && [ "$a" != "$(command -v ade 2>/dev/null)" ]; then   # only in ~/.local/bin, which this PATH lacks
+    echo "ade: $(ade_version "$a") is installed at $a, not on PATH: run it by that path (\`$a help\` lists its commands, run it before the first ade command in a session), or add ~/.local/bin to PATH."; return 0; fi
+  if [ -n "$a" ]; then echo "ade: $(ade_version "$a") is installed; \`ade help\` lists its commands: run it before the first ade command in a session."; return 0; fi
+  if [ "$(ade_install_mode)" = off ]; then echo "ade: not installed (HUB_ADE_INSTALL=off); install it by hand: $(ade_install_line). The bin/ scripts do the same jobs."; return 0; fi
+  d="$(ade_state)"; log="$d/install.log"; lock="$d/install.lock"; mkdir -p "$d" 2>/dev/null || return 0
+  m="installing it in the background (log: $log); until it lands the bin/ scripts do the same jobs."
+  if ade_install_running; then echo "ade: not installed; $m"; return 0; fi
+  mkdir "$lock" 2>/dev/null || { echo "ade: not installed; $m"; return 0; }
+  if [ -f "$d/install.failed" ]; then last="$(grep -v '^[[:space:]]*$' "$log" 2>/dev/null | tail -1 | cut -c1-160)"; rm -f "$d/install.failed"; fi
+  # a sudo that refuses comes first on the installer's PATH: a session start never prompts for a password
+  mkdir -p "$d/nosudo" && printf '#\041/bin/sh\necho "sudo refused: a session start installs ade into ~/.local/bin only" >&2\nexit 1\n' > "$d/nosudo/sudo" && chmod +x "$d/nosudo/sudo"
+  ( set -o pipefail; export PATH="$d/nosudo:$PATH"
+    if ! curl -fsSL "$(ade_install_url)" | bash; then : > "$d/install.failed"
+    elif [ -z "$(ade_path)" ]; then echo "the installer finished but no ade is on PATH or in ~/.local/bin"; : > "$d/install.failed"
+    else rm -f "$d/install.failed"; fi
+    rm -rf "$lock" ) </dev/null >"$log" 2>&1 &
+  { echo "$!" > "$lock/pid"; } 2>/dev/null   # the install may already be done and the lock gone
+  if [ -n "$last" ]; then echo "ade: the last install failed ($last; log: $log); trying again: $m"; else echo "ade: not installed; $m"; fi; }
+# ade_install_fg (bin/setup): the same install in the foreground, at a terminal
+ade_install_fg() { local a; a="$(ade_path)"
+  if [ -n "$a" ]; then echo "ok ade ($(ade_version "$a"))"; return 0; fi
+  if [ "$(ade_install_mode)" = off ]; then echo "ade not installed (HUB_ADE_INSTALL=off): install it by hand: $(ade_install_line)"; return 0; fi
+  if ade_install_running; then echo "ade is being installed in the background (log: $(ade_state)/install.log)"; return 0; fi
+  echo "installing ade: $(ade_install_line)"
+  if (set -o pipefail; curl -fsSL "$(ade_install_url)" | bash) && a="$(ade_path)" && [ -n "$a" ]; then
+    rm -f "$(ade_state)/install.failed"; echo "installed ade ($(ade_version "$a"))"
+  else echo "warning: ade did not install; install it by hand: $(ade_install_line)" >&2; fi
+  return 0; }
 # Desktop notifications: macOS only (osascript); elsewhere nothing (bin/monitor writes an event instead).
 desktop_notify() { [ "$(platform)" = macos ] || return 0
   osascript -e "display notification \"$(printf '%s' "$2" | tr -d '"\\')\" with title \"$(printf '%s' "$1" | tr -d '"\\')\"" 2>/dev/null; }

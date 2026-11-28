@@ -17,6 +17,19 @@ assert_contains CLAUDE.md "when Sam Lee says so" "owner in the rules"
 assert_contains CLAUDE.md "Commits and PRs carry Sam Lee's own git identity only" "no AI author in the rules"
 assert_contains .claude/agents/devops-sre.md "no Co-Authored-By" "no AI trailer for folder agents"
 grep -q "{{" CLAUDE.md ACCESS.md README.md .claude/agents/*.md && fail "unfilled placeholder"
+# work_kinds (story T1 addendum): the four ways a task runs, in the rules (the main agent names the one it picks) and the README
+wk1='**Ask in plain words** (a subagent): the main session hands the task to that project'"'"'s agent and reports back. The usual way.'
+wk2='**Deep work** (a focus agent): a full session in the project'"'"'s code, in its own tab, reporting to the main session.'
+wk4='**A second opinion** (a role run): read-only work on another AI model; it reports, never edits.'
+wk3='**`ade dispatch`**: one focus agent per ready ticket; a high-risk ticket waits for your yes.'
+for w in "$wk1" "$wk2" "$wk3" "$wk4"; do grep -qF -- "- $w" CLAUDE.md || fail "work_kinds: CLAUDE.md lacks [$w]"; done
+awk '/^## The main agent/{p=1;next} /^## /{p=0} p' CLAUDE.md | grep -q 'name the one you pick' || fail "work_kinds: the main agent names its pick"
+for w in "$wk1" "$wk2" "$wk3" "$wk4"; do
+  grep -qF -- "- $w" README.md || fail "work_kinds: README.md lacks [$w]"; done
+# ade_rules_line (story T1): the Tools section names ade, what it is for, and that it runs the same bin/ scripts
+al="$(awk '/^## Tools/{p=1;next} /^## /{p=0} p' CLAUDE.md | grep '^- \*\*ade:\*\* ')"
+for w in 'hubs, projects, dispatch, proof shots, the web dashboard, the tab view' '`ade help`' 'runs the same `bin/` script'; do
+  printf '%s' "$al" | grep -qF -- "$w" || fail "ade_rules_line: the Tools section's ade line lacks [$w]: [$al]"; done
 . ./hub.conf; . ./.local/hub.conf; assert_eq "$HUB_REMOTE_HOST" "box.acme.test" "remote host"; assert_eq "$HUB_REMOTE_PORT" "2222" "remote port"
 assert_eq "$HUB_REMOTE_USER" "deploy" "remote user"; assert_eq "$HUB_BRIEFING_HOUR:$HUB_BRIEFING_MINUTE" "7:30" "briefing time"
 assert_eq "$HUB_SECRETS" "grafana-token" "secret names"; assert_eq "$HUB_AUTO_SYNC" "0" "--auto-sync off"

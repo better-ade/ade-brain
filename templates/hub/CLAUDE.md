@@ -79,6 +79,7 @@ never here.
 
 ## Tools
 - **Hub:** `bin/brain search`, `bin/journal`, `bin/context`, `bin/work`, `bin/agent`, `bin/roles`, `bin/keys`, `bin/doctor`, `bin/secret`, `bin/ssh`, `bin/remote`, `bin/sync`, `bin/models` (show or set every model: root, focus, agents, subagents, briefing, all).
+- **ade:** the hub's command-line front end, for hubs, projects, dispatch, proof shots, the web dashboard, the tab view (`ade hub`, `ade project`, `ade dispatch`, `ade shot`, `ade web`, `ade ui`); run `ade help` before the first ade command in a session. `ade <command>` runs the same `bin/` script where one exists, so either works; the session start says whether it is installed.
 - **AI tool keys:** {{OWNER}} stores them with `bin/keys set <tool>` in their own terminal. Never ask for a key in chat; never read or print a key's value.
 - **Browser:** the `browser` plugin's ask-first rules hold unchanged: no form submit, purchase or message without
   {{OWNER}}'s word. On the server that word comes over Telegram. A folder's logged-in profile is opt-in
@@ -130,6 +131,11 @@ Focus sessions (`bin/work`, one per folder) and the main session at the hub root
 8. This session stays on Anthropic. For read-only work that suits another model, name a role:
    `bin/agent --role <role> --folder <folder> < task-file` (`bin/roles` shows what each role runs on). It reads and
    reports only; code changes stay with folder agents and focus sessions. It can take minutes: run it in the background.
+9. **Who does the work.** A task runs one of four ways; when you start one, name the one you pick:
+   - **Ask in plain words** (a subagent): the main session hands the task to that project's agent and reports back. The usual way.
+   - **Deep work** (a focus agent): a full session in the project's code, in its own tab, reporting to the main session.
+   - **`ade dispatch`**: one focus agent per ready ticket; a high-risk ticket waits for your yes.
+   - **A second opinion** (a role run): read-only work on another AI model; it reports, never edits.
 
 ## Git boundaries
 - The hub repo holds only hub files. Nothing under `repos/` is ever committed here (a pre-commit hook refuses it).

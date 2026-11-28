@@ -20,12 +20,13 @@ rules() {  # the hub root CLAUDE.md's rule sections: a session in a checkout out
 # what this person taught the hub (story L1): their profile and the rules for this folder and role, in a fixed line budget
 learned() { local b; [ -x "$H/bin/learn" ] || return 0; b="$("$H/bin/learn" context "$@" 2>/dev/null)"; [ -z "$b" ] || printf '%s\n\n' "$b"; }
 if [ -n "${1:-}" ]; then
-  [ "${2:-}" = "--rules" ] && { session_mark "$1" ready; rules; echo; learned "$1"; }   # ready: the session started (bin/sessions; bin/work's stuck-start report)
+  [ "${2:-}" = "--rules" ] && { session_mark "$1" ready; rules; echo; ade_session_line; echo; learned "$1"; }   # ready: the session started (bin/sessions; bin/work's stuck-start report)
   echo "# Context: $1"; if [ -f "$H/$1/STATE.md" ]; then cat "$H/$1/STATE.md"; else echo "(no STATE.md)"; fi
   echo; echo "## Recent journal ($1)"; entries "$1" | lastn 5
   exit 0
 fi
 w="$(orchestrator_endpoint_warning)"; [ -z "$w" ] || echo "WARNING: $w"
+ade_session_line   # story T1: ade's version and `ade help`, or its background install
 echo "# $(hub_name): every folder ($(utc_today))"
 for f in $(folders); do
   echo; flag=""; [ -n "$(stale_repos "$f")" ] && flag=" (state may be stale: repo commits after STATE.md)"
