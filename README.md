@@ -505,7 +505,9 @@ Then run `bin/schedule install`; `bin/doctor` says what is still missing.
 
 **Someone else's hub** (story I2): in your clone, after `bin/setup`, run `bin/adopt --share` (join it, nothing
 changes), `bin/adopt --handover --owner <you>` (it becomes yours; the previous owner's memory leaves the tree) or
-`bin/adopt --clone --owner <you> --name <new>` (a new hub with its own history). Each ends with what is left by hand.
+`bin/adopt --clone --owner <you> --name <new>` (a new hub with its own history). Each prints `bin/review` (story O1:
+whose hub it is, what is in progress, recent work, memory, reach, agents and skills; read only) and ends with what is left
+by hand. Run `bin/review [folder]` any time.
 
 ## Deep work inside ADE
 

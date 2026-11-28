@@ -54,11 +54,11 @@ adopt_handover_rewrites_the_owner() {
 adopt_share_changes_nothing() {
   fresh; out=$(adopt --share) || fail "share: $out"; unchanged share
   assert_eq "$(cfg HUB_OWNER)" "Kim Old" "share: the owner stays"
-  echo "$out" | grep -q "grafana-token" || fail "share: the list does not name the missing key: $out"
+  echo "$out" | grep -qF "Key missing here: grafana-token" || fail "share: the list does not name the missing key: $out"
   echo "$out" | grep -q "ade setup --telegram" || fail "share: no bot step: $out"
   echo "$out" | grep -q "bin/schedule install" || fail "share: no schedule step: $out"
   printf 'x\n' | bin_secret_put grafana-token
-  out=$(adopt --share) || fail "share again"; echo "$out" | grep -q "grafana-token" && fail "share: a stored key is listed as missing: $out"
+  out=$(adopt --share) || fail "share again"; echo "$out" | grep -qF "Key missing here: grafana-token" && fail "share: a stored key is listed as missing: $out"
   "$C/bin/secret" --forget grafana-token >/dev/null 2>&1; true
 }
 bin_secret_put() { (cd "$C" && HUB="$C" bin/secret --set "$1" >/dev/null 2>&1) || fail "store $1"; }
@@ -171,6 +171,18 @@ adopt_names_the_login_for_from() {
   echo "$out" | grep -q -- "--from <login>" || fail "no --from <login>: $out"
 }
 
+# story O1: every mode prints bin/review's summary of the hub after its work, before "Left to do by hand:"
+adopt_shows_review() {
+  local m out
+  for m in share handover clone; do fresh
+    case "$m" in share) out=$(adopt --share) ;; handover) out=$(adopt --handover --owner "Bo New") ;;
+      clone) out=$(adopt --clone --owner "Bo New" --name n16) ;; esac || fail "adopt_shows_review: $m: $out"
+    echo "$out" | awk '/^## Hub$/{h=NR} /^Left to do by hand:$/{l=NR} END{exit !(h && l && h < l)}' ||
+      fail "adopt_shows_review: $m: no review before \"Left to do by hand:\": $out"
+    echo "$out" | grep -qx "## Agents and skills" || fail "adopt_shows_review: $m: the review is cut short: $out"
+    [ "$m" = share ] || { echo "$out" | grep -qx "Owner: Bo New" || fail "adopt_shows_review: $m: the review names the new owner: $out"; }
+  done
+}
 adopt_handover_rewrites_the_owner
 adopt_share_changes_nothing
 adopt_clone_makes_a_new_hub
@@ -184,4 +196,5 @@ adopt_clone_adds_a_missing_name
 adopt_clone_frees_the_old_claim
 adopt_rolls_back_a_failed_commit
 adopt_names_the_login_for_from
+adopt_shows_review
 echo ok

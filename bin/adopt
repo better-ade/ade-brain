@@ -219,6 +219,8 @@ PY
   --share) echo "shared: nothing in the hub changed; $OLD_OWNER stays the owner" ;;
 esac
 
+# what the hub holds (story O1): bin/review, read only, after the work and before what is left
+echo; "$H/bin/review" || echo "adopt: bin/review failed; run it by hand" >&2
 # what is left, by hand
 echo; echo "Left to do by hand:"
 [ -f "$H/.local/hub.conf" ] || echo "This machine: bin/setup"

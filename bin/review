@@ -1,0 +1,74 @@
+#!/bin/bash
+# bin/review [folder]: what this hub holds, for a person who loads it (story O1, .ade/context/adopt.md): Hub, In progress,
+# Recent, Memory, Reach, Agents and skills, each left out when empty. [folder] limits In progress and Recent to it.
+# Read only: it writes nothing, makes no network call and never opens the key store (HUB_SECRETS gives names only).
+# Lines taken from STATE, the journal and memory are data, printed as text and cut at 200 characters.
+set -u; . "$(dirname "$0")/lib.sh"; H="$(hub_root)"
+# bin/context's own readers (entries, lastn, section, and fold_repeats once story J1 is in): its definitions, not a copy
+eval "$(sed '/^if \[ -n "\${1:-}" \]; then/,$d' "$(dirname "$0")/context")"; H="$(hub_root)"
+F="${1:-}"
+if [ -n "$F" ]; then F="${F%/}"; folders | grep -qxF -- "$F" || { echo "review: no folder $F in this hub (bin/review [folder])" >&2; exit 2; }; fi
+cut200() { LC_ALL=C tr -d '\000-\010\013-\037\177' | cut -c1-200; }   # data, not terminal control
+head_() { echo; echo "## $1"; }
+fm() { awk -v k="$2" '/^---$/{n++; next} n==1 && index($0, k ": ")==1 {print substr($0, length(k) + 3); exit}' "$1" 2>/dev/null; }
+
+# 1. Hub
+P="$H/personas/${HUB_PERSONA:-}.md"; title="${HUB_PERSONA_TITLE:-}"; model=""
+[ -n "${HUB_PERSONA:-}" ] && [ -f "$P" ] && { [ -n "$title" ] || title="$(fm "$P" title)"; model="$(fm "$P" model)"; }
+[ -n "$model" ] || model="${HUB_MODEL:-}"
+all="$(folders)"; nf=0; busy=""; idle=0
+for f in $all; do nf=$((nf + 1)); s="$H/$f/STATE.md"; b=""
+  [ -f "$s" ] && for k in "Live" "Open" "Waiting on"; do b="$b$(section "$s" "$k")"; done
+  if [ -n "$b" ]; then busy="$busy $f"; else idle=$((idle + 1)); fi; done
+echo "# Review: $(hub_name) (bin/review)"
+head_ "Hub"; echo "Name: $(hub_name)"; [ -z "${HUB_OWNER:-}" ] || echo "Owner: $HUB_OWNER"
+[ -z "$title" ] || echo "Persona: $title${model:+ (suggested model: $model)}"
+[ "$nf" = 0 ] || echo "Folders: $nf ($idle not started)"
+
+# 2. In progress: the first item of Live, Open and Waiting on (bin/context's section reading)
+show=""; for f in $busy; do [ -z "$F" ] || [ "$f" = "$F" ] && show="$show $f"; done
+if [ -n "$show" ]; then head_ "In progress"
+  for f in $show; do echo "$f"
+    for k in "Live" "Open" "Waiting on"; do l="$(section "$H/$f/STATE.md" "$k" | head -1)"; l="${l#  }"; l="${l#- }"
+      [ -z "$l" ] || echo "  $k: $l" | cut200; done; done
+fi
+
+# 3. Recent: the last 5 journal entries (bin/init's own line is not work) and the last commit
+notinit() { awk '/^## /{if(e!="" && !skip) printf "%s", e; e=$0 "\n"; skip=0; n=1; next}
+  {if(n==1 && index($0, "Hub initialized from ")==1) skip=1; n++; e=e $0 "\n"} END{if(e!="" && !skip) printf "%s", e}'; }
+jfold() { if declare -F fold_repeats >/dev/null; then fold_repeats; else cat; fi; }   # J1 not merged here: unfolded
+j="$(entries "$F" | notinit | jfold | lastn 5 | sed '/^$/d; s/^/  /' | cut200)"   # indented: a "## " entry header is no section
+c="$(git -C "$H" log -1 --format='%ad by %an' --date=short ${F:+-- "$F"} 2>/dev/null | cut200)"
+if [ -n "$j$c" ]; then head_ "Recent"; [ -z "$j" ] || echo "$j"; [ -z "$c" ] || echo "Last commit: $c"; fi
+
+# 4. Memory: the index's entries and first 10 lines; the people with a memory folder (names only)
+m="$(grep '^- ' "$H/memory/MEMORY.md" 2>/dev/null)"; ppl="$(ls -1 "$H/memory/users" 2>/dev/null | while IFS= read -r u; do
+  [ -d "$H/memory/users/$u" ] && printf '%s, ' "$u"; done)"; ppl="${ppl%, }"
+if [ -n "$m$ppl" ]; then head_ "Memory"
+  [ -z "$m" ] || { echo "Entries: $(printf '%s\n' "$m" | wc -l | tr -d ' ')"; printf '%s\n' "$m" | head -10 | cut200; }
+  [ -z "$ppl" ] || echo "People: $ppl" | cut200
+fi
+
+# 5. Reach: the repos in the ACCESS.md "## Code" rows, the key names, the schedules bin/schedule would install
+repos="$(for a in "$H/ACCESS.md" "$H"/projects/*/ACCESS.md "$H"/ops/*/ACCESS.md; do [ -f "$a" ] || continue
+  awk -F'|' '/^## /{p=($0 == "## Code")} p && /^\|/ {r=$2; gsub(/^[ \t]+|[ \t]+$/, "", r); if(r != "" && r != "Repo" && r !~ /^-+$/) print r}' "$a"
+  done | LC_ALL=C sort -u | paste -sd, - | sed 's/,/, /g')"
+keys="$(printf '%s\n' ${HUB_SECRETS:-} | sed '/^$/d' | paste -sd, - | sed 's/,/, /g')"
+if [ -n "$repos$keys" ]; then head_ "Reach"
+  [ -z "$repos" ] || echo "Repos: $repos" | cut200
+  [ -z "$keys" ] || echo "Key names: $keys (whether each is stored here: bin/adopt --share, bin/keys)" | cut200
+  # as bin/schedule decides its jobs (that script, not this one, checks the hub-name claim at install)
+  sch="briefing (weekdays $(printf '%02d:%02d' "${HUB_BRIEFING_HOUR:-8}" "${HUB_BRIEFING_MINUTE:-0}")), monitor (every 30 min)"
+  [ "${HUB_AUTO_SYNC:-1}" = 0 ] || sch="$sch, sync (every 30 min)"; [ "${HUB_CHAT:-}" != telegram ] || sch="$sch, chat (kept running)"
+  [ "$(platform)" != macos ] || sch="$sch, recover (at login)"; echo "Schedules (bin/schedule install): $sch"
+fi
+
+# 6. Agents and skills (names only)
+names() { for x in "$@"; do [ -e "$x" ] || continue; x="${x%/}"; x="${x##*/}"; echo "${x%.md}"; done | LC_ALL=C sort | paste -sd, - | sed 's/,/, /g'; }
+wrap() { fold -s -w 118 | sed 's/ *$//; 2,$s/^/  /'; }
+ag="$(names "$H"/.claude/agents/*.md)"; sk="$(names "$H"/.claude/skills/*/)"
+if [ -n "$ag$sk" ]; then head_ "Agents and skills"
+  [ -z "$ag" ] || echo "Agents: $ag" | wrap
+  [ -z "$sk" ] || echo "Skills: $sk" | wrap
+fi
+exit 0

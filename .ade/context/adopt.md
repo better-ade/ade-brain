@@ -28,6 +28,12 @@
   the first write resets the tree (exit 1). A clone sets the old `.git` aside in `<hub's parent>/.adopt-git.XXXXXX`
   (same filesystem) and puts it back on a failure or INT/TERM/HUP; if it cannot, it runs no git command, prints where
   the old history is and exits 1; a backup folder it leaves is printed.
+- **The review (story O1):** after its work and before "Left to do by hand:", every mode prints `bin/review`'s output
+  (sections `## Hub`, `## In progress`, `## Recent`, `## Memory`, `## Reach`, `## Agents and skills`, each left out when
+  empty; read only, key names only). A review failure is a warning on stderr, never adopt's exit code. Tests:
+  `tests/test_review.sh`, `adopt_shows_review` in `tests/test_adopt.sh`. bin/review takes bin/context's readers (its function
+  definitions above its first `if [ -n "${1:-}" ]; then` line, J1's `fold_repeats` included once merged): keep
+  bin/context's main code below that line and its definitions free of side effects.
 - **What's left (every mode ends with "Left to do by hand:"):** `bin/setup` when `.local/hub.conf` is missing, each
   `HUB_SECRETS` key and AI tool key not stored here, the keys line, `ade setup --telegram`, `bin/schedule install`.
   Share and handover print exactly (I4's hook, `.ade/context/keys-share.md`):
