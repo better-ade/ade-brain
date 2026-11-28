@@ -64,6 +64,9 @@ never here.
 - **Keep the account owner informed.** When {{OWNER}} works under someone who owns the client relationship, and a client
   ask or build arrives by an email they aren't on, make sure it is tracked where they will see it (a task-board card with
   a short note) and add it to a short chat draft to them for {{OWNER}} to send.
+- **A task card gets a picture.** A task you add to a board (ClickUp or any other) carries a screenshot of the screen it
+  is about, or a workflow or user flow (numbered steps of what the person does and sees). If neither is possible, the
+  task says why. No secret or client contact data in a picture.
 - **Client contact data stays out of the hub repo.** Exports, lead lists and backups holding names, emails or phone
   numbers go to `~/.agent-hub/{{NAME}}/backups/<folder>/` (`chmod go-rwx`), never under a hub folder: `bin/sync --auto`
   would commit them. Check a file for contact data before copying it into the hub.
