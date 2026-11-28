@@ -27,7 +27,30 @@ make_hub() {
   export AGENT_METHOD_REPO="$METHOD_FIXTURE"
   # tests never push a real hub or touch the real sync log/lock; test_report turns auto sync on with a stub
   export AGENT_AUTO_SYNC=0 AGENT_SYNC_LOG="$(mktemp -d)/sync.log" AGENT_SYNC_LOCK="$(mktemp -d)/sync.lock"
+  # tests never run ade's real installer (story T1): off unless a test turns it on, and a dead local address if one does
+  export AGENT_ADE_INSTALL=off ADE_CLI_INSTALL_URL="file:///nonexistent/ade-install.sh"
 }
+# ade_sandbox (story T1): a temp HOME, a PATH without any ade, and a fake ade installer at ADE_CLI_INSTALL_URL. The
+# installer logs each run to $ADE_FAKE_RUNS, waits (at most 10 s) for $ADE_FAKE_RELEASE, then fails with
+# "fake: download failed" when ADE_FAKE_FAIL=1, else puts an ade printing "ade 9.9.9" in ~/.local/bin.
+ade_sandbox() {
+  local d p o=""; d="$(mktemp -d)"; export HOME="$d/home"; mkdir -p "$HOME"
+  # a PATH dir holding an ade is replaced by a copy of its links without ade (it may hold git, curl, python3 too)
+  local IFS=:; for p in $PATH; do if [ -x "$p/ade" ]; then local c f; c="$(mktemp -d)"
+      for f in "$p"/*; do [ "${f##*/}" = ade ] || ln -s "$f" "$c/${f##*/}" 2>/dev/null; done; p="$c"; fi
+    o="${o:+$o:}$p"; done; export PATH="$o"
+  export ADE_FAKE_RUNS="$d/runs" ADE_FAKE_RELEASE="$d/release" ADE_CLI_INSTALL_URL="file://$d/install.sh"; unset AGENT_ADE_INSTALL
+  cat > "$d/install.sh" <<'FAKE'
+echo run >> "$ADE_FAKE_RUNS"; n=0
+while [ ! -e "$ADE_FAKE_RELEASE" ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+[ "${ADE_FAKE_FAIL:-}" = 1 ] && { echo "fake: download failed" >&2; exit 3; }
+mkdir -p "$HOME/.local/bin" && printf '#!/bin/sh\necho "ade 9.9.9"\n' > "$HOME/.local/bin/ade" && chmod +x "$HOME/.local/bin/ade"
+FAKE
+}
+# runs_of FILE: how many lines it has (0 when missing)
+runs_of() { if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
+# ade_wait CMD...: poll up to 10 s for CMD to succeed
+ade_wait() { local n=0; until "$@"; do [ "$n" -lt 100 ] || return 1; sleep 0.1; n=$((n + 1)); done; }
 # fmode <file>: its permission bits in octal (700), on GNU and BSD alike
 fmode() { python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$1"; }
 # in_pty <cmd...>: run cmd in a pseudo-terminal (util-linux script on Linux, BSD script on macOS)

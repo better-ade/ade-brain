@@ -9,6 +9,8 @@ for t in claude gh git ssh node python3 curl gitleaks ${HUB_TOOLS:-}; do
 done
 # age: bin/keys share and receive seal a hub's keys to one person (story I4)
 if command -v age >/dev/null; then line OK age "$(age --version 2>&1 | head -1 | cut -c1-60)"; else line MISSING age "not installed: $(tool_install_line age)"; fi
+# ade (story T1): the hub's command-line front end; a session start installs it in the background, bin/setup in the foreground
+if a="$(ade_path)" && [ -n "$a" ]; then line OK ade "$(ade_version "$a")"; else line MISSING ade "not installed: $(ade_install_line)"; fi
 # docker (story V4): recommended, never needed, so WARN at worst: OK when `docker info` reaches the engine
 if ! command -v docker >/dev/null; then line WARN docker "not installed (recommended, for isolated local tests): $(docker_install_line)"
 elif de="$(timeout 15 docker info 2>&1 >/dev/null)"; then line OK docker "$(docker --version 2>&1 | head -1 | cut -c1-60)"

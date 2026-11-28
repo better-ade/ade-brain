@@ -294,6 +294,11 @@ bin/agent --role reviewer --folder projects/app < task.md  # the task comes on s
 A key pasted into a Claude prompt in the hub by mistake is stopped before it is sent (`bin/paste-guard`, story K2): the
 prompt is blocked and you are told to use `bin/keys set` instead (`HUB_PASTE_GUARD=off` in hub.conf turns it off).
 
+A session started with `claude` in your own terminal makes sure `ade` is there (story T1): when it is missing, the
+session start runs ade's installer in the background (into `~/.local/bin`, never waited for) and says so; when it is
+there, the agent is told to run `ade help` before its first ade command. `bin/setup` installs it in the foreground,
+`bin/doctor` reports it. `HUB_ADE_INSTALL=off` in hub.conf turns the install off.
+
 Agents reach servers through `bin/ssh <name> <command>` (story X1), never holding a key or a password. Each server is
 `ops/access/<name>.conf` (`HOST`, `USER`, `PORT`, `JUMP`, `AUTH=key|password`, `PROD=0|1`; names and locations only).
 A key comes from your ssh-agent (`ssh-add --apple-use-keychain <key>` once, in your terminal); a password from

@@ -261,6 +261,8 @@ HUB_METHOD_REF=$(q "$(method_pin)")
 # bin/keys share --link (story I6): the Onetime Secret instance a sealed keys block goes to as a one-time link (https
 # only; a location, no account)
 HUB_ONETIME_URL=https://us.onetimesecret.com
+# story T1: on installs ade (the ade-cli) when a session starts without it; off: only prints the install command
+HUB_ADE_INSTALL=on
 CONF
 # this machine's values (story I1, .ade/context/per-machine.md): gitignored, read after hub.conf; bin/setup writes them
 # on a clone
