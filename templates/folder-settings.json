@@ -1,4 +1,5 @@
 {
+  "attribution": { "commit": "", "pr": "" },
   "permissions": {
     "ask": [
       "Bash(*bin/dispatch --approve*)",

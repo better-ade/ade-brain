@@ -9,6 +9,12 @@ assert_contains projects/demo/STATE.md "## Live" "STATE sections"
 echo "custom" > projects/demo/STATE.md
 bin/new projects/demo | grep -q "kept projects/demo/STATE.md" || fail "did not report kept"
 assert_eq "$(cat projects/demo/STATE.md)" "custom" "never overwrites"
+# no AI attribution (.ade/rules.md "Commit as the user"): the hub root, a new folder, and a folder re-rendered by --settings
+attr_off() { python3 -c 'import json,sys; a=json.load(open(sys.argv[1])).get("attribution",{}); sys.exit(0 if a.get("commit")=="" and a.get("pr")=="" else 1)' "$1"; }
+attr_off .claude/settings.json || fail "the hub root settings do not turn attribution off"
+attr_off projects/demo/.claude/settings.json || fail "a new folder's settings do not turn attribution off"
+bin/new --settings projects/demo >/dev/null || fail "bin/new --settings failed"
+attr_off projects/demo/.claude/settings.json || fail "bin/new --settings drops attribution off"
 bin/new ops/backups >/dev/null && [ -f .claude/agents/ops-backups.md ] || fail "ops agent name"
 bin/new projects/Bad_Name >/dev/null 2>&1; assert_eq "$?" "2" "bad name exits 2"
 assert_contains projects/demo/CLAUDE.md "@memory/MEMORY.md" "new folder CLAUDE.md imports its memory"
