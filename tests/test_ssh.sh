@@ -232,7 +232,8 @@ ssh_asks() {   # AC6
   # a registry that differs from HEAD is unconfirmed: every host asks, and says why, until it is committed
   printf 'PROD=0\n' > ops/access/prod-db.conf.new; mv ops/access/prod-db.conf.new ops/access/new.conf
   o="$(hook "$HUB" 'bin/ssh web uptime')"; printf '%s' "$o" | grep -q 'not committed' || fail "ssh_asks: an untracked registry file does not ask: [$o]"
-  rm ops/access/new.conf; sed -i '' 's/PROD=1/PROD=0/' ops/access/prod-db.conf
+  rm ops/access/new.conf; c="$(sed 's/PROD=1/PROD=0/' ops/access/prod-db.conf)"; printf '%s\n' "$c" > ops/access/prod-db.conf   # no sed -i: BSD and GNU differ
+  grep -q '^PROD=0' ops/access/prod-db.conf || fail "the test could not flip PROD"
   o="$(hook "$HUB" 'bin/ssh prod-db uptime')"; printf '%s' "$o" | grep -q 'not committed' || fail "ssh_asks: a flipped PROD does not ask: [$o]"
   o="$(hook "$HUB" 'bin/ssh web uptime')"; printf '%s' "$o" | grep -q 'not committed' || fail "ssh_asks: a changed registry lets web pass: [$o]"
   git checkout -q -- ops/access; quiet 'bin/ssh web uptime'
