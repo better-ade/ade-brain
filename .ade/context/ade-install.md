@@ -3,6 +3,7 @@
 - **Check:** `ade_path` (bin/lib.sh): `command -v ade`, else `~/.local/bin/ade` (where ade's installer puts it).
 - **Installer:** `curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh | bash` (`ade_install_line`).
   `ADE_CLI_INSTALL_URL` overrides the address, for tests only.
+  The installer comes from ade-cli's `main` branch: unpinned, accepted with story T1.
 - **Session start** (`bin/context` with no args at the hub root, and `bin/context <folder> --rules`): one line from
   `ade_session_line`:
   - present: `ade: <ade --version> is installed; \`ade help\` lists its commands: run it before the first ade command in a session.`
@@ -22,5 +23,6 @@
   `tests/helpers.sh` `make_hub` sets it `off` and a dead local `ADE_CLI_INSTALL_URL`, so no test reaches the real installer.
 - **bin/setup:** `ade_install_fg`: `ok ade (<version>)`, or runs the installer in the foreground (`installed ade (<version>)`;
   a failure is a warning on stderr and never changes setup's exit status); off: prints the install line.
+  Its foreground install does not use the sudo-refusing shim: the installer may prompt for sudo there (setup is interactive).
 - **bin/doctor:** `OK ade <version>` or `MISSING ade not installed: <install line>`.
 - Out of scope: upgrading an installed ade.

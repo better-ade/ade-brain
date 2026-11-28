@@ -21,7 +21,7 @@ grep -q "{{" CLAUDE.md ACCESS.md README.md .claude/agents/*.md && fail "unfilled
 wk1='**Ask in plain words** (a subagent): the main session hands the task to that project'"'"'s agent and reports back. The usual way.'
 wk2='**Deep work** (a focus agent): a full session in the project'"'"'s code, in its own tab, reporting to the main session.'
 wk4='**A second opinion** (a role run): read-only work on another AI model; it reports, never edits.'
-wk3='**`ade dispatch`**: one focus agent per ready ticket; a high-risk ticket waits for your yes.'
+wk3='**`ade dispatch`**: one focus agent per ready ticket; a high-risk ticket waits for Sam Lee'"'"'s yes.'
 for w in "$wk1" "$wk2" "$wk3" "$wk4"; do grep -qF -- "- $w" CLAUDE.md || fail "work_kinds: CLAUDE.md lacks [$w]"; done
 awk '/^## The main agent/{p=1;next} /^## /{p=0} p' CLAUDE.md | grep -q 'name the one you pick' || fail "work_kinds: the main agent names its pick"
 for w in "$wk1" "$wk2" "$wk3" "$wk4"; do

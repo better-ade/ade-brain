@@ -492,6 +492,7 @@ hub_policy_vars() { echo HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER H
 # and HUB_PASTE_GUARD (bin/paste-guard, story K2) come only from hub.conf.
 unset HUB_PROVIDER HUB_PROVIDERS_ALLOWED HUB_OWNED_BY_OWNER HUB_GEMINI_CLIENT_APPROVED HUB_AGENT_ANTHROPIC_KEY HUB_SECRET_STORE HUB_PASTE_GUARD
 for _v in $(compgen -v HUB_ROLE_) $(compgen -v HUB_BROWSER_PROFILE_); do unset "$_v"; done; unset _v   # role tables and browser profile switches too
+unset HUB_ADE_INSTALL   # story T1: the ade install switch comes from hub.conf / .local/hub.conf only
 unset HUB_USER   # story L1: <user> comes from hub.conf or the system user, never the environment
 [ -f "$(hub_root)/hub.conf" ] && . "$(hub_root)/hub.conf"
 # .local/hub.conf (story I1, .ade/context/per-machine.md): this machine's values (HUB_CLAUDE, HUB_CLAUDE_CONFIG_DIR,
@@ -670,7 +671,7 @@ ade_session_line() { local a d log last="" lock m
   # a sudo that refuses comes first on the installer's PATH: a session start never prompts for a password
   mkdir -p "$d/nosudo" && printf '#\041/bin/sh\necho "sudo refused: a session start installs ade into ~/.local/bin only" >&2\nexit 1\n' > "$d/nosudo/sudo" && chmod +x "$d/nosudo/sudo"
   ( set -o pipefail; export PATH="$d/nosudo:$PATH"
-    if ! curl -fsSL "$(ade_install_url)" | bash; then : > "$d/install.failed"
+    if ! curl -fsSL --connect-timeout 10 --max-time 120 "$(ade_install_url)" | bash; then : > "$d/install.failed"
     elif [ -z "$(ade_path)" ]; then echo "the installer finished but no ade is on PATH or in ~/.local/bin"; : > "$d/install.failed"
     else rm -f "$d/install.failed"; fi
     rm -rf "$lock" ) </dev/null >"$log" 2>&1 &
@@ -682,7 +683,7 @@ ade_install_fg() { local a; a="$(ade_path)"
   if [ "$(ade_install_mode)" = off ]; then echo "ade not installed (HUB_ADE_INSTALL=off): install it by hand: $(ade_install_line)"; return 0; fi
   if ade_install_running; then echo "ade is being installed in the background (log: $(ade_state)/install.log)"; return 0; fi
   echo "installing ade: $(ade_install_line)"
-  if (set -o pipefail; curl -fsSL "$(ade_install_url)" | bash) && a="$(ade_path)" && [ -n "$a" ]; then
+  if (set -o pipefail; curl -fsSL --connect-timeout 10 --max-time 120 "$(ade_install_url)" | bash) && a="$(ade_path)" && [ -n "$a" ]; then
     rm -f "$(ade_state)/install.failed"; echo "installed ade ($(ade_version "$a"))"
   else echo "warning: ade did not install; install it by hand: $(ade_install_line)" >&2; fi
   return 0; }

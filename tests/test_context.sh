@@ -48,10 +48,13 @@ ade_wait test -s "$ADE_FAKE_RUNS" && ade_wait test ! -e "$HOME/.agent-hub/hub/ad
 out=$(bin/context); echo "$out" | grep -q "^ade: the last install failed (fake: download failed; log: $HOME/.agent-hub/hub/ade/install.log)" || fail "ade_install_failed: [$out]"
 unset ADE_FAKE_FAIL
 # ade_install_off: HUB_ADE_INSTALL=off in hub.conf downloads nothing and gives the install command
-ade_sandbox; cp hub.conf hub.conf.t1 2>/dev/null; echo HUB_ADE_INSTALL=off >> hub.conf
+ade_sandbox; cp hub.conf hub.conf.t1 2>/dev/null; trap 'if [ -f hub.conf.t1 ]; then mv hub.conf.t1 hub.conf; else rm -f hub.conf; fi' EXIT
+echo HUB_ADE_INSTALL=off >> hub.conf
 out=$(bin/context); sleep 0.5; assert_eq "$(runs_of "$ADE_FAKE_RUNS")" 0 "ade_install_off: nothing downloaded"
 echo "$out" | grep -qF "ade: not installed (HUB_ADE_INSTALL=off); install it by hand: curl -fsSL $ADE_CLI_INSTALL_URL | bash" || fail "ade_install_off: the install command: [$out]"
-if [ -f hub.conf.t1 ]; then mv hub.conf.t1 hub.conf; else rm hub.conf; fi
+if [ -f hub.conf.t1 ]; then mv hub.conf.t1 hub.conf; else rm -f hub.conf; fi
+# ade_install_env_ignored: an exported HUB_ADE_INSTALL=off does not turn the install off when hub.conf is silent
+ade_sandbox; out=$(HUB_ADE_INSTALL=off bin/context); ade_wait test -s "$ADE_FAKE_RUNS" || fail "ade_install_env_ignored: the environment switched the install off: [$out]"
 # ade_present_help: an ade on PATH: its version and the `ade help` line, and no install
 ade_sandbox; FA="$(mktemp -d)"; printf '#!/bin/sh\n[ "$1" = --version ] && echo "ade 1.2.3"\n' > "$FA/ade"; chmod +x "$FA/ade"; PATH="$FA:$PATH"
 out=$(bin/context projects/demo --rules); sleep 0.5

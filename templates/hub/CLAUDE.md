@@ -134,7 +134,7 @@ Focus sessions (`bin/work`, one per folder) and the main session at the hub root
 9. **Who does the work.** A task runs one of four ways; when you start one, name the one you pick:
    - **Ask in plain words** (a subagent): the main session hands the task to that project's agent and reports back. The usual way.
    - **Deep work** (a focus agent): a full session in the project's code, in its own tab, reporting to the main session.
-   - **`ade dispatch`**: one focus agent per ready ticket; a high-risk ticket waits for your yes.
+   - **`ade dispatch`**: one focus agent per ready ticket; a high-risk ticket waits for {{OWNER}}'s yes.
    - **A second opinion** (a role run): read-only work on another AI model; it reports, never edits.
 
 ## Git boundaries
