@@ -1,0 +1,150 @@
+#!/bin/bash
+# bin/ssh-guard: PreToolUse hook (matcher Bash) in every hub session, root and folders (story X1, .ade/context/access.md).
+# It asks the developer before a command that reaches a server outside bin/ssh's rules: any raw ssh, scp, sftp, rsync,
+# sshpass (and kin), an ssh command smuggled into git or a ProxyCommand, bin/askpass, an edit of ops/access/, bin/ssh
+# --trust, and bin/ssh to a host whose ops/access/<name>.conf says PROD=1 (or that it refuses). bin/ssh to a PROD=0 host
+# runs without asking. Asking is JSON {"hookSpecificOutput": {"permissionDecision": "ask", ...}} on stdout, exit 0;
+# anything else is exit 0 with no output. It reads words, not shell: an obfuscated command can pass it (the residual
+# limits are in .ade/context/access.md); the hook narrows mistakes, the registry and the store hold the line.
+H="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)" || exit 0
+if ! command -v python3 >/dev/null 2>&1; then   # cannot read the command: ask whenever it names the ssh family
+  if head -c 16777216 | LC_ALL=C grep -qiE 'ssh|scp|sftp|rsync|mosh|askpass|ops/access'; then
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"ssh-guard: python3 not found, so a command naming ssh could not be checked. Allow it only if you meant the agent to do this."}}'
+  fi
+  exit 0
+fi
+IFS= read -r -d '' PY_SRC <<'PY'
+import json, os, re, select, shlex, subprocess, sys, time
+H = sys.argv[1]
+def ask(why):
+    sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+        "permissionDecisionReason": "ssh-guard: " + why + ". Allow it only if you meant the agent to do this."}}) + "\n")
+    sys.stdout.flush(); sys.exit(0)
+raw = bytearray(); end = time.time() + 10
+if not os.isatty(0):
+    while time.time() < end and len(raw) < 16 << 20:
+        r, _, _ = select.select([0], [], [], max(0, end - time.time()))
+        if not r: break
+        b = os.read(0, 1 << 20)
+        if not b: break
+        raw += b
+try:
+    d = json.loads(raw.decode("utf-8"))
+    tool = d.get("tool_name"); cmd = (d.get("tool_input") or {}).get("command"); cwd = d.get("cwd") or H
+except Exception:
+    if re.search(rb"ssh|scp|sftp|rsync", bytes(raw), re.I): ask("a command it could not read names ssh")
+    sys.exit(0)
+if tool != "Bash" or not isinstance(cmd, str) or not cmd: sys.exit(0)
+SEP = {";", "&", "&&", "|", "||", "|&", ";;", ";&", ";;&", "(", ")"}
+def split_cmds(c):   # the simple commands as the shell splits them (quotes, comments, operators); None if it cannot
+    try:
+        lx = shlex.shlex(c, posix=True, punctuation_chars=True); lx.whitespace_split = True; toks = list(lx)
+    except Exception:
+        return None
+    out = [[]]
+    for t in toks:
+        if t in SEP: out.append([])
+        else: out[-1].append(t)
+    return [x for x in out if x]
+def norm_paths(t):   # ops//access, ops/./access, ops/x/../access all read ops/access
+    t = re.sub(r"[\"'\\]", "", t)
+    while True:
+        u = re.sub(r"/{2,}", "/", re.sub(r"/\./", "/", re.sub(r"/[^/\s]+/\.\./", "/", t)))
+        if u == t: return t
+        t = u
+def main():
+    low = cmd.lower()
+    cmds = split_cmds(cmd)
+    nl = norm_paths(low)
+    if "ops/access" in nl or (re.search(r"(^|[\s;&|(])(cd|pushd)\s", nl) and "access" in nl):
+        ask("the access registry (ops/access/) changes what bin/ssh reaches")
+    for s, why in (("proxycommand", "a ProxyCommand runs a local command"), ("sshcommand", "git with its own ssh command"),
+                   ("git_ssh", "git with its own ssh command"), ("ssh_askpass", "an ssh askpass of its own"),
+                   ("localcommand", "an ssh LocalCommand"), ("askpass", "bin/askpass is ssh's alone"),
+                   ("known_hosts", "known_hosts decides which servers ssh trusts"),
+                   ("secret_get", "a stored secret read outside bin/secret's rules"),
+                   ("ade/secrets", "the secret store's files"), ("find-generic-password", "a Keychain read")):
+        if s in low: ask(why)
+    # ssh.<name> passes only as bin/secret --set|--has ssh.<name>, as the shell splits it (a comment, an env -i or env -u
+    # in front, or any other command naming it asks)
+    if re.search(r"(^|[^a-z0-9_.-])ssh\.[a-z0-9]", low):
+        if cmds is None: ask("a server password (ssh.<name>) in a command it could not split")
+        for c in cmds:
+            if any(re.search(r"(^|[^a-z0-9_.-])ssh\.[a-z0-9]", t.lower()) for t in c) and not \
+                    (len(c) == 3 and os.path.basename(c[0]) == "secret" and c[1] in ("--set", "--has")):
+                ask("a server password (ssh.<name>) read outside bin/ssh")
+    FAMILY = {"ssh", "scp", "sftp", "sshpass", "rsync", "slogin", "autossh", "mosh", "ssh-copy-id", "sshfs",
+              "ssh-keyscan", "ssh-keygen"}
+    s = re.sub(r"[\"'\\]", "", cmd).replace("$(", " ").replace("`", " ")
+    words = [w for w in re.split(r"[\s;&|()<>{}]+", s) if w]
+    moved = re.search(r"(^|[\s;&|(){}])(cd|pushd|popd)([\s;&|)]|$)", s) is not None   # s: quotes and \ gone
+    computed = "$(" in cmd or "`" in cmd
+    hub_ssh = os.path.realpath(os.path.join(H, "bin", "ssh"))
+    calls = []
+    for i, w in enumerate(words):
+        x = os.path.expanduser(os.path.expandvars(w))
+        b = os.path.basename(x).lower()   # a case-insensitive file system runs SSH as ssh
+        if b not in FAMILY: continue
+        hub = False
+        if os.path.basename(x) == "ssh" and "/" in x and (os.path.isabs(x) or not moved):
+            hub = os.path.realpath(x if os.path.isabs(x) else os.path.join(cwd, x)) == hub_ssh
+        if not hub: ask("a raw %s command reaches a server outside bin/ssh" % b)
+        calls.append(i)
+    if not calls: sys.exit(0)
+    if "--trust" in words: ask("bin/ssh --trust is the developer's, in their own terminal")
+    if computed: ask("bin/ssh in a command that computes part of itself ($( ) or backticks)")
+    before = words[:calls[-1]]   # what runs before the last bin/ssh call; its remote command may hold any words
+    if any(re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w) for w in before) or any(w in ("env", "export", "declare", "typeset", "eval", "source", ".", "alias", "exec", "unset") for w in before):
+        ask("bin/ssh with a changed environment")
+    names = [words[i + 1] if i + 1 < len(words) else "" for i in calls]
+    # the shell's own reading too. bin/ssh passes only as the first word of a simple command, after nothing but cd or
+    # other bin/ssh calls: an argument to xargs, find -exec, timeout, sudo... can swap the name, and a command before it
+    # can change the registry. The word after it, as the shell splits it, must be a plain name (bin/ssh >dev prod
+    # runs prod).
+    if cmds is None: ask("bin/ssh in a command it could not split")
+    def is_hub(t):
+        x = os.path.expanduser(os.path.expandvars(t))
+        return os.path.basename(x).lower() == "ssh" and "/" in x and \
+            os.path.realpath(x if os.path.isabs(x) else os.path.join(cwd, x)) == hub_ssh
+    found, ok_before = 0, True
+    for c in cmds:
+        hubs = [j for j, t in enumerate(c) if is_hub(t)]
+        found += len(hubs)
+        if hubs:
+            if hubs != [0] or not ok_before: ask("bin/ssh run by another command, or after one, which can change where it goes")
+            names.append(c[1] if len(c) > 1 else "")
+        elif c[0] not in ("cd", "pushd"):
+            ok_before = False
+    if found != len(calls): ask("bin/ssh inside another command (bash -c, a quoted word)")
+    # a registry that differs from HEAD (changed, staged, new or ignored files) is not confirmed: every host asks
+    genv = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        g = subprocess.run(["git", "-C", H, "-c", "core.fsmonitor=", "status", "--porcelain", "--ignored",
+                            "--untracked-files=all", "--", "ops/access"], env=genv, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+        dirty = g.returncode != 0 or g.stdout.strip() != b""
+    except Exception:
+        dirty = True
+    if dirty: ask("the access registry (ops/access/) has changes not committed, so every host counts as production "
+                  "until they are (git status ops/access)")
+    deadline = time.time() + 20
+    for n in dict.fromkeys(names):
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", n): ask("bin/ssh to a host it cannot name")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("HUB_")}; env["HUB"] = H
+        try:
+            p = subprocess.run(["bash", "-c", '. "$HUB/bin/lib.sh" && access_read "$1" ssh && printf %s "$ACC_PROD"', "_", n],
+                               env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=max(0.1, deadline - time.time()))
+            prod = p.stdout.decode() if p.returncode == 0 else "?"
+        except Exception:
+            prod = "?"
+        if prod != "0": ask("bin/ssh %s: a production host (PROD=1), or one its registry file does not allow" % n)
+try:
+    main()
+except SystemExit:
+    raise
+except BaseException:   # any failure inside: ask when it names the ssh family, never a traceback
+    if re.search(r"ssh|scp|sftp|rsync", cmd, re.I): ask("a command it could not check names ssh")
+sys.exit(0)
+PY
+python3 -I -c "$PY_SRC" "$H" 2>/dev/null
+exit 0

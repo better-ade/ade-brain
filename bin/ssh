@@ -1,0 +1,87 @@
+#!/bin/bash
+# bin/ssh <name> [command...]: run a command on the server ops/access/<name>.conf names (story X1, .ade/context/access.md).
+# The agent never holds a key or a password: AUTH=key uses the developer's ssh-agent (BatchMode=yes, no -i);
+# AUTH=password has ssh ask bin/askpass, which reads ssh.<name> from the hub's store and prints it to ssh alone.
+# Host keys are checked strictly; an unknown one stops the run until the developer trusts it at a terminal.
+#   bin/ssh --trust <name>   the developer, in their own terminal: see the host key's fingerprint, type yes to save it
+# Exit: ssh's own; 2 a bad name, registry file or use; 3 the developer must act (load a key, store a password, trust a
+# host key): the one command to run is printed, for the agent to relay. Never ask for a password, key or passphrase in chat.
+# bin/ssh's own 2 and 3 always come with an "ssh:" or "access:" line on stderr; without one, 2 or 3 is the remote command's.
+set -u
+HUB="$(cd "$(dirname "$0")/.." && pwd)" || exit 2; export HUB   # this hub, never one the environment names
+. "$HUB/bin/lib.sh"
+unset SSH_ASKPASS SSH_ASKPASS_REQUIRE ADE_SSH_ASKPASS_NAME
+# the system's ssh before anything an earlier PATH entry offers (tests run a fake one under the test flag)
+[ "${AGENT_PLATFORM_TEST:-}" = 1 ] || PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+USAGE="usage: bin/ssh <name> [command...] | bin/ssh --trust <name>   (<name>: ops/access/<name>.conf)"
+TRUST=0
+case "${1:-}" in
+  --trust) TRUST=1; shift; [ $# -eq 1 ] || { echo "$USAGE" >&2; exit 2; } ;;
+  ""|-*) echo "$USAGE" >&2; exit 2 ;;
+esac
+N="$1"; shift
+access_read "$N" ssh || exit 2
+# every run: nothing forwarded, no local commands, no shared connection; the destination after --, so nothing after it
+# is read as an ssh option. OpenSSH keeps the FIRST value of an option, so no option is ever given twice: the host key
+# policy is per path (yes to connect, ask for --trust), never in O.
+O=(-o ConnectTimeout=10 -o ForwardAgent=no -o ForwardX11=no -o PermitLocalCommand=no
+   -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none)
+[ -z "$ACC_USER" ] || O+=(-l "$ACC_USER")
+[ -z "$ACC_PORT" ] || O+=(-p "$ACC_PORT")
+[ -z "$ACC_JUMP" ] || O+=(-J "$ACC_JUMP")
+
+# watch: ssh's stderr passes through; exit 4 when ssh refused the host key, 7 when the key changed, 5 when it saved
+# one, 6 on a refused login
+watch() { local l w=0; while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "$l"
+    case "$l" in *"REMOTE HOST IDENTIFICATION HAS CHANGED"*) w=7 ;;
+      *"Host key verification failed"*|*"No "*" host key is known for"*) [ "$w" = 7 ] || w=4 ;;
+      *"Permanently added"*) [ "$w" = 4 ] || [ "$w" = 7 ] || w=5 ;; *"Permission denied"*) [ "$w" != 0 ] || w=6 ;; esac; done; return $w; }
+via=""; [ -z "$ACC_JUMP" ] || via=" (or of its jump host $ACC_JUMP)"
+changed() { echo "ssh: the host key of $N$via has CHANGED since it was trusted. Do not trust it again until the server's admin confirms the server was rebuilt; then the developer runs, in their own terminal: ssh-keygen -R $ACC_HOST and bin/ssh --trust $N" >&2; exit 3; }
+# run_ssh <args...>: ssh with its stderr watched; RC is ssh's exit, SEEN watch's
+run_ssh() { { ssh "$@" 2>&1 1>&3 3>&- | watch >&2; RCS=("${PIPESTATUS[@]}"); } 3>&1; RC="${RCS[0]}"; SEEN="${RCS[1]}"; }
+
+if [ "$TRUST" = 1 ]; then
+  in_agent_session && { echo "ssh: --trust is the developer's alone, in their own terminal: an agent session cannot run it" >&2; exit 2; }
+  [ -t 0 ] && [ -t 2 ] || { echo "ssh: --trust needs a terminal: run bin/ssh --trust $N in your own terminal" >&2; exit 2; }
+  echo "Checking the host key of $N ($ACC_HOST). Compare the fingerprint with the one the server's admin gives you; type yes only if they match." >&2
+  # ssh's own question (on the terminal); no password is sent and no askpass can answer it
+  run_ssh -o StrictHostKeyChecking=ask "${O[@]}" -o BatchMode=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
+    -o NumberOfPasswordPrompts=0 -o LogLevel=INFO -- "$ACC_HOST" true
+  case "$SEEN" in
+    5) echo "saved: $N's host key is trusted" >&2; exit 0 ;;
+    4) echo "not trusted: nothing saved" >&2; exit 3 ;;
+    7) changed ;;
+    6) echo "$N's host key was already trusted" >&2; exit 0 ;;
+  esac
+  [ "$RC" = 0 ] && { echo "$N's host key was already trusted" >&2; exit 0; }
+  echo "ssh: could not reach $N (ssh exit $RC)" >&2; exit 1
+fi
+
+# no command and no terminal: an interactive shell would wait for input that never comes
+[ $# -gt 0 ] || [ -t 0 ] || { echo "ssh: give the command to run: bin/ssh $N <command> (a shell on $N needs a terminal)" >&2; exit 2; }
+if [ "$ACC_AUTH" = key ]; then
+  ssh-add -l >/dev/null 2>&1; ar=$?
+  [ "$ar" != 2 ] || { echo "ssh: no ssh-agent is reachable (SSH_AUTH_SOCK). Ask the developer to start this session from a terminal where their ssh-agent runs (never a key or passphrase in chat)" >&2; exit 3; }
+  [ "$ar" = 0 ] || {
+    if [ "$(platform)" = macos ]; then l="ssh-add --apple-use-keychain <key>"; else l="ssh-add <key>"; fi
+    echo "ssh: no key in the ssh-agent for $N. Ask the developer to load your key once, in your own terminal: $l (never a key or passphrase in chat)" >&2
+    exit 3; }
+  O+=(-o BatchMode=yes)
+else
+  why="$(secret_store_refusal)"; [ -z "$why" ] || { echo "ssh: $why" >&2; exit 3; }
+  secret_has "ssh.$N" || {
+    echo "ssh: no password stored for $N. Ask the developer to run, in their own terminal, bin/secret --set ssh.$N (a hidden prompt); never ask for it in chat." >&2
+    exit 3; }
+  # bin/askpass works out the prompt it answers from the registry itself (access_login): never a jump host's, a host
+  # key question or a passphrase
+  access_login >/dev/null || { echo "ssh: could not read ssh's settings for $N" >&2; exit 1; }
+  O+=(-o BatchMode=no -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive -o NumberOfPasswordPrompts=1)
+  export SSH_ASKPASS="$HUB/bin/askpass" SSH_ASKPASS_REQUIRE=force ADE_SSH_ASKPASS_NAME="$N"
+fi
+run_ssh -o StrictHostKeyChecking=yes "${O[@]}" -- "$ACC_HOST" "$@"
+if [ "$RC" = 255 ]; then
+  [ "$SEEN" != 7 ] || changed
+  [ "$SEEN" != 4 ] || { echo "ssh: the host key of $N$via is not trusted yet. Ask the developer to run, in their own terminal: bin/ssh --trust $N" >&2; exit 3; }
+fi
+exit "$RC"

@@ -8,18 +8,25 @@
 # The key shapes are one list, KEYS below; .ade/context/paste-guard.md.
 # The switch is read from this hub's committed hub.conf alone, in a subshell: never the environment, never one $HUB
 # names, never .local/hub.conf (a per-machine file could otherwise keep it set past bin/lib.sh's policy restore).
+# bin/paste-guard --scan: the same KEYS over plain text on stdin, for bin/ code (the access registry, story X1): exit 10
+# when it holds a key shape, 0 when not, anything else when it cannot tell (callers refuse then); prints nothing; never
+# reads hub.conf (the switch does not apply).
 unset HUB_PASTE_GUARD
+if [ "${1:-}" = --scan ]; then SW=""; else
 H="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)" || exit 0
 SW="$(unset HUB_PASTE_GUARD; [ -f "$H/hub.conf" ] && . "$H/hub.conf" >/dev/null 2>&1; printf '%s' "${HUB_PASTE_GUARD:-}")"
+fi
 [ "$SW" != off ] || exit 0
+[ "${1:-}" != --scan ] || command -v python3 >/dev/null 2>&1 || exit 3
 command -v python3 >/dev/null 2>&1 || { echo "paste-guard: python3 not found, prompt not checked" >&2; exit 0; }
 # the script goes in -c so stdin stays the hook JSON; any failure inside is silent and lets the prompt through
 PY_SRC=$(cat <<'PY'
 import json, os, re, select, sys, time, unicodedata
+SCAN = sys.argv[1:] == ["--scan"]
 try:
     # the hook JSON: read until it parses or stdin closes, 10 s at most (a stdin that never closes is not waited on)
     raw = bytearray(); d = None; end = time.time() + 10
-    if not os.isatty(0):
+    if not SCAN and not os.isatty(0):
         while time.time() < end and len(raw) < 64 << 20:
             r, _, _ = select.select([0], [], [], max(0, end - time.time()))
             if not r: break
@@ -29,6 +36,8 @@ try:
             if bytes(raw[-8:]).rstrip().endswith(b"}"):
                 try: d = json.loads(raw.decode("utf-8")); break
                 except ValueError: pass
+    if SCAN:
+        raw = bytearray(sys.stdin.buffer.read(1 << 20)); d = {"prompt": raw.decode("utf-8", "replace")}
     if d is None: d = json.loads(raw.decode("utf-8"))
     prompt = d.get("prompt") if isinstance(d, dict) else None
     if not isinstance(prompt, str) or not prompt: sys.exit(0)
@@ -65,6 +74,7 @@ try:
     for kind, tool, pat, ok in KEYS:
         p = re.compile(pat)
         if any(ok is None or ok(m) for x in (t, wrapped) for m in p.finditer(x)): found.append((kind, tool))
+    if SCAN: sys.exit(10 if found else 0)
     if not found: sys.exit(0)
     tools = {f[1] for f in found}
     tool = found[0][1] if len(tools) == 1 and found[0][1] else "<tool>"
@@ -76,8 +86,9 @@ try:
 except SystemExit:
     raise
 except BaseException:
-    os._exit(0)   # never a traceback: it could quote the input
+    os._exit(3 if SCAN else 0)   # never a traceback: it could quote the input
 PY
 )
+if [ "${1:-}" = --scan ]; then python3 -I -c "$PY_SRC" --scan 2>/dev/null; exit $?; fi
 python3 -I -c "$PY_SRC" 2>/dev/null
 exit 0

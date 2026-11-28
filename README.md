@@ -294,6 +294,12 @@ bin/agent --role reviewer --folder projects/app < task.md  # the task comes on s
 A key pasted into a Claude prompt in the hub by mistake is stopped before it is sent (`bin/paste-guard`, story K2): the
 prompt is blocked and you are told to use `bin/keys set` instead (`HUB_PASTE_GUARD=off` in hub.conf turns it off).
 
+Agents reach servers through `bin/ssh <name> <command>` (story X1), never holding a key or a password. Each server is
+`ops/access/<name>.conf` (`HOST`, `USER`, `PORT`, `JUMP`, `AUTH=key|password`, `PROD=0|1`; names and locations only).
+A key comes from your ssh-agent (`ssh-add --apple-use-keychain <key>` once, in your terminal); a password from
+`bin/secret --set ssh.<name>`. Commit each registry change (until then every host asks). Trust a new host key yourself with `bin/ssh --trust <name>`. Raw `ssh` and production
+hosts ask first. Details: `.ade/context/access.md`.
+
 | Role | Default candidates, in order |
 |---|---|
 | `routine` | `anthropic:sonnet`, `deepseek:sonnet` |
