@@ -36,7 +36,7 @@ file. Your code stays in its own repo, never in the hub.
 ### Bring an existing hub
 
 ```bash
-ade hub import github.com/acme/acme-sre-hub --share      # join a teammate's hub
+ade hub import https://github.com/acme/acme-sre-hub --share   # join a teammate's hub
 ade hub import <url> --handover                          # become its new owner
 ade hub import <url> --clone                             # start your own hub from it
 ```
@@ -196,16 +196,6 @@ Add a persona: copy one in `personas/`, keep the front matter (`title`, `folders
 ## What the hub learns about you
 
 When you correct an agent, state a preference or say something twice, the agent records it with `bin/learn`: your own
-words, its one-line reading, why and how to apply it, in `memory/users/<you>/` (synced with the hub, never shared with
-another person's sessions). Every session starts with your profile and the rules for its folder and role, most repeated
-first, in at most `HUB_LEARN_LINES` lines (30). Only what you say in the conversation is recorded, never what a page,
-mail or tool output asks; secrets, email addresses and phone numbers are refused. `bin/learn list`, `show`, `edit` and
-`forget` keep you in charge, and the morning briefing lists what was learned since the last one. Contract:
-`.ade/context/learn.md`.
-
-## What the hub learns about you
-
-When you correct an agent, state a preference or say something twice, the agent records it with `bin/learn`: your own
 words, its one-line reading, why and how to apply it, in `memory/users/<you>/`. Those files are committed to the hub's
 private repo with everything else, so everyone with access to that repo can read them; other people's sessions do not
 load them, and `bin/brain` indexes only your own. A capture waits until you confirm it with `bin/learn confirm` in your
@@ -327,8 +317,11 @@ hosts ask first. Details: `.ade/context/access.md`.
 
 ## Keeping your keys safe
 
-- **Type a key once, in your own terminal.** `bin/keys set <tool>` asks at a hidden prompt, or reads stdin. Never put
-  a key on a command line, in a chat with an agent, or in a file such as `.env`: agents are told never to ask for one.
+- **Type a key once, in your own terminal.** An AI tool's key (anthropic, deepseek, glm, muse, gemini, telegram):
+  `ade keys` lists them and asks for the missing ones, or `bin/keys set <tool>` sets one; both ask at a hidden prompt.
+  Any other secret, such as a name from `bin/init --secret` or a server password: `bin/secret --set <name>`, the same
+  hidden prompt and store. Never put a key on a command line, in a chat with an agent, or in a file such as `.env`:
+  agents are told never to ask for one.
 - **It lives in a real secret store.** The macOS Keychain by default; on Linux a file store only you can read
   (folders `0700`, files `0600`; `bin/doctor` calls it the weaker store). Choose `pass` with `HUB_SECRET_STORE` in
   `hub.conf`, the only place that can set it (pass commits the encrypted entry to its own git repo, if you keep one).
@@ -438,13 +431,21 @@ A focus session can run Claude Code against DeepSeek instead of Anthropic. The C
   start and never committed: the folder's `CLAUDE.md` imports them, so a session in the folder starts without Claude
   Code's external-imports question. A start nobody watches that does not get going in 90 s (`HUB_WORK_START_WAIT`) is
   reported to the main session, and to Telegram when chat is on.
-- **The journal** (`journal/<UTC date>.md`): the shared timeline every agent and hook appends to.
+- **The journal** (`journal/<UTC date>.md`): the shared timeline every agent and hook appends to. In the recent
+  journal a session starts with, `bin/context` shows a run of identical entries from one folder (such as the note each
+  compaction writes) as one entry, `## <first> to <last> UTC · <folder> (<n>×)` (story J1); the files keep every entry.
 - **Hooks**: SessionStart prints the state; UserPromptSubmit, in every terminal (hub root and deep work), reports what
   other terminals changed since the last prompt (STATE.md updates, new journal entries with their text, new or updated
   memory files with their description); in deep work Stop asks for a STATE update after new commits, and SessionEnd
   journals the commits, commits the folder and starts `bin/sync --auto`, which pushes.
 - **Deep work**: `bin/work <folder>` opens a Terminal in the folder's repo checkout with its context and hooks (a folder with no repo, such as an ops watcher, opens in the hub folder itself). `--prompt "<task>"` starts that session with its first message. Every session starts with Remote Control on, named after the folder, so you can follow it from your phone; `--no-remote` turns that off (use it with an API-key wrapper such as an OpenRouter or Ollama one: Remote Control needs a claude.ai login). One session per folder: if that folder's session is already running, `bin/work` refuses (exit 3) and names its pid; `--force` opens another anyway. `bin/sessions` lists the running sessions `bin/work` started (`--mine`: the ones this Claude session started). Inside ADE it opens a sub-terminal of your tab instead, never a window (see "Deep work inside ADE").
 - **Tracking focus sessions**: `bin/sessions` lists the sessions `bin/work` started that are still running: name, folder, pid, the session that started each (`--mine` keeps your own), when it started, whether it is `busy` or `idle`, and when that last changed. The folder hooks write the status (a prompt marks busy, the end of a turn marks idle), so it needs no model and no messaging. The launcher also drops Claude session variables left in the terminal by an earlier session, so each focus session starts as its own session and the one that started it can list and message it.
+- **Check-ins** (story S1): after `HUB_CHECKIN_MINUTES` of work (hub.conf, default 30; `0` turns it off), a focus
+  session is told once to update its STATE.md, then send main a progress note (`bin/notify main "…"`); either one
+  restarts the clock. A session still busy 10 minutes after that, or with no hook activity for `HUB_CHECKIN_MINUTES`
+  (waiting at a prompt?), reaches main once as a `quiet` event with its last STATE line, sent by the 30-minute
+  `bin/monitor` job. The hub root is never told. The template's placeholder lines (`Updated: (…)`) do not count as a
+  STATE line (story S2). `bin/doctor` shows the interval.
 - **Dispatching ready tickets**: `bin/dispatch <folder>` starts a focus builder (`bin/work --role builder`) for each low- or medium-risk `ready_to_start` ticket in the checkout's BMAD `tickets next`, up to `HUB_DISPATCH_MAX` (1 by default, at most 2) running builders hub-wide; high-risk and `hitl` tickets wait for the owner, who starts one with `bin/dispatch --approve <ref> <folder>` at an interactive terminal (typing the ref back) (`.ade/context/dispatch.md`).
 - **Scheduled jobs** (`bin/schedule install`, launchd): the weekday morning briefing (`bin/briefing`, Haiku, read-only);
   `bin/monitor` every 30 minutes (with `HUB_MONITOR_TRIAGE=1`, a new ALERT gets one read-only triage by the monitor

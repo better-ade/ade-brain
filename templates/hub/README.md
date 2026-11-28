@@ -6,10 +6,13 @@ history** of the work and runs Claude Code agents that know them. Client code st
 
 ## Use it
 
-1. `bin/setup` once per Mac (links Claude's memory and the BMAD skills, sets the git hooks); `ollama pull nomic-embed-text`
-   and `bin/brain index` for searchable memory.
-2. `bin/doctor` until what you need is OK. Store secrets with `bin/secret --set <name>`.
-3. Start `claude` at the repo root. The SessionStart hook prints every folder's state and the recent journal.
+1. `ade`: your workspace, with the main agent in tab 0 and a tab per agent (`ade claude`: the
+   main agent at the hub root). Without `ade`, run `claude` at the hub root. Either way the session starts with every folder's state and
+   the recent journal.
+2. On a new Mac or a fresh clone, `bin/setup` once (links Claude's memory and the BMAD skills, sets the git hooks;
+   `ade hub import` runs it for you). `ollama pull nomic-embed-text` and `bin/brain index` for searchable memory.
+3. `ade doctor` (the hub's `bin/doctor`) until what you need is OK. AI tool keys: `ade keys` asks for the missing ones
+   at a hidden prompt. Other secrets `bin/doctor` checks: `bin/secret --set <name>`.
 4. `bin/schedule install`: the weekday morning briefing, `bin/monitor` and `bin/sync --auto` (both every 30 minutes).
    Auto sync off: `HUB_AUTO_SYNC=0` in `hub.conf`, then `bin/schedule install` again.
 
@@ -30,12 +33,14 @@ A task runs one of four ways; the main agent names the one it picks when it star
 | Command | Does |
 |---|---|
 | `bin/context [folder]` | every folder's state, or one folder's state and journal |
-| `bin/work [opts] <folder> [repo]` | deep work in a new Terminal in the folder's repo checkout, as the caller's Claude install and account (`CLAUDE_CONFIG_DIR`) |
+| `ade work <folder>`, `bin/work [opts] <folder> [repo]` | deep work in the folder's repo checkout, as the caller's Claude install and account (`CLAUDE_CONFIG_DIR`): `ade work` opens it as a tab of `ade`'s workspace; `bin/work` on its own opens a new Terminal window on macOS (a sub-terminal inside the ADE app), a tmux window on Linux |
+| `bin/review [folder]` | a read-only summary of this hub: whose it is, what is in progress, recent work, memory, reach, agents and skills |
 | `bin/journal <folder> "<text>"` | one dated journal entry |
 | `bin/new projects/<name>` / `ops/<name>` | a new folder plus its agent |
 | `bin/brain search "<words>"` | search every section of the hub (keywords + meaning); `bin/brain index` refreshes |
 | `bin/learn confirm`, `bin/learn list\|show\|edit\|forget` | what the hub learned about you (`memory/users/<you>/`): agents capture with `bin/learn feedback` and `bin/learn profile`; nothing loads until you confirm it in your own terminal; then each session starts with your rules for that folder |
 | `bin/remote <cmd>` | a command on the remote box over SSH |
+| `ade keys`, `bin/keys set <tool>` | the AI tools' keys (anthropic, deepseek, glm, muse, gemini, telegram): stored or missing; set one at a hidden prompt |
 | `bin/secret <name>` | a secret from the Keychain (`--set`, `--has`, `--forget`, `--list`) |
 | `bin/doctor` | what this Mac can reach; never prints a secret |
 | `bin/briefing`, `bin/schedule install` | the morning briefing; the launchd jobs (briefing, monitor, sync, recover at login, chat with `HUB_CHAT=telegram`) |
