@@ -8,6 +8,13 @@ entries() {  # [folder filter] -> journal entries, oldest first, from the newest
     END{if(e!="" && (f=="" || index(h,f))) print e}' $files
 }
 lastn() { awk -v k="$1" '/^## /{n++} {a[n]=a[n] $0 "\n"} END{for(i=(n>k?n-k+1:1);i<=n;i++) printf "%s", a[i]}'; }
+fold_repeats() {  # consecutive entries with the same folder and body -> one "## first to last UTC · folder (n×)" entry (display only)
+  awk 'function out(){if(!cn)return; print (cn>1) ? "## " t1 " to " t2 " UTC · " cf " (" cn "×)" : ch; if(cb!="")print cb; print ""}
+    function take(  k){sub(/\n+$/,"",b); k=f "\034" b
+      if(cn&&k==ck){cn++;t2=t;return} out(); cn=1;ck=k;cf=f;cb=b;ch=h;t1=t2=t}
+    /^## /{if(h!="")take(); h=$0; f=$0; sub(/^[^·]*· /,"",f); t=$2; b=""; next} h!=""{b=b $0 "\n"}
+    END{if(h!="")take(); out()}'
+}
 section() { awk -v s="## $2" '$0==s{p=1;n=0;next} /^## /{p=0} p&&NF{if(n<4)print "  " substr($0,1,160); n++}' "$1"; }   # capped: tokens
 rules() {  # the hub root CLAUDE.md's rule sections: a session in a checkout outside the hub does not load it itself
   local c="$H/CLAUDE.md"; grep -q '^## Shared rules' "$c" 2>/dev/null || c="$H/templates/hub/CLAUDE.md"   # an uninitialized template
@@ -22,7 +29,7 @@ learned() { local b; [ -x "$H/bin/learn" ] || return 0; b="$("$H/bin/learn" cont
 if [ -n "${1:-}" ]; then
   [ "${2:-}" = "--rules" ] && { session_mark "$1" ready; rules; echo; ade_session_line; echo; learned "$1"; }   # ready: the session started (bin/sessions; bin/work's stuck-start report)
   echo "# Context: $1"; if [ -f "$H/$1/STATE.md" ]; then cat "$H/$1/STATE.md"; else echo "(no STATE.md)"; fi
-  echo; echo "## Recent journal ($1)"; entries "$1" | lastn 5
+  echo; echo "## Recent journal ($1)"; entries "$1" | fold_repeats | lastn 5
   exit 0
 fi
 w="$(orchestrator_endpoint_warning)"; [ -z "$w" ] || echo "WARNING: $w"
@@ -34,6 +41,6 @@ for f in $(folders); do
   if [ ! -f "$S" ]; then echo "  (no STATE.md)"; continue; fi
   for s in "Live" "Open" "Waiting on" "Next session starts with"; do out=$(section "$S" "$s"); [ -n "$out" ] && { echo " $s:"; echo "$out"; }; done
 done
-echo; echo "## Recent journal"; entries | lastn 8 | cut -c1-200
+echo; echo "## Recent journal"; entries | fold_repeats | lastn 8 | cut -c1-200
 b="$(learned)"; [ -z "$b" ] || { echo; printf '%s\n' "$b"; }
 exit 0

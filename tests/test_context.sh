@@ -61,4 +61,22 @@ out=$(bin/context projects/demo --rules); sleep 0.5
 echo "$out" | grep -qF 'ade: ade 1.2.3 is installed; `ade help` lists its commands: run it before the first ade command in a session' || fail "ade_present_help: [$out]"
 assert_eq "$(runs_of "$ADE_FAKE_RUNS")" 0 "ade_present_help: no install"
 [ -e "$HOME/.agent-hub/hub/ade" ] && fail "ade_present_help: install state written"
+# story J1: consecutive identical journal entries fold into one line (display only; the files keep every entry)
+jent() { printf '\n## %s UTC · %s\n%s\n' "$2" "$1" "$3" >> "$HUB/journal/2030-01-01.md"; }   # folder time text
+jhub() { make_hub; cd "$HUB"; bin/new projects/demo >/dev/null; printf '# Journal 2030-01-01\n' > journal/2030-01-01.md; }
+CN="(compaction at the hub root: update the folders' STATE.md)"
+jhub; for t in 10:53 11:06 12:04; do jent hub $t "$CN"; done
+out=$(bin/context); echo "$out" | grep -qxF "## 10:53 to 12:04 UTC · hub (3×)" || fail "journal_fold_repeats: header [$out]"
+[ "$(echo "$out" | grep -cF "$CN")" = 1 ] || fail "journal_fold_repeats: note once [$out]"
+[ "$(grep -c '^## ' journal/2030-01-01.md)" = 3 ] || fail "journal_fold_repeats: the journal file keeps every entry"
+jhub; for t in 01:00 02:00 03:00 04:00 05:00 06:00 07:00 08:00; do jent hub $t "$CN"; done
+jent hub 09:00 "work one"; jent hub 09:10 "work two"; jent hub 09:20 "$CN"
+out=$(bin/context); echo "$out" | grep -qxF "work one" && echo "$out" | grep -qxF "work two" || fail "journal_fold_keeps_work: [$out]"
+[ "$(echo "$out" | grep -n -xF -e "work one" -e "work two" | cut -d: -f1 | tr '\n' ' ')" != "" ] && \
+  [ "$(echo "$out" | grep -xF -e "work one" -e "work two" | head -1)" = "work one" ] || fail "journal_fold_keeps_work: order"
+jhub; jent hub 10:00 "same"; jent hub 10:10 "other"; jent projects/demo 10:20 "other"; jent hub 10:30 "other"
+out=$(bin/context); echo "$out" | grep -q " to .*(.*×)" && fail "journal_no_fold_different: folded [$out]"
+for h in "## 10:00 UTC · hub" "## 10:10 UTC · hub" "## 10:20 UTC · projects/demo" "## 10:30 UTC · hub"; do echo "$out" | grep -qxF "$h" || fail "journal_no_fold_different: [$h] missing"; done
+jhub; for t in 10:00 10:10; do jent projects/demo $t "$CN"; done; jent hub 10:15 "$CN"
+out=$(bin/context projects/demo); echo "$out" | grep -qxF "## 10:00 to 10:10 UTC · projects/demo (2×)" || fail "journal_fold_folder_view: [$out]"
 echo ok
