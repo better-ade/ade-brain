@@ -1,5 +1,22 @@
 #!/bin/bash
 set -u
+# macOS's `mktemp` with no template ignores $TMPDIR (it uses its own per-user folder), so those folders would escape the
+# test's TMPDIR. Not exported: the bin/ scripts a test runs keep the system's own mktemp, as users run them.
+mktemp() { local a bare=1; for a in "$@"; do case "$a" in -*) ;; *) bare=0 ;; esac; done
+  if [ "$bare" = 1 ]; then command mktemp "$@" "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX"; else command mktemp "$@"; fi; }
+# macOS's TMPDIR ends in "/" and sits under a symlink (/var is /private/var), so "$TMPDIR/x" would read ".../T//x" and
+# differ from the same path as bin/ scripts print it (cd && pwd): TMPDIR is resolved first, as one physical path.
+[ -d "${TMPDIR:-}" ] && { TMPDIR="$(cd "$TMPDIR" && pwd -P)"; export TMPDIR; }
+# story X2: this test process gets its own TMPDIR, removed when the process ends however it ends (exit, failure, SIGKILL).
+# A detached watcher (streams on /dev/null, so a caller capturing the test's output is never held) waits for the PID.
+# tests/run.sh already does this per file and sets ADE_TEST_TMP_OWNED, so nothing is added there.
+if [ -z "${ADE_TEST_TMP_OWNED:-}" ]; then
+  ADE_TEST_TMP_OWNED=1; TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX")"; export ADE_TEST_TMP_OWNED TMPDIR
+  ( p=$$; d="$TMPDIR"; while kill -0 "$p" 2>/dev/null; do sleep 0.2; done
+    # orphans of a killed test may still be writing: retry for up to ~20 s until the folder is gone
+    n=0; while [ -e "$d" ] && [ "$n" -lt 100 ]; do rm -rf "$d" 2>/dev/null; [ -e "$d" ] && sleep 0.2; n=$((n + 1)); done ) </dev/null >/dev/null 2>&1 &
+  disown $! 2>/dev/null   # not a job of the test: a bare `wait` in it must not wait for the watcher
+fi
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # tests never depend on the machine's git defaults: every `git init` (hubs, bare remotes, fixtures) starts on main
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch GIT_CONFIG_VALUE_0=main
