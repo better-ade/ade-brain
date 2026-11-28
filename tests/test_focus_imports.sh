@@ -134,11 +134,16 @@ stuck_start_reported() {
   assert_eq "$(pgrep -P "$lp" | wc -l | tr -d ' ')" "1" "the check is not a child of the launcher (bin/sessions reads its one child as the engine)"
   sleep 1.5; assert_eq "$(notes)" "1" "reported once"
   kill "$(pgrep -P "$lp" | head -1)" 2>/dev/null; wait "$lp" 2>/dev/null
-  # a session that takes its first message (the prompt hook ran) is not reported
+  # a session that takes its first message (the prompt hook ran) is not reported. Deterministic, not timed (story F):
+  # the check's wait starts only once the hook has run (a gated sleep), and the assertion waits for the check to exit
   printf '#!/bin/bash\n"$HUB/bin/changes" projects/demo </dev/null >/dev/null 2>&1; touch "$AGENT_STATE/p1"\nexec sleep 30\n' > "$S/claude-ok"; chmod +x "$S/claude-ok"
+  G="$(mktemp -d)"; printf '#!/bin/bash\nwhile [ ! -e "$AGENT_STATE/p1" ]; do /bin/sleep 0.05; done; exec /bin/sleep "$@"\n' > "$G/sleep"; chmod +x "$G/sleep"
   f=$(CLAUDE_PID=777 WORK_NO_OPEN=1 bin/work --force --claude claude-ok --prompt "do it" projects/demo 2>/dev/null | sed -n 's/^launcher: //p')
-  PATH="$S:$PATH" bash "$f" >/dev/null 2>&1 & lp=$!
-  wait_for '[ -e "$ST/p1" ]' || fail "the prompt hook ran"; sleep 2.5
+  PATH="$G:$S:$PATH" bash "$f" >/dev/null 2>&1 & lp=$!
+  wait_for '[ -e "$ST/p1" ]' 100 || fail "the prompt hook ran"
+  # the check is a forked copy of the launcher (same command line) that may become bin/notify (a subshell can exec its
+  # last command); it is done when only the launcher is left and no bin/notify of this hub runs
+  wait_for '[ -z "$(pgrep -f "$f" | grep -vx "$lp")" ] && ! pgrep -f "$HUB/bin/notify" >/dev/null' 100 || fail "the start check finished"
   assert_eq "$(notes)" "1" "a session that is running is not reported"
   kill "$(pgrep -P "$lp" | head -1)" 2>/dev/null; wait "$lp" 2>/dev/null
   # started by a person at a terminal (no Claude session, chat off): nobody is told
