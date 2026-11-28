@@ -1,7 +1,7 @@
 #!/bin/bash
 . "$(dirname "$0")/helpers.sh"
 make_hub; cd "$HUB"
-for s in "## Shared rules" "## Coordination" "Approvals come through the main session" "Check what {{OWNER}} already sent" "Client contact data stays out of the hub repo" "Decide routine choices yourself" "## The main agent" "## Git boundaries" "## Token budget" "@memory/MEMORY.md" "{{PERSONA}}" "{{OWNER}}"; do assert_contains templates/hub/CLAUDE.md "$s" "hub CLAUDE.md template"; done
+for s in "## Shared rules" "## Coordination" "Approvals come through the main session" "Check what {{OWNER}} already sent" "A task card gets a picture" "Client contact data stays out of the hub repo" "Decide routine choices yourself" "## The main agent" "## Git boundaries" "## Token budget" "@memory/MEMORY.md" "{{PERSONA}}" "{{OWNER}}"; do assert_contains templates/hub/CLAUDE.md "$s" "hub CLAUDE.md template"; done
 python3 -c "import json; d=json.load(open('.claude/settings.json')); assert 'bin/context' in d['hooks']['SessionStart'][0]['hooks'][0]['command']" || fail "root SessionStart hook"
 grep -rqiE "(api[_-]?key|token|password)\s*[:=]\s*[A-Za-z0-9_-]{16,}" templates personas CLAUDE.md README.md && fail "something secret-looking in the template"
 grep -rqi "orillia\|arjuns57\|jared" bin templates personas docs README.md CLAUDE.md && fail "a client-specific name is left in the template"
